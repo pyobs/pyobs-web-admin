@@ -1,0 +1,20 @@
+[Unit]
+Description=pyobs Web Admin
+After=network.target
+
+[Service]
+Type=exec
+User=pyobs
+Group=pyobs
+WorkingDirectory=/opt/pyobs/pyobs-web-admin
+ExecStart=/opt/pyobs/pyobs-web-admin/.venv/bin/gunicorn \
+    --workers 3 \
+    --bind 0.0.0.0:8000 \
+    --access-logfile /opt/pyobs/log/pyobs-web-admin-access.log \
+    --error-logfile /opt/pyobs/log/pyobs-web-admin-error.log \
+    pyobs_web_admin.wsgi
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
