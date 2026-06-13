@@ -174,7 +174,8 @@ def get_module_stats(name: str) -> dict | None:
             _process_cache[name] = proc
         cpu = proc.cpu_percent(interval=None)
         mem = proc.memory_info().rss / 1024 / 1024
-        return {"cpu_percent": round(cpu, 1), "memory_mb": round(mem, 1)}
+        uptime = int(time.time() - proc.create_time())
+        return {"cpu_percent": round(cpu, 1), "memory_mb": round(mem, 1), "uptime_seconds": uptime}
     except psutil.NoSuchProcess:
         _process_cache.pop(name, None)
         return None

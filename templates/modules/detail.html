@@ -49,6 +49,7 @@
       <tbody>
         <tr><th class="text-muted fw-normal pe-4">Config</th><td class="font-monospace small">{{ config_dir }}/{{ module_name }}.yaml</td></tr>
         <tr><th class="text-muted fw-normal pe-4">Log</th><td class="font-monospace small">{{ log_dir }}/{{ module_name }}.log</td></tr>
+        <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
       </tbody>
@@ -112,6 +113,13 @@ Loading…</pre>
 const MODULE = "{{ module_name }}";
 
 // ── Status ────────────────────────────────────────────────────────────────────
+function fmtUptime(s) {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+  return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
+}
+
 async function updateStatus() {
   const resp = await fetch(`/api/modules/${MODULE}/status/`);
   const data = await resp.json();
@@ -126,12 +134,16 @@ async function updateStatus() {
   document.getElementById('stop-btn').disabled = !running;
   const memRow = document.getElementById('stat-memory-row');
   const cpuRow = document.getElementById('stat-cpu-row');
+  const uptimeRow = document.getElementById('stat-uptime-row');
   if (data.stats) {
+    document.getElementById('stat-uptime').textContent = fmtUptime(data.stats.uptime_seconds);
     document.getElementById('stat-memory').textContent = `${data.stats.memory_mb} MB`;
     document.getElementById('stat-cpu').textContent = `${data.stats.cpu_percent}%`;
+    uptimeRow.classList.remove('d-none');
     memRow.classList.remove('d-none');
     cpuRow.classList.remove('d-none');
   } else {
+    uptimeRow.classList.add('d-none');
     memRow.classList.add('d-none');
     cpuRow.classList.add('d-none');
   }
