@@ -52,9 +52,13 @@
 
   <!-- Logs Tab -->
   <div class="tab-pane fade" id="tab-logs">
-    <div class="d-flex gap-2 mb-3 flex-wrap">
-      <input type="text" id="log-filter" class="form-control" style="max-width:300px"
-             placeholder="Filter…" oninput="fetchLogs()">
+    <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+      <input type="text" id="log-filter" class="form-control" style="max-width:220px" placeholder="Filter text…">
+      <input type="datetime-local" id="time-start" class="form-control" style="max-width:200px" title="Start time">
+      <input type="datetime-local" id="time-end"   class="form-control" style="max-width:200px" title="End time">
+      <button class="btn btn-outline-secondary btn-sm" onclick="clearTimeFilter()" title="Clear time range">
+        <i class="bi bi-x-lg"></i>
+      </button>
       <button class="btn btn-outline-secondary" onclick="fetchLogs()">
         <i class="bi bi-arrow-clockwise me-1"></i>Refresh
       </button>
@@ -142,6 +146,7 @@ async function controlModule(action) {
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
 let logTimer = null;
+let rawLogLines = [];
 
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -156,25 +161,67 @@ function colorLine(line) {
   return e;
 }
 
-async function fetchLogs() {
-  const filter = encodeURIComponent(document.getElementById('log-filter').value);
-  try {
-    const resp = await fetch(`/api/modules/${MODULE}/logs/?lines=300&filter=${filter}`);
-    const data = await resp.json();
-    const pre = document.getElementById('log-output');
-    pre.innerHTML = data.lines.length ? data.lines.map(colorLine).join('\n') : '(no log lines)';
-    if (document.getElementById('auto-scroll').checked) {
-      pre.scrollTop = pre.scrollHeight;
+function parseLogTime(line) {
+  const m = line.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+  return m ? new Date(`${m[1]}T${m[2]}`) : null;
+}
+
+function applyFilters(lines) {
+  const text      = document.getElementById('log-filter').value.toLowerCase();
+  const startVal  = document.getElementById('time-start').value;
+  const endVal    = document.getElementById('time-end').value;
+  const startDate = startVal ? new Date(startVal) : null;
+  const endDate   = endVal   ? new Date(endVal)   : null;
+
+  return lines.filter(line => {
+    if (text && !line.toLowerCase().includes(text)) return false;
+    if (startDate || endDate) {
+      const t = parseLogTime(line);
+      if (t) {
+        if (startDate && t < startDate) return false;
+        if (endDate   && t > endDate)   return false;
+      }
     }
+    return true;
+  });
+}
+
+function renderLogs() {
+  const filtered = applyFilters(rawLogLines);
+  const pre = document.getElementById('log-output');
+  pre.innerHTML = filtered.length ? filtered.map(colorLine).join('\n') : '(no matching log lines)';
+  if (document.getElementById('auto-scroll').checked) pre.scrollTop = pre.scrollHeight;
+}
+
+async function fetchLogs() {
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/logs/?lines=300`);
+    const data = await resp.json();
+    rawLogLines = data.lines;
+    renderLogs();
   } catch (_) {}
 }
 
-// Persist log settings in localStorage
+function clearTimeFilter() {
+  document.getElementById('time-start').value = '';
+  document.getElementById('time-end').value   = '';
+  localStorage.removeItem('log-time-start');
+  localStorage.removeItem('log-time-end');
+  renderLogs();
+}
+
+// ── Persist log settings ──────────────────────────────────────────────────────
 const autoRefreshEl = document.getElementById('auto-refresh');
 const autoScrollEl  = document.getElementById('auto-scroll');
+const filterEl      = document.getElementById('log-filter');
+const timeStartEl   = document.getElementById('time-start');
+const timeEndEl     = document.getElementById('time-end');
 
 autoRefreshEl.checked = localStorage.getItem('log-auto-refresh') !== 'false';
 autoScrollEl.checked  = localStorage.getItem('log-auto-scroll')  !== 'false';
+filterEl.value        = localStorage.getItem('log-filter')       || '';
+timeStartEl.value     = localStorage.getItem('log-time-start')   || '';
+timeEndEl.value       = localStorage.getItem('log-time-end')     || '';
 
 autoRefreshEl.addEventListener('change', function () {
   localStorage.setItem('log-auto-refresh', this.checked);
@@ -183,6 +230,18 @@ autoRefreshEl.addEventListener('change', function () {
 });
 autoScrollEl.addEventListener('change', function () {
   localStorage.setItem('log-auto-scroll', this.checked);
+});
+filterEl.addEventListener('input', function () {
+  localStorage.setItem('log-filter', this.value);
+  renderLogs();
+});
+timeStartEl.addEventListener('change', function () {
+  localStorage.setItem('log-time-start', this.value);
+  renderLogs();
+});
+timeEndEl.addEventListener('change', function () {
+  localStorage.setItem('log-time-end', this.value);
+  renderLogs();
 });
 
 // ── Config ────────────────────────────────────────────────────────────────────
