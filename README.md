@@ -14,7 +14,7 @@ filter their logs, and view and edit their configuration files — all from a br
   - *Start All*, *Restart All*, and *Stop All* bulk actions (modules whose names start with `_` are excluded from start/restart)
   - Inactive modules (prefixed with `_`) are dimmed and excluded from bulk start/restart
 - **Module detail** — per-module view with three tabs:
-  - *Overview* — current status, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop control
+  - *Overview* — current status, PID, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop/activate/deactivate control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
   - *Config* — YAML editor with syntax highlighting and colour-coded `{include}` lines; included shared configs are shown as clickable links
 - **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
