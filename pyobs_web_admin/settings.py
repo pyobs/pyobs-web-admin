@@ -122,3 +122,8 @@ STATIC_URL = "static/"
 PYOBSD_COMMAND = "pyobsd"
 PYOBS_CONFIG_DIR = "/opt/pyobs/config"
 PYOBS_LOG_DIR = "/opt/pyobs/log"
+
+try:
+    from pyobs_web_admin.local_settings import *  # noqa: F401,F403
+except ImportError:
+    pass
