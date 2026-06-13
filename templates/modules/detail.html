@@ -203,6 +203,16 @@ async function reloadConfig() {
   document.getElementById('config-editor').value = data.content;
 }
 
+// ── Tabs — persist active tab in URL hash ─────────────────────────────────────
+document.querySelectorAll('#detailTabs button[data-bs-target]').forEach(btn => {
+  btn.addEventListener('shown.bs.tab', () => {
+    history.replaceState(null, '', btn.dataset.bsTarget);
+  });
+});
+
+const initialTab = location.hash && document.querySelector(`#detailTabs [data-bs-target="${location.hash}"]`);
+if (initialTab) bootstrap.Tab.getOrCreateInstance(initialTab).show();
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 updateStatus();
 setInterval(updateStatus, 10000);
@@ -212,5 +222,8 @@ logTimer = setInterval(fetchLogs, 3000);
 
 // Immediate fetch when logs tab is opened
 document.querySelector('[data-bs-target="#tab-logs"]').addEventListener('shown.bs.tab', fetchLogs);
+
+// Fetch immediately if starting on the logs tab
+if (location.hash === '#tab-logs') fetchLogs();
 </script>
 {% endblock %}
