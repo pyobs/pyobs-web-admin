@@ -11,7 +11,7 @@ filter their logs, and view and edit their configuration files — all from a br
   - Per-module status badge, uptime, CPU usage, and memory usage (RSS)
   - Warning/error log counts for the last 24 h (highlighted in colour if non-zero)
   - Quick start, restart, stop, and activate/deactivate buttons per module
-  - *Start All*, *Restart All*, and *Stop All* bulk actions (modules whose names start with `_` are excluded from start/restart)
+  - *Start All*, *Restart All*, and *Stop All* bulk actions
   - Inactive modules (prefixed with `_`) are dimmed and excluded from bulk start/restart
 - **Module detail** — per-module view with three tabs:
   - *Overview* — current status, PID, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop/activate/deactivate control
@@ -173,17 +173,21 @@ PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 - **Restart** — stop followed by start.
 - **Status** — checks whether the process with the stored PID is alive (`os.kill(pid, 0)`).
 - **Resource usage** — uptime, CPU %, and RSS memory read via `psutil` on every status poll.
+- **Log counts** — per-level message counts (DEBUG / INFO / WARNING / ERROR / CRITICAL) for the last 24 h, using binary search on the log file to avoid reading the whole file.
 
 ---
 
 ## Project layout
 
 ```
-pyobs_web_admin/      Django project settings and URL config
+pyobs_web_admin/
+  settings.py               Django project settings
+  local_settings.py.example Template for local overrides (not committed)
+  urls.py                   URL config
 modules/
-  services.py         All pyobs process and filesystem logic
-  views.py            HTML pages + JSON API endpoints
-  middleware.py       Login-required redirect
+  services.py               All pyobs process and filesystem logic
+  views.py                  HTML pages + JSON API endpoints
+  middleware.py             Login-required redirect
   context_processors.py
 deploy/
   pyobs-web-admin.service   systemd unit file
@@ -192,6 +196,7 @@ templates/
   modules/
     dashboard.html
     detail.html
+    shared_detail.html      Config editor for *.shared.yaml files
   registration/
     login.html
 ```
