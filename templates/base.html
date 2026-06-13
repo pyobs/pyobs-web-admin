@@ -134,6 +134,19 @@
       {% empty %}
       <p class="text-muted px-2 py-2" style="font-size:0.8rem">No modules found in config dir.</p>
       {% endfor %}
+
+      {% if sidebar_shared_configs %}
+      <div class="px-2 pb-1 pt-2">
+        <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Shared</span>
+      </div>
+      {% for name in sidebar_shared_configs %}
+      <a href="{% url 'shared_detail' name %}"
+         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_shared == name %}active{% endif %}">
+        <i class="bi bi-file-earmark-text" style="font-size:0.8rem;color:#6c757d;flex-shrink:0"></i>
+        {{ name }}
+      </a>
+      {% endfor %}
+      {% endif %}
     </div>
 
     <div class="p-2 border-top border-secondary-subtle">

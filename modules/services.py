@@ -37,6 +37,18 @@ def validate_name(name: str) -> None:
         raise ValueError(f"Invalid module name: {name!r}")
 
 
+def validate_shared_name(name: str) -> None:
+    if not re.match(r"^[a-zA-Z0-9_.-]+$", name):
+        raise ValueError(f"Invalid shared config name: {name!r}")
+
+
+def list_shared_configs() -> list[str]:
+    d = _config_dir()
+    if not d.exists():
+        return []
+    return sorted(p.stem for p in d.glob("*.shared.yaml"))
+
+
 def list_modules() -> list[str]:
     d = _config_dir()
     if not d.exists():
@@ -257,6 +269,20 @@ def get_log_stats(name: str) -> dict:
                 counts[m.group(1)] += 1
 
     return counts
+
+
+def get_shared_config(name: str) -> str | None:
+    validate_shared_name(name)
+    f = _config_dir() / f"{name}.yaml"
+    return f.read_text() if f.exists() else None
+
+
+def save_shared_config(name: str, content: str) -> None:
+    validate_shared_name(name)
+    f = _config_dir() / f"{name}.yaml"
+    if not f.exists():
+        raise FileNotFoundError(f"Shared config not found: {f}")
+    f.write_text(content)
 
 
 def get_config(name: str) -> str | None:

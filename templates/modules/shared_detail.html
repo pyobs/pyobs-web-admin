@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config_name }} — pyobs Web Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-2 mb-4">
+  <h4 class="mb-0 me-1">{{ config_name }}</h4>
+  <span class="badge bg-secondary fs-6">shared</span>
+</div>
+
+<div class="mb-2 d-flex gap-2 align-items-center">
+  <button class="btn btn-primary" onclick="saveConfig()">
+    <i class="bi bi-floppy me-1"></i>Save
+  </button>
+  <button class="btn btn-outline-secondary" onclick="reloadConfig()">
+    <i class="bi bi-arrow-clockwise me-1"></i>Reload
+  </button>
+  <span id="save-status" class="small"></span>
+</div>
+
+{% if config %}
+<textarea id="config-editor"
+          class="form-control font-monospace"
+          rows="30"
+          style="font-size: 0.85rem; resize: vertical;">{{ config }}</textarea>
+{% else %}
+<div class="alert alert-warning">No config file found.</div>
+{% endif %}
+
+<p class="text-muted small mt-2">
+  <i class="bi bi-info-circle me-1"></i>
+  File: <code>{{ config_dir }}/{{ config_name }}.yaml</code>
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CONFIG_NAME = "{{ config_name }}";
+
+async function saveConfig() {
+  const content = document.getElementById('config-editor').value;
+  const status = document.getElementById('save-status');
+  try {
+    const resp = await fetch(`/api/shared/${CONFIG_NAME}/config/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCsrfToken(),
+      },
+      body: JSON.stringify({content}),
+    });
+    const data = await resp.json();
+    status.textContent = data.success ? 'Saved!' : `Error: ${data.error}`;
+    status.className = `small text-${data.success ? 'success' : 'danger'}`;
+  } catch (e) {
+    status.textContent = `Error: ${e}`;
+    status.className = 'small text-danger';
+  }
+  setTimeout(() => { status.textContent = ''; }, 4000);
+}
+
+async function reloadConfig() {
+  const resp = await fetch(`/api/shared/${CONFIG_NAME}/config/`);
+  const data = await resp.json();
+  document.getElementById('config-editor').value = data.content;
+}
+</script>
+{% endblock %}

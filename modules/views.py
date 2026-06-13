@@ -45,6 +45,16 @@ def _get_module_or_404(name: str) -> str:
     return name
 
 
+def _get_shared_or_404(name: str) -> str:
+    try:
+        services.validate_shared_name(name)
+    except ValueError:
+        raise Http404("Invalid shared config name")
+    if name not in services.list_shared_configs():
+        raise Http404(f"Shared config '{name}' not found")
+    return name
+
+
 def dashboard(request):
     modules = services.list_modules()
     return render(request, "modules/dashboard.html", {"modules": modules})
@@ -122,6 +132,34 @@ def api_all_log_stats(request):
     modules = services.list_modules()
     result = {m: services.get_log_stats(m) for m in modules}
     return JsonResponse({"modules": result})
+
+
+def shared_detail(request, name: str):
+    _get_shared_or_404(name)
+    return render(request, "modules/shared_detail.html", {
+        "config_name": name,
+        "config": services.get_shared_config(name) or "",
+        "active_shared": name,
+        "config_dir": settings.PYOBS_CONFIG_DIR,
+    })
+
+
+def api_shared_config(request, name: str):
+    _get_shared_or_404(name)
+    if request.method == "GET":
+        return JsonResponse({"content": services.get_shared_config(name) or ""})
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            services.save_shared_config(name, data.get("content", ""))
+            return JsonResponse({"success": True})
+        except (json.JSONDecodeError, KeyError) as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+        except FileNotFoundError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=404)
+        except Exception as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=500)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
 
 
 def api_config(request, name: str):
