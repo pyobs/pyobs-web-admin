@@ -49,6 +49,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Single-user credentials — set ADMIN_PASSWORD_HASH in local_settings.py:
 #   uv run python -c "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"

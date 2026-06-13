@@ -13,6 +13,7 @@ wheels/
 db.sqlite3
 *.log
 local_settings.py
+staticfiles/
 
 # IDE
 .idea/
