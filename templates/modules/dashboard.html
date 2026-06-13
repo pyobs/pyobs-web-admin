@@ -5,9 +5,17 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h4 class="mb-0">Dashboard</h4>
-  <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses()">
-    <i class="bi bi-arrow-clockwise"></i> Refresh
-  </button>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-success" id="btn-start-all" onclick="controlAll('start')">
+      <i class="bi bi-play-fill"></i> Start All
+    </button>
+    <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
+      <i class="bi bi-stop-fill"></i> Stop All
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses()">
+      <i class="bi bi-arrow-clockwise"></i> Refresh
+    </button>
+  </div>
 </div>
 
 {% if not modules %}
@@ -70,6 +78,24 @@ async function quickControl(name, action, btn) {
       headers: {'X-CSRFToken': getCsrfToken()},
     });
     await resp.json();
+    await refreshAllStatuses();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function controlAll(action) {
+  const btnId = action === 'start' ? 'btn-start-all' : 'btn-stop-all';
+  const btn = document.getElementById(btnId);
+  btn.disabled = true;
+  try {
+    const modules = [...document.querySelectorAll('.status-badge[data-module]')].map(el => el.dataset.module);
+    await Promise.all(modules.map(name =>
+      fetch(`/api/modules/${name}/${action}/`, {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCsrfToken()},
+      })
+    ));
     await refreshAllStatuses();
   } finally {
     btn.disabled = false;
