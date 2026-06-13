@@ -136,6 +136,18 @@
       {% endfor %}
     </div>
 
+    <div class="p-2 border-top border-secondary-subtle">
+      <form method="post" action="{% url 'logout' %}">
+        {% csrf_token %}
+        <button type="submit"
+                class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 w-100 border-0 bg-transparent text-start">
+          <i class="bi bi-box-arrow-left" style="font-size:0.8rem"></i>
+          <span>{{ request.user.username }}</span>
+          <span class="ms-auto text-muted small">sign out</span>
+        </button>
+      </form>
+    </div>
+
   </nav>
 
   <main class="main-content flex-grow-1 p-3 p-lg-4">
