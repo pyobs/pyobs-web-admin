@@ -16,6 +16,7 @@ filter their logs, and view and edit their configuration files — all from a br
   - *Overview* — current status, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
   - *Config* — view and edit the YAML configuration file in-browser
+- **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a config editor (no start/stop controls)
 - **Responsive** — works on mobile with a slide-in sidebar
 - **No pyobs-core dependency** — communicates with `pyobs` directly via subprocess; no Python imports from pyobs-core
 
@@ -164,7 +165,7 @@ PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 
 ## How modules are managed
 
-- **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules.
+- **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
 - **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`.
 - **Stop** — sends `SIGTERM` to the PID in the PID file; falls back to `SIGKILL` after 5 s.
 - **Restart** — stop followed by start.
