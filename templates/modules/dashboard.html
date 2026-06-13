@@ -24,6 +24,27 @@
   and contains <code>.yaml</code> files.
 </div>
 {% else %}
+<div class="row g-3 mb-4">
+  <div class="col-4">
+    <div class="card border-secondary text-center py-2">
+      <div class="fs-3 fw-bold" id="stat-total">{{ modules|length }}</div>
+      <div class="text-secondary small">Total</div>
+    </div>
+  </div>
+  <div class="col-4">
+    <div class="card border-success text-center py-2">
+      <div class="fs-3 fw-bold text-success" id="stat-running">—</div>
+      <div class="text-secondary small">Running</div>
+    </div>
+  </div>
+  <div class="col-4">
+    <div class="card border-danger text-center py-2">
+      <div class="fs-3 fw-bold text-danger" id="stat-stopped">—</div>
+      <div class="text-secondary small">Stopped</div>
+    </div>
+  </div>
+</div>
+
 <div class="row g-3" id="module-grid">
   {% for mod in modules %}
   <div class="col-sm-6 col-md-4 col-xl-3">
@@ -60,13 +81,20 @@ async function refreshAllStatuses() {
   try {
     const resp = await fetch("{% url 'api_all_statuses' %}");
     const data = await resp.json();
+    let running = 0, stopped = 0;
     data.modules.forEach(m => {
       document.querySelectorAll(`.status-badge[data-module="${m.name}"]`).forEach(badge => {
         const cls = STATUS_COLORS[m.status] || 'secondary';
         badge.className = `badge rounded-pill status-badge ${m.status} bg-${cls}`;
         badge.textContent = m.status;
       });
+      if (m.status === 'running') running++;
+      else if (!m.name.startsWith('_')) stopped++;
     });
+    const elRunning = document.getElementById('stat-running');
+    const elStopped = document.getElementById('stat-stopped');
+    if (elRunning) elRunning.textContent = running;
+    if (elStopped) elStopped.textContent = stopped;
   } catch (_) {}
 }
 
@@ -89,7 +117,9 @@ async function controlAll(action) {
   const btn = document.getElementById(btnId);
   btn.disabled = true;
   try {
-    const modules = [...document.querySelectorAll('.status-badge[data-module]')].map(el => el.dataset.module);
+    const modules = [...document.querySelectorAll('.status-badge[data-module]')]
+      .map(el => el.dataset.module)
+      .filter(name => action !== 'start' || !name.startsWith('_'));
     await Promise.all(modules.map(name =>
       fetch(`/api/modules/${name}/${action}/`, {
         method: 'POST',
