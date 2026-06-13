@@ -196,6 +196,34 @@ def get_module_stats(name: str) -> dict | None:
         return None
 
 
+def deactivate_module(name: str) -> tuple[bool, str]:
+    validate_name(name)
+    if name.startswith("_"):
+        return False, f"{name} is already deactivated"
+    config = _config_dir() / f"{name}.yaml"
+    if not config.exists():
+        return False, f"Config not found: {config}"
+    if get_module_status(name) == "running":
+        stop_module(name)
+    config.rename(_config_dir() / f"_{name}.yaml")
+    return True, f"Deactivated {name}"
+
+
+def activate_module(name: str) -> tuple[bool, str]:
+    validate_name(name)
+    if not name.startswith("_"):
+        return False, f"{name} is already active"
+    config = _config_dir() / f"{name}.yaml"
+    if not config.exists():
+        return False, f"Config not found: {config}"
+    new_name = name[1:]
+    new_config = _config_dir() / f"{new_name}.yaml"
+    if new_config.exists():
+        return False, f"Config already exists: {new_config}"
+    config.rename(new_config)
+    return True, f"Activated {new_name}"
+
+
 def restart_module(name: str) -> tuple[bool, str]:
     validate_name(name)
     stopped, msg = stop_module(name)

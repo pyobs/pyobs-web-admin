@@ -51,7 +51,7 @@
 <div class="row g-3" id="module-grid">
   {% for mod in modules %}
   <div class="col-sm-6 col-md-4 col-xl-3">
-    <div class="card h-100 border-secondary">
+    <div class="card h-100 border-secondary{% if mod|slice:':1' == '_' %} opacity-50{% endif %}">
       <div class="card-body d-flex flex-column gap-2">
         <div class="d-flex justify-content-between align-items-start">
           <h6 class="card-title mb-0 text-truncate me-2">{{ mod }}</h6>
@@ -72,6 +72,15 @@
           <button class="btn btn-sm btn-outline-danger" title="Stop" onclick="quickControl('{{ mod }}', 'stop', this)">
             <i class="bi bi-stop-fill"></i>
           </button>
+          {% if mod|slice:':1' == '_' %}
+          <button class="btn btn-sm btn-outline-success" title="Activate" onclick="toggleActive('{{ mod }}', 'activate', this)">
+            <i class="bi bi-eye"></i>
+          </button>
+          {% else %}
+          <button class="btn btn-sm btn-outline-secondary" title="Deactivate" onclick="toggleActive('{{ mod }}', 'deactivate', this)">
+            <i class="bi bi-eye-slash"></i>
+          </button>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -129,6 +138,19 @@ async function quickControl(name, action, btn) {
     await resp.json();
     await refreshAllStatuses();
   } finally {
+    btn.disabled = false;
+  }
+}
+
+async function toggleActive(name, action, btn) {
+  btn.disabled = true;
+  try {
+    await fetch(`/api/modules/${name}/${action}/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken()},
+    });
+    window.location.reload();
+  } catch (_) {
     btn.disabled = false;
   }
 }

@@ -106,6 +106,20 @@ def api_stop(request, name: str):
 
 
 @require_POST
+def api_deactivate(request, name: str):
+    _get_module_or_404(name)
+    success, output = services.deactivate_module(name)
+    return JsonResponse({"success": success, "output": output})
+
+
+@require_POST
+def api_activate(request, name: str):
+    _get_module_or_404(name)
+    success, output = services.activate_module(name)
+    return JsonResponse({"success": success, "output": output})
+
+
+@require_POST
 def api_restart(request, name: str):
     _get_module_or_404(name)
     success, output = services.restart_module(name)
