@@ -2,6 +2,15 @@
 
 {% block title %}{{ config_name }} — pyobs Web Admin{% endblock %}
 
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/lib/codemirror.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/theme/material-darker.min.css" rel="stylesheet">
+<style>
+  .CodeMirror { border: 1px solid #495057; border-radius: 0.375rem; font-size: 0.85rem; height: auto; min-height: 200px; }
+  .CodeMirror-scroll { min-height: 200px; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex align-items-center gap-2 mb-4">
   <h4 class="mb-0 me-1">{{ config_name }}</h4>
@@ -19,10 +28,7 @@
 </div>
 
 {% if config %}
-<textarea id="config-editor"
-          class="form-control font-monospace"
-          rows="30"
-          style="font-size: 0.85rem; resize: vertical;">{{ config }}</textarea>
+<textarea id="config-editor">{{ config }}</textarea>
 {% else %}
 <div class="alert alert-warning">No config file found.</div>
 {% endif %}
@@ -34,19 +40,28 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/lib/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/mode/yaml/yaml.min.js"></script>
 <script>
 const CONFIG_NAME = "{{ config_name }}";
 
+const configEditor = CodeMirror.fromTextArea(document.getElementById('config-editor'), {
+  mode: "yaml",
+  theme: "material-darker",
+  lineNumbers: true,
+  indentUnit: 2,
+  tabSize: 2,
+  lineWrapping: true,
+  extraKeys: {"Tab": "indentMore", "Shift-Tab": "indentLess"},
+});
+
 async function saveConfig() {
-  const content = document.getElementById('config-editor').value;
+  const content = configEditor.getValue();
   const status = document.getElementById('save-status');
   try {
     const resp = await fetch(`/api/shared/${CONFIG_NAME}/config/`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRFToken': getCsrfToken(),
-      },
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
       body: JSON.stringify({content}),
     });
     const data = await resp.json();
@@ -62,7 +77,7 @@ async function saveConfig() {
 async function reloadConfig() {
   const resp = await fetch(`/api/shared/${CONFIG_NAME}/config/`);
   const data = await resp.json();
-  document.getElementById('config-editor').value = data.content;
+  configEditor.setValue(data.content);
 }
 </script>
 {% endblock %}

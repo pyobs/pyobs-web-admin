@@ -2,6 +2,16 @@
 
 {% block title %}{{ module_name }} — pyobs Web Admin{% endblock %}
 
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/lib/codemirror.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/theme/material-darker.min.css" rel="stylesheet">
+<style>
+  .CodeMirror { border: 1px solid #495057; border-radius: 0.375rem; font-size: 0.85rem; height: auto; min-height: 400px; }
+  .CodeMirror-scroll { min-height: 400px; }
+  .cm-include-block { color: #74c7ec !important; font-weight: bold; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex align-items-center flex-wrap gap-2 mb-4 w-100">
   <h4 class="mb-0 me-1">{{ module_name }}</h4>
@@ -98,6 +108,7 @@ Loading…</pre>
   <!-- Config Tab -->
   <div class="tab-pane fade" id="tab-config">
     {% if config %}
+    <div id="config-includes" class="d-flex flex-wrap gap-2 align-items-center mb-2"></div>
     <div class="mb-2 d-flex gap-2 align-items-center">
       <button class="btn btn-primary" onclick="saveConfig()">
         <i class="bi bi-floppy me-1"></i>Save
@@ -107,10 +118,7 @@ Loading…</pre>
       </button>
       <span id="save-status" class="small"></span>
     </div>
-    <textarea id="config-editor"
-              class="form-control font-monospace"
-              rows="30"
-              style="font-size: 0.85rem; resize: vertical;">{{ config }}</textarea>
+    <textarea id="config-editor">{{ config }}</textarea>
     {% else %}
     <div class="alert alert-warning">No config file found for this module.</div>
     {% endif %}
@@ -120,6 +128,9 @@ Loading…</pre>
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/lib/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/mode/yaml/yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/addon/mode/overlay.min.js"></script>
 <script>
 const MODULE = "{{ module_name }}";
 
@@ -309,17 +320,57 @@ document.getElementById('log-output').addEventListener('click', function (e) {
   renderLogs();
 });
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── Config editor (CodeMirror) ────────────────────────────────────────────────
+let configEditor = null;
+
+function initConfigEditor() {
+  const ta = document.getElementById('config-editor');
+  if (!ta || configEditor) return;
+  CodeMirror.defineMode("pyobs-yaml", function(cfg) {
+    return CodeMirror.overlayMode(
+      CodeMirror.getMode(cfg, "yaml"),
+      { token: function(stream) {
+          if (stream.sol() && stream.match(/\{include [^}]+\}/)) return "include-block";
+          stream.skipToEnd();
+          return null;
+        }
+      }
+    );
+  });
+  configEditor = CodeMirror.fromTextArea(ta, {
+    mode: "pyobs-yaml",
+    theme: "material-darker",
+    lineNumbers: true,
+    indentUnit: 2,
+    tabSize: 2,
+    lineWrapping: true,
+    extraKeys: {"Tab": "indentMore", "Shift-Tab": "indentLess"},
+  });
+  configEditor.on("change", updateIncludesBar);
+  updateIncludesBar();
+  setTimeout(() => configEditor.refresh(), 0);
+}
+
+function updateIncludesBar() {
+  const bar = document.getElementById('config-includes');
+  if (!bar || !configEditor) return;
+  const matches = [...configEditor.getValue().matchAll(/^\{include ([^}]+)\}/gm)];
+  if (matches.length === 0) { bar.innerHTML = ''; return; }
+  bar.innerHTML = '<span class="text-muted small">Includes:</span>' +
+    matches.map(m => {
+      const filename = m[1];
+      const name = filename.replace(/\.yaml$/, '');
+      return `<a href="/shared/${name}/" class="badge bg-secondary text-light text-decoration-none">${name}</a>`;
+    }).join('');
+}
+
 async function saveConfig() {
-  const content = document.getElementById('config-editor').value;
+  const content = configEditor.getValue();
   const status = document.getElementById('save-status');
   try {
     const resp = await fetch(`/api/modules/${MODULE}/config/`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRFToken': getCsrfToken(),
-      },
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
       body: JSON.stringify({content}),
     });
     const data = await resp.json();
@@ -335,8 +386,14 @@ async function saveConfig() {
 async function reloadConfig() {
   const resp = await fetch(`/api/modules/${MODULE}/config/`);
   const data = await resp.json();
-  document.getElementById('config-editor').value = data.content;
+  configEditor.setValue(data.content);
 }
+
+// Init editor when config tab is first shown
+document.querySelector('[data-bs-target="#tab-config"]')
+  ?.addEventListener('shown.bs.tab', initConfigEditor, {once: true});
+// Also init immediately if config tab is the active hash on load
+if (location.hash === '#tab-config') initConfigEditor();
 
 // ── Tabs — persist active tab in URL hash ─────────────────────────────────────
 document.querySelectorAll('#detailTabs button[data-bs-target]').forEach(btn => {
