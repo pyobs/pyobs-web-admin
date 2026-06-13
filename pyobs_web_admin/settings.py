@@ -119,9 +119,11 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 # pyobs paths
-PYOBSD_COMMAND = "pyobsd"
+PYOBS_EXEC = "pyobs"
 PYOBS_CONFIG_DIR = "/opt/pyobs/config"
 PYOBS_LOG_DIR = "/opt/pyobs/log"
+PYOBS_RUN_DIR = "/opt/pyobs/run"
+PYOBS_LOG_LEVEL = "info"
 
 try:
     from pyobs_web_admin.local_settings import *  # noqa: F401,F403
