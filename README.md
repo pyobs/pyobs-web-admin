@@ -10,8 +10,9 @@ filter their logs, and view and edit their configuration files — all from a br
   - Running / stopped / total summary counts
   - Per-module status badge, uptime, CPU usage, and memory usage (RSS)
   - Warning/error log counts for the last 24 h (highlighted in colour if non-zero)
-  - Quick start, restart, and stop buttons per module
+  - Quick start, restart, stop, and activate/deactivate buttons per module
   - *Start All*, *Restart All*, and *Stop All* bulk actions (modules whose names start with `_` are excluded from start/restart)
+  - Inactive modules (prefixed with `_`) are dimmed and excluded from bulk start/restart
 - **Module detail** — per-module view with three tabs:
   - *Overview* — current status, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
@@ -166,6 +167,7 @@ PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 ## How modules are managed
 
 - **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
+- **Activate / Deactivate** — deactivating a module renames its config from `name.yaml` to `_name.yaml` (stopping it first if running); activating renames it back. Deactivated modules are excluded from *Start All* and *Restart All*.
 - **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`.
 - **Stop** — sends `SIGTERM` to the PID in the PID file; falls back to `SIGKILL` after 5 s.
 - **Restart** — stop followed by start.
