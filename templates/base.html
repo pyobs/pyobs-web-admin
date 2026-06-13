@@ -142,7 +142,7 @@
         <button type="submit"
                 class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 w-100 border-0 bg-transparent text-start">
           <i class="bi bi-box-arrow-left" style="font-size:0.8rem"></i>
-          <span>{{ request.user.username }}</span>
+          <span>{{ request.session.username }}</span>
           <span class="ms-auto text-muted small">sign out</span>
         </button>
       </form>
