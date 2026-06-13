@@ -8,11 +8,11 @@ filter their logs, and view and edit their configuration files — all from a br
 
 - **Dashboard** — overview of all modules with:
   - Running / stopped / total summary counts
-  - Per-module status badge, CPU usage, and memory usage (RSS)
+  - Per-module status badge, uptime, CPU usage, and memory usage (RSS)
   - Quick start, restart, and stop buttons per module
   - *Start All*, *Restart All*, and *Stop All* bulk actions (modules whose names start with `_` are excluded from start/restart)
 - **Module detail** — per-module view with three tabs:
-  - *Overview* — current status, CPU and memory usage, start/restart/stop control
+  - *Overview* — current status, uptime, CPU and memory usage, start/restart/stop control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
   - *Config* — view and edit the YAML configuration file in-browser
 - **Responsive** — works on mobile with a slide-in sidebar
@@ -168,7 +168,7 @@ PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 - **Stop** — sends `SIGTERM` to the PID in the PID file; falls back to `SIGKILL` after 5 s.
 - **Restart** — stop followed by start.
 - **Status** — checks whether the process with the stored PID is alive (`os.kill(pid, 0)`).
-- **Resource usage** — CPU % and RSS memory read via `psutil` on every status poll.
+- **Resource usage** — uptime, CPU %, and RSS memory read via `psutil` on every status poll.
 
 ---
 
