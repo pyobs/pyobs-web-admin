@@ -4,8 +4,6 @@ A web-based administration interface for [pyobs](https://github.com/pyobs/pyobs-
 the robotic telescope framework. It lets you start and stop modules, tail and filter
 their logs, and view and edit their configuration files — all from a browser.
 
-![Dashboard showing module status](https://placehold.co/800x400?text=pyobs+Web+Admin)
-
 ## Features
 
 - **Dashboard** — overview of all modules with status indicators and quick start/stop buttons
