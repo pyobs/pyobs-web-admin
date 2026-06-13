@@ -110,6 +110,16 @@ async function refreshSidebarStatus() {
 
 refreshSidebarStatus();
 setInterval(refreshSidebarStatus, 8000);
+
+// Preserve the active tab hash when navigating between modules
+document.querySelectorAll('.sidebar-link[href^="/modules/"]').forEach(link => {
+  link.addEventListener('click', function (e) {
+    if (location.hash) {
+      e.preventDefault();
+      window.location.href = this.getAttribute('href').split('#')[0] + location.hash;
+    }
+  });
+});
 </script>
 {% block scripts %}{% endblock %}
 </body>
