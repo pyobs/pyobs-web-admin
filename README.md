@@ -9,10 +9,11 @@ filter their logs, and view and edit their configuration files — all from a br
 - **Dashboard** — overview of all modules with:
   - Running / stopped / total summary counts
   - Per-module status badge, uptime, CPU usage, and memory usage (RSS)
+  - Warning/error log counts for the last 24 h (highlighted in colour if non-zero)
   - Quick start, restart, and stop buttons per module
   - *Start All*, *Restart All*, and *Stop All* bulk actions (modules whose names start with `_` are excluded from start/restart)
 - **Module detail** — per-module view with three tabs:
-  - *Overview* — current status, uptime, CPU and memory usage, start/restart/stop control
+  - *Overview* — current status, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
   - *Config* — view and edit the YAML configuration file in-browser
 - **Responsive** — works on mobile with a slide-in sidebar
