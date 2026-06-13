@@ -58,6 +58,7 @@
           <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
         </div>
         <div class="module-stats text-secondary small" data-module="{{ mod }}"></div>
+        <div class="module-log-stats d-flex gap-1 flex-wrap" data-module="{{ mod }}"></div>
         <div class="d-flex gap-2 mt-auto pt-2">
           <a href="{% url 'module_detail' mod %}" class="btn btn-sm btn-outline-primary flex-grow-1">
             <i class="bi bi-box-arrow-up-right"></i> Details
@@ -152,7 +153,31 @@ async function controlAll(action) {
   }
 }
 
+const LOG_LEVEL_COLORS = {WARNING: 'warning', ERROR: 'danger', CRITICAL: 'danger'};
+
+async function refreshLogStats() {
+  try {
+    const resp = await fetch("{% url 'api_all_log_stats' %}");
+    const data = await resp.json();
+    for (const [name, counts] of Object.entries(data.modules)) {
+      const el = document.querySelector(`.module-log-stats[data-module="${name}"]`);
+      if (!el) continue;
+      el.innerHTML = '';
+      for (const level of ['CRITICAL', 'ERROR', 'WARNING']) {
+        if (counts[level] > 0) {
+          const badge = document.createElement('span');
+          badge.className = `badge bg-${LOG_LEVEL_COLORS[level]} bg-opacity-75`;
+          badge.textContent = `${counts[level]} ${level}`;
+          el.appendChild(badge);
+        }
+      }
+    }
+  } catch (_) {}
+}
+
 refreshAllStatuses();
 setInterval(refreshAllStatuses, 10000);
+refreshLogStats();
+setInterval(refreshLogStats, 60000);
 </script>
 {% endblock %}

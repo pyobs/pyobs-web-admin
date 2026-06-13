@@ -111,6 +111,19 @@ def api_logs(request, name: str):
     return JsonResponse({"lines": log_lines})
 
 
+@require_GET
+def api_log_stats(request, name: str):
+    _get_module_or_404(name)
+    return JsonResponse({"stats": services.get_log_stats(name)})
+
+
+@require_GET
+def api_all_log_stats(request):
+    modules = services.list_modules()
+    result = {m: services.get_log_stats(m) for m in modules}
+    return JsonResponse({"modules": result})
+
+
 def api_config(request, name: str):
     _get_module_or_404(name)
     if request.method == "GET":

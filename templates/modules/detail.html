@@ -52,6 +52,17 @@
         <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
+        <tr><th class="text-muted fw-normal pe-4">Log messages</th>
+          <td>
+            <div class="d-flex gap-3 flex-wrap">
+              <span class="text-secondary small"><span id="logcount-DEBUG">—</span> DEBUG</span>
+              <span class="text-secondary small"><span id="logcount-INFO">—</span> INFO</span>
+              <span class="text-secondary small"><span id="logcount-WARNING" class="text-warning">—</span> WARNING</span>
+              <span class="text-secondary small"><span id="logcount-ERROR" class="text-danger">—</span> ERROR</span>
+              <span class="text-secondary small"><span id="logcount-CRITICAL" class="text-danger">—</span> CRITICAL</span>
+            </div>
+          </td>
+        </tr>
       </tbody>
     </table>
   </div>
@@ -338,8 +349,21 @@ const initialTab = location.hash && document.querySelector(`#detailTabs [data-bs
 if (initialTab) bootstrap.Tab.getOrCreateInstance(initialTab).show();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+async function refreshLogStats() {
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/log-stats/`);
+    const data = await resp.json();
+    for (const [level, count] of Object.entries(data.stats)) {
+      const el = document.getElementById(`logcount-${level}`);
+      if (el) el.textContent = count;
+    }
+  } catch (_) {}
+}
+
 updateStatus();
 setInterval(updateStatus, 10000);
+refreshLogStats();
+setInterval(refreshLogStats, 60000);
 
 // Start auto-refresh if enabled (default: on)
 if (autoRefreshEl.checked) logTimer = setInterval(fetchLogs, 3000);

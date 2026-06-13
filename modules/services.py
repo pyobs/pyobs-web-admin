@@ -3,7 +3,10 @@ import re
 import signal
 import subprocess
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
+
+_LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
 import psutil
 from django.conf import settings
@@ -198,6 +201,62 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
     return log_lines
+
+
+_TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+
+
+def get_log_stats(name: str) -> dict:
+    validate_name(name)
+    counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+    log_file = _log_dir() / f"{name}.log"
+    if not log_file.exists():
+        return counts
+
+    cutoff = datetime.now() - timedelta(hours=24)
+
+    def _line_ts(line: str) -> datetime | None:
+        m = _TS_RE.match(line)
+        if not m:
+            return None
+        try:
+            return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+    with open(log_file, "rb") as f:
+        f.seek(0, 2)
+        file_size = f.tell()
+        if file_size == 0:
+            return counts
+
+        # Binary search for the byte offset of the first line within the 24 h window.
+        lo, hi = 0, file_size
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            f.seek(mid)
+            f.readline()  # skip partial line at seek point
+            line = f.readline().decode("utf-8", errors="replace")
+            ts = _line_ts(line)
+            if ts is not None and ts < cutoff:
+                lo = mid
+            else:
+                hi = mid
+
+        # Read from the found offset and count matching lines.
+        f.seek(lo)
+        if lo > 0:
+            f.readline()  # skip partial line
+        for raw in f:
+            line = raw.decode("utf-8", errors="replace")
+            ts = _line_ts(line)
+            if ts is not None and ts < cutoff:
+                continue
+            m = _LOG_LEVEL_RE.search(line)
+            if m:
+                counts[m.group(1)] += 1
+
+    return counts
 
 
 def get_config(name: str) -> str | None:
