@@ -10,6 +10,7 @@ urlpatterns = [
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),
     path("api/modules/<str:name>/start/", views.api_start, name="api_start"),
     path("api/modules/<str:name>/stop/", views.api_stop, name="api_stop"),
+    path("api/modules/<str:name>/restart/", views.api_restart, name="api_restart"),
     path("api/modules/<str:name>/logs/", views.api_logs, name="api_logs"),
     path("api/modules/<str:name>/config/", views.api_config, name="api_config"),
 ]

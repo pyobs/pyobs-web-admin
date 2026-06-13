@@ -89,6 +89,13 @@ def api_stop(request, name: str):
     return JsonResponse({"success": success, "output": output})
 
 
+@require_POST
+def api_restart(request, name: str):
+    _get_module_or_404(name)
+    success, output = services.restart_module(name)
+    return JsonResponse({"success": success, "output": output})
+
+
 @require_GET
 def api_logs(request, name: str):
     _get_module_or_404(name)

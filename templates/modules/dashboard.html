@@ -9,6 +9,9 @@
     <button class="btn btn-sm btn-outline-success" id="btn-start-all" onclick="controlAll('start')">
       <i class="bi bi-play-fill"></i> Start All
     </button>
+    <button class="btn btn-sm btn-outline-warning" id="btn-restart-all" onclick="controlAll('restart')">
+      <i class="bi bi-arrow-repeat"></i> Restart All
+    </button>
     <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
       <i class="bi bi-stop-fill"></i> Stop All
     </button>
@@ -60,6 +63,9 @@
           </a>
           <button class="btn btn-sm btn-outline-success" title="Start" onclick="quickControl('{{ mod }}', 'start', this)">
             <i class="bi bi-play-fill"></i>
+          </button>
+          <button class="btn btn-sm btn-outline-warning" title="Restart" onclick="quickControl('{{ mod }}', 'restart', this)">
+            <i class="bi bi-arrow-repeat"></i>
           </button>
           <button class="btn btn-sm btn-outline-danger" title="Stop" onclick="quickControl('{{ mod }}', 'stop', this)">
             <i class="bi bi-stop-fill"></i>
@@ -113,13 +119,13 @@ async function quickControl(name, action, btn) {
 }
 
 async function controlAll(action) {
-  const btnId = action === 'start' ? 'btn-start-all' : 'btn-stop-all';
+  const btnId = `btn-${action}-all`;
   const btn = document.getElementById(btnId);
   btn.disabled = true;
   try {
     const modules = [...document.querySelectorAll('.status-badge[data-module]')]
       .map(el => el.dataset.module)
-      .filter(name => action !== 'start' || !name.startsWith('_'));
+      .filter(name => (action === 'stop') || !name.startsWith('_'));
     await Promise.all(modules.map(name =>
       fetch(`/api/modules/${name}/${action}/`, {
         method: 'POST',

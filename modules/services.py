@@ -158,6 +158,13 @@ def stop_module(name: str) -> tuple[bool, str]:
     return True, f"Force-killed {name} (did not exit after SIGTERM)"
 
 
+def restart_module(name: str) -> tuple[bool, str]:
+    validate_name(name)
+    stopped, msg = stop_module(name)
+    ok, start_msg = start_module(name)
+    return ok, start_msg
+
+
 def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
     validate_name(name)
     log_file = _log_dir() / f"{name}.log"

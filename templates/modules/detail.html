@@ -10,6 +10,9 @@
     <button id="start-btn" class="btn btn-success btn-sm" onclick="controlModule('start')" disabled>
       <i class="bi bi-play-fill me-1"></i>Start
     </button>
+    <button id="restart-btn" class="btn btn-warning btn-sm" onclick="controlModule('restart')" disabled>
+      <i class="bi bi-arrow-repeat me-1"></i>Restart
+    </button>
     <button id="stop-btn" class="btn btn-danger btn-sm" onclick="controlModule('stop')" disabled>
       <i class="bi bi-stop-fill me-1"></i>Stop
     </button>
@@ -117,6 +120,7 @@ async function updateStatus() {
   const running = data.status === 'running';
   const unknown = data.status === 'unknown';
   document.getElementById('start-btn').disabled = running || unknown;
+  document.getElementById('restart-btn').disabled = !running;
   document.getElementById('stop-btn').disabled = !running;
 }
 
@@ -126,7 +130,7 @@ async function controlModule(action) {
   btn.disabled = true;
   const out = document.getElementById('action-output');
   out.className = 'alert alert-secondary mb-3';
-  out.textContent = `${action === 'start' ? 'Starting' : 'Stopping'}…`;
+  out.textContent = `${{start: 'Starting', stop: 'Stopping', restart: 'Restarting'}[action] ?? action}…`;
   out.classList.remove('d-none');
 
   try {
