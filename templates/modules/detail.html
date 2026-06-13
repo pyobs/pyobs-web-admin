@@ -59,7 +59,7 @@
         <i class="bi bi-arrow-clockwise me-1"></i>Refresh
       </button>
       <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
-        <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch">
+        <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch" checked>
         <label class="form-check-label ms-2" for="auto-refresh">Auto-refresh</label>
       </div>
       <div class="form-check form-switch d-flex align-items-center mb-0">
@@ -143,13 +143,26 @@ async function controlModule(action) {
 // ── Logs ──────────────────────────────────────────────────────────────────────
 let logTimer = null;
 
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function colorLine(line) {
+  const e = escapeHtml(line);
+  const u = line.toUpperCase();
+  if (u.includes('CRITICAL') || u.includes('ERROR'))   return `<span style="color:#ff6b6b">${e}</span>`;
+  if (u.includes('WARNING'))                            return `<span style="color:#ffa94d">${e}</span>`;
+  if (u.includes('DEBUG'))                              return `<span style="color:#868e96">${e}</span>`;
+  return e;
+}
+
 async function fetchLogs() {
   const filter = encodeURIComponent(document.getElementById('log-filter').value);
   try {
     const resp = await fetch(`/api/modules/${MODULE}/logs/?lines=300&filter=${filter}`);
     const data = await resp.json();
     const pre = document.getElementById('log-output');
-    pre.textContent = data.lines.length ? data.lines.join('\n') : '(no log lines)';
+    pre.innerHTML = data.lines.length ? data.lines.map(colorLine).join('\n') : '(no log lines)';
     if (document.getElementById('auto-scroll').checked) {
       pre.scrollTop = pre.scrollHeight;
     }
@@ -194,9 +207,10 @@ async function reloadConfig() {
 updateStatus();
 setInterval(updateStatus, 10000);
 
-// Fetch logs when the logs tab is first opened
-document.querySelector('[data-bs-target="#tab-logs"]').addEventListener('shown.bs.tab', () => {
-  fetchLogs();
-});
+// Auto-refresh on by default
+logTimer = setInterval(fetchLogs, 3000);
+
+// Immediate fetch when logs tab is opened
+document.querySelector('[data-bs-target="#tab-logs"]').addEventListener('shown.bs.tab', fetchLogs);
 </script>
 {% endblock %}
