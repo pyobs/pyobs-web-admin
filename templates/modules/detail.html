@@ -59,11 +59,11 @@
         <i class="bi bi-arrow-clockwise me-1"></i>Refresh
       </button>
       <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
-        <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch" checked>
+        <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch">
         <label class="form-check-label ms-2" for="auto-refresh">Auto-refresh</label>
       </div>
       <div class="form-check form-switch d-flex align-items-center mb-0">
-        <input class="form-check-input" type="checkbox" id="auto-scroll" role="switch" checked>
+        <input class="form-check-input" type="checkbox" id="auto-scroll" role="switch">
         <label class="form-check-label ms-2" for="auto-scroll">Auto-scroll</label>
       </div>
     </div>
@@ -169,9 +169,20 @@ async function fetchLogs() {
   } catch (_) {}
 }
 
-document.getElementById('auto-refresh').addEventListener('change', function () {
+// Persist log settings in localStorage
+const autoRefreshEl = document.getElementById('auto-refresh');
+const autoScrollEl  = document.getElementById('auto-scroll');
+
+autoRefreshEl.checked = localStorage.getItem('log-auto-refresh') !== 'false';
+autoScrollEl.checked  = localStorage.getItem('log-auto-scroll')  !== 'false';
+
+autoRefreshEl.addEventListener('change', function () {
+  localStorage.setItem('log-auto-refresh', this.checked);
   clearInterval(logTimer);
   if (this.checked) logTimer = setInterval(fetchLogs, 3000);
+});
+autoScrollEl.addEventListener('change', function () {
+  localStorage.setItem('log-auto-scroll', this.checked);
 });
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -217,8 +228,8 @@ if (initialTab) bootstrap.Tab.getOrCreateInstance(initialTab).show();
 updateStatus();
 setInterval(updateStatus, 10000);
 
-// Auto-refresh on by default
-logTimer = setInterval(fetchLogs, 3000);
+// Start auto-refresh if enabled (default: on)
+if (autoRefreshEl.checked) logTimer = setInterval(fetchLogs, 3000);
 
 // Immediate fetch when logs tab is opened
 document.querySelector('[data-bs-target="#tab-logs"]').addEventListener('shown.bs.tab', fetchLogs);
