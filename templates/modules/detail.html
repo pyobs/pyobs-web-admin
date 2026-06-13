@@ -3,10 +3,10 @@
 {% block title %}{{ module_name }} — pyobs Web Admin{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-4 w-100">
-  <h4 class="mb-0 me-3">{{ module_name }}</h4>
-  <span id="status-badge" class="badge fs-6 bg-secondary">…</span>
-  <div class="d-flex gap-2 ms-auto">
+<div class="d-flex align-items-center flex-wrap gap-2 mb-4 w-100">
+  <h4 class="mb-0 me-1">{{ module_name }}</h4>
+  <span id="status-badge" class="badge fs-6 bg-secondary me-auto">…</span>
+  <div class="d-flex gap-2">
     <button id="start-btn" class="btn btn-success btn-sm" onclick="controlModule('start')" disabled>
       <i class="bi bi-play-fill me-1"></i>Start
     </button>
