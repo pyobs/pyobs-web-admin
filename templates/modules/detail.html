@@ -49,6 +49,8 @@
       <tbody>
         <tr><th class="text-muted fw-normal pe-4">Config</th><td class="font-monospace small">{{ config_dir }}/{{ module_name }}.yaml</td></tr>
         <tr><th class="text-muted fw-normal pe-4">Log</th><td class="font-monospace small">{{ log_dir }}/{{ module_name }}.log</td></tr>
+        <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
+        <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
       </tbody>
     </table>
   </div>
@@ -122,6 +124,17 @@ async function updateStatus() {
   document.getElementById('start-btn').disabled = running || unknown;
   document.getElementById('restart-btn').disabled = !running;
   document.getElementById('stop-btn').disabled = !running;
+  const memRow = document.getElementById('stat-memory-row');
+  const cpuRow = document.getElementById('stat-cpu-row');
+  if (data.stats) {
+    document.getElementById('stat-memory').textContent = `${data.stats.memory_mb} MB`;
+    document.getElementById('stat-cpu').textContent = `${data.stats.cpu_percent}%`;
+    memRow.classList.remove('d-none');
+    cpuRow.classList.remove('d-none');
+  } else {
+    memRow.classList.add('d-none');
+    cpuRow.classList.add('d-none');
+  }
 }
 
 // ── Start / Stop ──────────────────────────────────────────────────────────────

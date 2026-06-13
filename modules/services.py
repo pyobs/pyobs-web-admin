@@ -5,6 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import psutil
 from django.conf import settings
 
 
@@ -156,6 +157,27 @@ def stop_module(name: str) -> tuple[bool, str]:
         pass
     _pid_file(name).unlink(missing_ok=True)
     return True, f"Force-killed {name} (did not exit after SIGTERM)"
+
+
+_process_cache: dict[str, psutil.Process] = {}
+
+
+def get_module_stats(name: str) -> dict | None:
+    pid = _read_pid(name)
+    if pid is None or not _is_alive(pid):
+        _process_cache.pop(name, None)
+        return None
+    try:
+        proc = _process_cache.get(name)
+        if proc is None or proc.pid != pid:
+            proc = psutil.Process(pid)
+            _process_cache[name] = proc
+        cpu = proc.cpu_percent(interval=None)
+        mem = proc.memory_info().rss / 1024 / 1024
+        return {"cpu_percent": round(cpu, 1), "memory_mb": round(mem, 1)}
+    except psutil.NoSuchProcess:
+        _process_cache.pop(name, None)
+        return None
 
 
 def restart_module(name: str) -> tuple[bool, str]:

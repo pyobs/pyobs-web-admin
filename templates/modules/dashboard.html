@@ -57,6 +57,7 @@
           <h6 class="card-title mb-0 text-truncate me-2">{{ mod }}</h6>
           <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
         </div>
+        <div class="module-stats text-secondary small" data-module="{{ mod }}"></div>
         <div class="d-flex gap-2 mt-auto pt-2">
           <a href="{% url 'module_detail' mod %}" class="btn btn-sm btn-outline-primary flex-grow-1">
             <i class="bi bi-box-arrow-up-right"></i> Details
@@ -94,6 +95,12 @@ async function refreshAllStatuses() {
         badge.className = `badge rounded-pill status-badge ${m.status} bg-${cls}`;
         badge.textContent = m.status;
       });
+      const statsEl = document.querySelector(`.module-stats[data-module="${m.name}"]`);
+      if (statsEl) {
+        statsEl.textContent = m.stats
+          ? `${m.stats.memory_mb} MB · ${m.stats.cpu_percent}% CPU`
+          : '';
+      }
       if (m.status === 'running') running++;
       else if (!m.name.startsWith('_')) stopped++;
     });

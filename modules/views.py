@@ -65,14 +65,20 @@ def module_detail(request, name: str):
 @require_GET
 def api_all_statuses(request):
     modules = services.list_modules()
-    result = [{"name": m, "status": services.get_module_status(m)} for m in modules]
+    result = []
+    for m in modules:
+        status = services.get_module_status(m)
+        stats = services.get_module_stats(m) if status == "running" else None
+        result.append({"name": m, "status": status, "stats": stats})
     return JsonResponse({"modules": result})
 
 
 @require_GET
 def api_status(request, name: str):
     _get_module_or_404(name)
-    return JsonResponse({"status": services.get_module_status(name)})
+    status = services.get_module_status(name)
+    stats = services.get_module_stats(name) if status == "running" else None
+    return JsonResponse({"status": status, "stats": stats})
 
 
 @require_POST
