@@ -15,8 +15,8 @@ filter their logs, and view and edit their configuration files — all from a br
 - **Module detail** — per-module view with three tabs:
   - *Overview* — current status, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
-  - *Config* — view and edit the YAML configuration file in-browser
-- **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a config editor (no start/stop controls)
+  - *Config* — YAML editor with syntax highlighting and colour-coded `{include}` lines; included shared configs are shown as clickable links
+- **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
 - **Responsive** — works on mobile with a slide-in sidebar
 - **No pyobs-core dependency** — communicates with `pyobs` directly via subprocess; no Python imports from pyobs-core
 
@@ -26,7 +26,7 @@ filter their logs, and view and edit their configuration files — all from a br
 |---|---|
 | Backend | Python 3.13, Django 6, psutil |
 | WSGI server | Gunicorn |
-| Frontend | Bootstrap 5 (CDN), vanilla JS |
+| Frontend | Bootstrap 5 (CDN), CodeMirror 5 (CDN), vanilla JS |
 | Package manager | uv |
 | Auth | Single-user, password hash in `local_settings.py`, cookie sessions (no database) |
 
