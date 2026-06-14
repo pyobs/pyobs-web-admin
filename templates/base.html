@@ -142,10 +142,10 @@
       </div>
 
       {% for mod in sidebar_modules %}
-      <a href="{% url 'module_detail' mod %}"
-         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_module == mod %}active{% endif %}">
-        <span class="status-dot unknown" data-module="{{ mod }}"></span>
-        {{ mod }}
+      <a href="{% url 'module_detail' mod.name %}"
+         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_module == mod.name %}active{% endif %}">
+        <span class="status-dot {{ mod.status }}" data-module="{{ mod.name }}"></span>
+        {{ mod.name }}
       </a>
       {% empty %}
       <p class="text-muted px-2 py-2" style="font-size:0.8rem">No modules found in config dir.</p>
