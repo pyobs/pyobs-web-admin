@@ -1,6 +1,6 @@
 [project]
 name = "pyobs-web-admin"
-version = "0.1.0"
+version = "1.0.0"
 description = "Web-based administration interface for pyobs robotic telescope modules"
 authors = [
     { name = "Tim-Oliver Husser", email = "thusser@uni-goettingen.de" },
