@@ -27,3 +27,14 @@ PYOBS_LOG_LEVEL = "info"
 #     "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = ""
+
+# Hub: allow this instance to be controlled by a hub (leave empty to disable)
+HUB_TOKEN = ""
+
+# Hub: remote hosts this instance can control
+# Each entry must have: name (display label), url (base URL), token (shared secret)
+# HUB_HOSTS = [
+#     {"name": "obs1", "url": "http://obs1:8765", "token": "shared-secret"},
+#     {"name": "obs2", "url": "http://obs2:8765", "token": "another-secret"},
+# ]
+HUB_HOSTS = []

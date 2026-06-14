@@ -4,6 +4,7 @@ from modules import views
 
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
+    path("set-host/<str:name>/", views.set_host, name="set_host"),
     path("modules/<str:name>/", views.module_detail, name="module_detail"),
     path("shared/<str:name>/", views.shared_detail, name="shared_detail"),
     # API

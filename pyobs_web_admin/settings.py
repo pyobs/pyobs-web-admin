@@ -17,6 +17,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "modules.middleware.HubTokenMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "modules.middleware.LoginRequiredMiddleware",
@@ -55,6 +56,12 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 #   uv run python -c "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = ""
+
+# Hub: list of remote hosts this instance can control
+# Each entry: {"name": "obs1", "url": "http://obs1:8765", "token": "shared-secret"}
+HUB_HOSTS = []
+# Token to accept from a hub instance (allows hub to call this instance's API)
+HUB_TOKEN = ""
 
 # pyobs paths
 PYOBS_EXEC = "pyobs"
