@@ -1,10 +1,14 @@
 [project]
 name = "pyobs-web-admin"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "Web-based administration interface for pyobs robotic telescope modules"
+authors = [
+    { name = "Tim-Oliver Husser", email = "thusser@uni-goettingen.de" },
+]
 requires-python = ">=3.13"
 dependencies = [
     "django>=6.0.6",
     "gunicorn>=26.0.0",
     "psutil>=6.0",
+    "requests>=2.32",
 ]

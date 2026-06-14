@@ -106,7 +106,9 @@ async function refreshAllStatuses() {
     const resp = await fetch("{% url 'api_all_statuses' %}");
     const data = await resp.json();
     let running = 0, stopped = 0;
+    const statusMap = {};
     data.modules.forEach(m => {
+      statusMap[m.name] = m.status;
       document.querySelectorAll(`.status-badge[data-module="${m.name}"]`).forEach(badge => {
         const cls = STATUS_COLORS[m.status] || 'secondary';
         badge.className = `badge rounded-pill status-badge ${m.status} bg-${cls}`;
@@ -125,6 +127,20 @@ async function refreshAllStatuses() {
     const elStopped = document.getElementById('stat-stopped');
     if (elRunning) elRunning.textContent = running;
     if (elStopped) elStopped.textContent = stopped;
+
+    // Re-sort cards: running first, then stopped, each group alphabetically
+    const grid = document.getElementById('module-grid');
+    if (grid) {
+      [...grid.children]
+        .sort((a, b) => {
+          const na = a.querySelector('[data-module]')?.dataset.module ?? '';
+          const nb = b.querySelector('[data-module]')?.dataset.module ?? '';
+          const sa = statusMap[na] === 'running' ? 0 : 1;
+          const sb = statusMap[nb] === 'running' ? 0 : 1;
+          return sa !== sb ? sa - sb : na.localeCompare(nb);
+        })
+        .forEach(el => grid.appendChild(el));
+    }
   } catch (_) {}
 }
 

@@ -115,8 +115,23 @@
     </div>
 
     <div class="p-2 flex-grow-1 overflow-auto">
+
+      {% if hub_hosts|length > 1 %}
+      <div class="px-2 pb-1">
+        <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Hosts</span>
+      </div>
+      {% for host in hub_hosts %}
+      <a href="{% url 'set_host' host.name %}"
+         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_host == host.name %}active{% endif %}">
+        <i class="bi bi-hdd-network" style="font-size:0.8rem;flex-shrink:0"></i>
+        {{ host.name }}
+        {% if active_host == host.name %}<i class="bi bi-check ms-auto" style="font-size:0.8rem"></i>{% endif %}
+      </a>
+      {% endfor %}
+      {% endif %}
+
       <div class="px-2 py-2">
-        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module %}active{% endif %}">
+        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared %}active{% endif %}">
           <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
           Dashboard
         </a>
@@ -127,10 +142,10 @@
       </div>
 
       {% for mod in sidebar_modules %}
-      <a href="{% url 'module_detail' mod %}"
-         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_module == mod %}active{% endif %}">
-        <span class="status-dot unknown" data-module="{{ mod }}"></span>
-        {{ mod }}
+      <a href="{% url 'module_detail' mod.name %}"
+         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_module == mod.name %}active{% endif %}">
+        <span class="status-dot {{ mod.status }}" data-module="{{ mod.name }}"></span>
+        {{ mod.name }}
       </a>
       {% empty %}
       <p class="text-muted px-2 py-2" style="font-size:0.8rem">No modules found in config dir.</p>

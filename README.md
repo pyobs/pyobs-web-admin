@@ -18,6 +18,7 @@ filter their logs, and view and edit their configuration files — all from a br
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
   - *Config* — YAML editor with syntax highlighting and colour-coded `{include}` lines; included shared configs are shown as clickable links
 - **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
+- **Hub mode** — control multiple remote pyobs hosts from a single browser tab; remote hosts are listed in the sidebar and all actions are proxied transparently
 - **Responsive** — works on mobile with a slide-in sidebar
 - **No pyobs-core dependency** — communicates with `pyobs` directly via subprocess; no Python imports from pyobs-core
 
@@ -30,6 +31,7 @@ filter their logs, and view and edit their configuration files — all from a br
 | Frontend | Bootstrap 5 (CDN), CodeMirror 5 (CDN), vanilla JS |
 | Package manager | uv |
 | Auth | Single-user, password hash in `local_settings.py`, cookie sessions (no database) |
+| Hub auth | Pre-shared token in `X-Hub-Token` header; CSRF bypassed for hub requests |
 
 ---
 
@@ -160,7 +162,42 @@ PYOBS_CONFIG_DIR = "/opt/pyobs/config"      # directory containing *.yaml module
 PYOBS_LOG_DIR = "/opt/pyobs/log"            # directory containing *.log files
 PYOBS_RUN_DIR = "/opt/pyobs/run"            # directory for PID files
 PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
+
+# Hub (optional — see Hub mode section)
+HUB_TOKEN = ""                              # token to accept from a hub instance
+HUB_HOSTS = []                              # remote hosts this instance controls
 ```
+
+---
+
+## Hub mode
+
+pyobs-web-admin can act as a hub to control multiple remote pyobs hosts from a single
+browser session. When remote hosts are configured, a **Hosts** section appears at the
+top of the sidebar. Clicking a host switches the active context — all subsequent
+actions (start/stop/logs/config) are transparently proxied to that host's API.
+
+### Setting up the hub
+
+On the **hub** (the machine you browse to), add to `local_settings.py`:
+
+```python
+HUB_HOSTS = [
+    {"name": "obs1", "url": "http://obs1:8765", "token": "shared-secret"},
+    {"name": "obs2", "url": "http://obs2:8765", "token": "another-secret"},
+]
+```
+
+On each **remote host**, set the matching token so it accepts hub requests:
+
+```python
+HUB_TOKEN = "shared-secret"   # must match the token the hub sends
+```
+
+The hub authenticates to remote instances via an `X-Hub-Token` header. Remote
+instances that receive a valid token bypass the normal browser session/CSRF check,
+so they can be called from the hub without a login session. The token is a
+plain pre-shared string — use a long random value and keep it secret.
 
 ---
 
@@ -187,7 +224,8 @@ pyobs_web_admin/
 modules/
   services.py               All pyobs process and filesystem logic
   views.py                  HTML pages + JSON API endpoints
-  middleware.py             Login-required redirect
+  proxy.py                  HTTP client for hub → remote host calls
+  middleware.py             Login-required redirect + hub token auth
   context_processors.py
 deploy/
   pyobs-web-admin.service   systemd unit file
