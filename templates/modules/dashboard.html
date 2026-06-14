@@ -131,15 +131,29 @@ async function refreshAllStatuses() {
     // Re-sort cards: running first, then stopped, each group alphabetically
     const grid = document.getElementById('module-grid');
     if (grid) {
-      [...grid.children]
+      const sorted = [...grid.children]
+        .filter(el => el.dataset.groupDivider !== 'true')
         .sort((a, b) => {
           const na = a.querySelector('[data-module]')?.dataset.module ?? '';
           const nb = b.querySelector('[data-module]')?.dataset.module ?? '';
           const sa = statusMap[na] === 'running' ? 0 : 1;
           const sb = statusMap[nb] === 'running' ? 0 : 1;
           return sa !== sb ? sa - sb : na.localeCompare(nb);
-        })
-        .forEach(el => grid.appendChild(el));
+        });
+
+      grid.innerHTML = '';
+      let dividerInserted = false;
+      sorted.forEach(el => {
+        const name = el.querySelector('[data-module]')?.dataset.module ?? '';
+        if (!dividerInserted && statusMap[name] !== 'running') {
+          const sep = document.createElement('div');
+          sep.className = 'col-12 mt-2';
+          sep.dataset.groupDivider = 'true';
+          grid.appendChild(sep);
+          dividerInserted = true;
+        }
+        grid.appendChild(el);
+      });
     }
   } catch (_) {}
 }
