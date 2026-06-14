@@ -3,7 +3,7 @@ name = "pyobs-web-admin"
 version = "0.1.0"
 description = "Web-based administration interface for pyobs robotic telescope modules"
 authors = [
-    { name = "Timo Oliver Husser", email = "timoliver.husser@gmail.com" },
+    { name = "Tim-Oliver Husser", email = "thusser@uni-goettingen.de" },
 ]
 requires-python = ">=3.13"
 dependencies = [
