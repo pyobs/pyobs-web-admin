@@ -38,7 +38,7 @@ filter their logs, and view and edit their configuration files — all from a br
 ## Development setup
 
 ```bash
-git clone git@github.com:pyobs/pyobs-web-admin.git
+git clone https://github.com/pyobs/pyobs-web-admin.git
 cd pyobs-web-admin
 uv sync
 uv run python manage.py runserver
@@ -54,7 +54,7 @@ Create `pyobs_web_admin/local_settings.py` (see [Configuration](#configuration) 
 
 ```bash
 cd /opt/pyobs
-git clone git@github.com:pyobs/pyobs-web-admin.git
+git clone https://github.com/pyobs/pyobs-web-admin.git
 cd pyobs-web-admin
 uv sync
 ```
