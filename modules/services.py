@@ -42,6 +42,16 @@ def validate_shared_name(name: str) -> None:
         raise ValueError(f"Invalid shared config name: {name!r}")
 
 
+def _active_name(name: str) -> str:
+    """Strip a leading underscore, which marks a module as disabled.
+
+    PID and log files are named after the "active" form of a module, so that
+    toggling a module between enabled/disabled (by adding/removing the leading
+    underscore on its config file) does not change its PID/log file names.
+    """
+    return name[1:] if name.startswith("_") else name
+
+
 def list_shared_configs() -> list[str]:
     d = _config_dir()
     if not d.exists():
@@ -60,7 +70,7 @@ def list_modules() -> list[str]:
 # ── PID helpers ───────────────────────────────────────────────────────────────
 
 def _pid_file(name: str) -> Path:
-    return _run_dir() / f"{name}.pid"
+    return _run_dir() / f"{_active_name(name)}.pid"
 
 
 def _read_pid(name: str) -> int | None:
@@ -107,7 +117,7 @@ def start_module(name: str) -> tuple[bool, str]:
         return False, f"Config file not found: {config_file}"
 
     pid_file = _pid_file(name)
-    log_file = _log_dir() / f"{name}.log"
+    log_file = _log_dir() / f"{_active_name(name)}.log"
 
     _run_dir().mkdir(parents=True, exist_ok=True)
     _log_dir().mkdir(parents=True, exist_ok=True)
@@ -233,7 +243,7 @@ def restart_module(name: str) -> tuple[bool, str]:
 
 def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
     validate_name(name)
-    log_file = _log_dir() / f"{name}.log"
+    log_file = _log_dir() / f"{_active_name(name)}.log"
     if not log_file.exists():
         return []
     result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
@@ -249,7 +259,7 @@ _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 def get_log_stats(name: str) -> dict:
     validate_name(name)
     counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
-    log_file = _log_dir() / f"{name}.log"
+    log_file = _log_dir() / f"{_active_name(name)}.log"
     if not log_file.exists():
         return counts
 
