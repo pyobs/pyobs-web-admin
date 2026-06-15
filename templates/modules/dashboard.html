@@ -28,22 +28,34 @@
 </div>
 {% else %}
 <div class="row g-3 mb-4">
-  <div class="col-4">
+  <div class="col">
     <div class="card border-secondary text-center py-2">
       <div class="fs-3 fw-bold" id="stat-total">{{ modules|length }}</div>
       <div class="text-secondary small">Total</div>
     </div>
   </div>
-  <div class="col-4">
+  <div class="col">
     <div class="card border-success text-center py-2">
       <div class="fs-3 fw-bold text-success" id="stat-running">—</div>
       <div class="text-secondary small">Running</div>
     </div>
   </div>
-  <div class="col-4">
+  <div class="col">
     <div class="card border-danger text-center py-2">
       <div class="fs-3 fw-bold text-danger" id="stat-stopped">—</div>
       <div class="text-secondary small">Stopped</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card border-info text-center py-2">
+      <div class="fs-3 fw-bold text-info" id="stat-ram">—</div>
+      <div class="text-secondary small">RAM</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card border-warning text-center py-2">
+      <div class="fs-3 fw-bold text-warning" id="stat-cpu">—</div>
+      <div class="text-secondary small">CPU</div>
     </div>
   </div>
 </div>
@@ -101,11 +113,16 @@ function fmtUptime(s) {
   return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
 }
 
+function fmtRam(mb) {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb} MB`;
+}
+
 async function refreshAllStatuses() {
   try {
     const resp = await fetch("{% url 'api_all_statuses' %}");
     const data = await resp.json();
-    let running = 0, stopped = 0;
+    let running = 0, stopped = 0, totalRamMb = 0, totalCpu = 0;
     const statusMap = {};
     data.modules.forEach(m => {
       statusMap[m.name] = m.status;
@@ -120,13 +137,19 @@ async function refreshAllStatuses() {
           ? `${m.stats.memory_mb} MB · ${m.stats.cpu_percent}% CPU · ${fmtUptime(m.stats.uptime_seconds)}`
           : '';
       }
-      if (m.status === 'running') running++;
-      else if (!m.name.startsWith('_')) stopped++;
+      if (m.status === 'running') {
+        running++;
+        if (m.stats) { totalRamMb += m.stats.memory_mb; totalCpu += m.stats.cpu_percent; }
+      } else if (!m.name.startsWith('_')) stopped++;
     });
     const elRunning = document.getElementById('stat-running');
     const elStopped = document.getElementById('stat-stopped');
+    const elRam = document.getElementById('stat-ram');
+    const elCpu = document.getElementById('stat-cpu');
     if (elRunning) elRunning.textContent = running;
     if (elStopped) elStopped.textContent = stopped;
+    if (elRam) elRam.textContent = running > 0 ? fmtRam(totalRamMb) : '—';
+    if (elCpu) elCpu.textContent = running > 0 ? `${totalCpu.toFixed(1)}%` : '—';
 
     // Re-sort cards: running first, then stopped, each group alphabetically
     const grid = document.getElementById('module-grid');
