@@ -7,16 +7,16 @@
   <h4 class="mb-0">Dashboard</h4>
   <div class="d-flex gap-2">
     <button class="btn btn-sm btn-outline-success" id="btn-start-all" onclick="controlAll('start')">
-      <i class="bi bi-play-fill"></i> Start All
+      <i class="bi bi-play-fill"></i><span class="d-none d-md-inline"> Start All</span>
     </button>
     <button class="btn btn-sm btn-outline-warning" id="btn-restart-all" onclick="controlAll('restart')">
-      <i class="bi bi-arrow-repeat"></i> Restart All
+      <i class="bi bi-arrow-repeat"></i><span class="d-none d-md-inline"> Restart All</span>
     </button>
     <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
-      <i class="bi bi-stop-fill"></i> Stop All
+      <i class="bi bi-stop-fill"></i><span class="d-none d-md-inline"> Stop All</span>
     </button>
     <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
+      <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
     </button>
   </div>
 </div>
@@ -27,7 +27,7 @@
   and contains <code>.yaml</code> files.
 </div>
 {% else %}
-<div class="row g-3 mb-4">
+<div class="row g-1 g-md-3 mb-4">
   <div class="col">
     <div class="card border-secondary text-center py-2">
       <div class="fs-3 fw-bold" id="stat-total">{{ modules|length }}</div>
@@ -125,6 +125,7 @@
 @media (max-width: 767.98px) {
   .status-badge { width: .65rem; height: .65rem; padding: 0; font-size: 0; vertical-align: middle; }
   .module-thead { display: none; }
+  #stat-total, #stat-running, #stat-stopped, #stat-ram, #stat-cpu { font-size: 1.1rem !important; }
 }
 </style>
 <script>
@@ -250,7 +251,7 @@ async function refreshAllStatuses() {
     const elCpu = document.getElementById('stat-cpu');
     if (elRunning) elRunning.textContent = running;
     if (elStopped) elStopped.textContent = stopped;
-    if (elRam) elRam.textContent = running > 0 ? fmtRam(totalRamMb) : '—';
+    if (elRam) elRam.textContent = running > 0 ? `${(totalRamMb / 1024).toFixed(1)} GB` : '—';
     if (elCpu) elCpu.textContent = running > 0 ? `${totalCpu.toFixed(1)}%` : '—';
 
     sortAndRender();
