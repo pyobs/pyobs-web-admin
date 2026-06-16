@@ -7,16 +7,16 @@
   <h4 class="mb-0">Dashboard</h4>
   <div class="d-flex gap-2">
     <button class="btn btn-sm btn-outline-success" id="btn-start-all" onclick="controlAll('start')">
-      <i class="bi bi-play-fill"></i> Start All
+      <i class="bi bi-play-fill"></i><span class="d-none d-md-inline"> Start All</span>
     </button>
     <button class="btn btn-sm btn-outline-warning" id="btn-restart-all" onclick="controlAll('restart')">
-      <i class="bi bi-arrow-repeat"></i> Restart All
+      <i class="bi bi-arrow-repeat"></i><span class="d-none d-md-inline"> Restart All</span>
     </button>
     <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
-      <i class="bi bi-stop-fill"></i> Stop All
+      <i class="bi bi-stop-fill"></i><span class="d-none d-md-inline"> Stop All</span>
     </button>
     <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
+      <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
     </button>
   </div>
 </div>
@@ -27,7 +27,7 @@
   and contains <code>.yaml</code> files.
 </div>
 {% else %}
-<div class="row g-3 mb-4">
+<div class="row g-1 g-md-3 mb-4">
   <div class="col">
     <div class="card border-secondary text-center py-2">
       <div class="fs-3 fw-bold" id="stat-total">{{ modules|length }}</div>
@@ -60,49 +60,74 @@
   </div>
 </div>
 
-<div class="row g-3" id="module-grid">
+<table class="table table-hover align-middle mb-0" id="module-grid">
+  <colgroup>
+    <col style="width:1%">       <!-- status -->
+    <col>                        <!-- name -->
+    <col style="width:7em">      <!-- ram -->
+    <col style="width:7em">      <!-- cpu -->
+    <col style="width:7em">      <!-- uptime -->
+    <col>                        <!-- log stats -->
+    <col>                        <!-- actions -->
+  </colgroup>
+  <thead class="module-thead">
+    <tr>
+      <th class="text-center"><i class="bi bi-arrow-counterclockwise text-muted" onclick="resetSort()" style="cursor:pointer" title="Reset sort"></i></th>
+      <th class="sort-col" data-col="name" onclick="setSort('name')" style="cursor:pointer;user-select:none">Name <i class="bi ms-1"></i></th>
+      <th class="sort-col d-none d-md-table-cell" data-col="ram" onclick="setSort('ram')" style="cursor:pointer;user-select:none">RAM <i class="bi ms-1"></i></th>
+      <th class="sort-col d-none d-md-table-cell" data-col="cpu" onclick="setSort('cpu')" style="cursor:pointer;user-select:none">CPU <i class="bi ms-1"></i></th>
+      <th class="sort-col d-none d-md-table-cell" data-col="uptime" onclick="setSort('uptime')" style="cursor:pointer;user-select:none">Uptime <i class="bi ms-1"></i></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
   {% for mod in modules %}
-  <div class="col-sm-6 col-md-4 col-xl-3">
-    <div class="card h-100 border-secondary{% if mod|slice:':1' == '_' %} opacity-50{% endif %}">
-      <div class="card-body d-flex flex-column gap-2">
-        <div class="d-flex justify-content-between align-items-start">
-          <h6 class="card-title mb-0 text-truncate me-2">{{ mod }}</h6>
-          <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
-        </div>
-        <div class="module-stats text-secondary small" data-module="{{ mod }}"></div>
-        <div class="module-log-stats d-flex gap-1 flex-wrap" data-module="{{ mod }}"></div>
-        <div class="d-flex gap-2 mt-auto pt-2">
-          <a href="{% url 'module_detail' mod %}" class="btn btn-sm btn-outline-primary flex-grow-1">
-            <i class="bi bi-box-arrow-up-right"></i> Details
-          </a>
-          <button class="btn btn-sm btn-outline-success" title="Start" onclick="quickControl('{{ mod }}', 'start', this)">
-            <i class="bi bi-play-fill"></i>
-          </button>
-          <button class="btn btn-sm btn-outline-warning" title="Restart" onclick="quickControl('{{ mod }}', 'restart', this)">
-            <i class="bi bi-arrow-repeat"></i>
-          </button>
-          <button class="btn btn-sm btn-outline-danger" title="Stop" onclick="quickControl('{{ mod }}', 'stop', this)">
-            <i class="bi bi-stop-fill"></i>
-          </button>
-          {% if mod|slice:':1' == '_' %}
-          <button class="btn btn-sm btn-outline-success" title="Activate" onclick="toggleActive('{{ mod }}', 'activate', this)">
-            <i class="bi bi-eye"></i>
-          </button>
-          {% else %}
-          <button class="btn btn-sm btn-outline-secondary" title="Deactivate" onclick="toggleActive('{{ mod }}', 'deactivate', this)">
-            <i class="bi bi-eye-slash"></i>
-          </button>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-  </div>
+  <tr data-module-row="{{ mod }}">
+    <td class="text-nowrap" style="width:1%"><span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span></td>
+    <td class="fw-semibold">{{ mod }}</td>
+    <td class="text-secondary small text-nowrap module-ram d-none d-md-table-cell" data-module="{{ mod }}"></td>
+    <td class="text-secondary small text-nowrap module-cpu d-none d-md-table-cell" data-module="{{ mod }}"></td>
+    <td class="text-secondary small text-nowrap module-uptime d-none d-md-table-cell" data-module="{{ mod }}"></td>
+    <td><div class="module-log-stats d-flex gap-1 flex-wrap" data-module="{{ mod }}"></div></td>
+    <td class="text-end text-nowrap">
+      <a href="{% url 'module_detail' mod %}" class="btn btn-sm btn-outline-primary me-1">
+        <i class="bi bi-box-arrow-up-right"></i> Details
+      </a>
+      <button class="btn btn-sm btn-outline-success" title="Start" data-action="start" onclick="quickControl('{{ mod }}', 'start', this)">
+        <i class="bi bi-play-fill"></i>
+      </button>
+      <button class="btn btn-sm btn-outline-warning" title="Restart" data-action="restart" onclick="quickControl('{{ mod }}', 'restart', this)">
+        <i class="bi bi-arrow-repeat"></i>
+      </button>
+      <button class="btn btn-sm btn-outline-danger" title="Stop" data-action="stop" onclick="quickControl('{{ mod }}', 'stop', this)">
+        <i class="bi bi-stop-fill"></i>
+      </button>
+      {% if mod|slice:':1' == '_' %}
+      <button class="btn btn-sm btn-outline-success ms-1" title="Activate" onclick="toggleActive('{{ mod }}', 'activate', this)">
+        <i class="bi bi-eye"></i>
+      </button>
+      {% else %}
+      <button class="btn btn-sm btn-outline-secondary ms-1" title="Deactivate" onclick="toggleActive('{{ mod }}', 'deactivate', this)">
+        <i class="bi bi-eye-slash"></i>
+      </button>
+      {% endif %}
+    </td>
+  </tr>
   {% endfor %}
-</div>
+  </tbody>
+</table>
 {% endif %}
 {% endblock %}
 
 {% block scripts %}
+<style>
+@media (max-width: 767.98px) {
+  .status-badge { width: .65rem; height: .65rem; padding: 0; font-size: 0; vertical-align: middle; }
+  .module-thead { display: none; }
+  #stat-total, #stat-running, #stat-stopped, #stat-ram, #stat-cpu { font-size: 1.1rem !important; }
+}
+</style>
 <script>
 const STATUS_COLORS = {running: 'success', stopped: 'danger', unknown: 'secondary'};
 
@@ -115,7 +140,74 @@ function fmtUptime(s) {
 
 function fmtRam(mb) {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
+let sortCol = 'status', sortDir = 1;
+
+function setSort(col) {
+  if (sortCol === col) { sortDir = -sortDir; } else { sortCol = col; sortDir = 1; }
+  updateSortHeaders();
+  sortAndRender();
+}
+
+function resetSort() {
+  sortCol = 'status';
+  sortDir = 1;
+  updateSortHeaders();
+  sortAndRender();
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll('th.sort-col').forEach(th => {
+    const icon = th.querySelector('i');
+    if (th.dataset.col === sortCol) {
+      icon.className = `bi bi-arrow-${sortDir === 1 ? 'up' : 'down'} ms-1`;
+      th.classList.add('text-primary');
+    } else {
+      icon.className = 'bi bi-arrow-down-up ms-1 text-muted opacity-50';
+      th.classList.remove('text-primary');
+    }
+  });
+}
+
+function sortAndRender() {
+  const grid = document.getElementById('module-grid');
+  if (!grid) return;
+  const tbody = grid.tBodies[0];
+  const rows = [...tbody.querySelectorAll('tr[data-module-row]')];
+  rows.sort((a, b) => {
+    let va, vb;
+    if (sortCol === 'name') {
+      return sortDir * (a.dataset.moduleRow ?? '').localeCompare(b.dataset.moduleRow ?? '');
+    }
+    const key = {status: 'sortStatus', ram: 'sortRam', cpu: 'sortCpu', uptime: 'sortUptime'}[sortCol];
+    va = parseFloat(a.dataset[key] ?? (sortCol === 'status' ? 1 : -1));
+    vb = parseFloat(b.dataset[key] ?? (sortCol === 'status' ? 1 : -1));
+    if (sortCol !== 'status') {
+      if (va < 0 && vb < 0) return 0;
+      if (va < 0) return 1;
+      if (vb < 0) return -1;
+    }
+    return sortDir * (va - vb);
+  });
+  tbody.innerHTML = '';
+  if (sortCol === 'status') {
+    const GROUP_LABELS = {0: 'Running', 1: 'Stopped', 2: 'Deactivated'};
+    let currentGroup = -1;
+    rows.forEach(row => {
+      const g = parseInt(row.dataset.sortStatus ?? 1);
+      if (g !== currentGroup) {
+        currentGroup = g;
+        const hdr = document.createElement('tr');
+        hdr.innerHTML = `<td colspan="7" class="text-uppercase text-secondary small fw-semibold pt-3 pb-1 border-0 ps-0">${GROUP_LABELS[g]}</td>`;
+        tbody.appendChild(hdr);
+      }
+      tbody.appendChild(row);
+    });
+  } else {
+    rows.forEach(row => tbody.appendChild(row));
+  }
 }
 
 async function refreshAllStatuses() {
@@ -131,16 +223,27 @@ async function refreshAllStatuses() {
         badge.className = `badge rounded-pill status-badge ${m.status} bg-${cls}`;
         badge.textContent = m.status;
       });
-      const statsEl = document.querySelector(`.module-stats[data-module="${m.name}"]`);
-      if (statsEl) {
-        statsEl.textContent = m.stats
-          ? `${m.stats.memory_mb} MB · ${m.stats.cpu_percent}% CPU · ${fmtUptime(m.stats.uptime_seconds)}`
-          : '';
-      }
+      const ramEl = document.querySelector(`.module-ram[data-module="${m.name}"]`);
+      const cpuEl = document.querySelector(`.module-cpu[data-module="${m.name}"]`);
+      const uptimeEl = document.querySelector(`.module-uptime[data-module="${m.name}"]`);
+      if (ramEl) ramEl.textContent = m.stats ? fmtRam(m.stats.memory_mb) : '';
+      if (cpuEl) cpuEl.textContent = m.stats ? `${m.stats.cpu_percent.toFixed(1)}%` : '';
+      if (uptimeEl) uptimeEl.textContent = m.stats ? fmtUptime(m.stats.uptime_seconds) : '';
       if (m.status === 'running') {
         running++;
         if (m.stats) { totalRamMb += m.stats.memory_mb; totalCpu += m.stats.cpu_percent; }
       } else if (!m.name.startsWith('_')) stopped++;
+      const row = document.querySelector(`tr[data-module-row="${m.name}"]`);
+      if (row) {
+        row.dataset.sortStatus = m.status === 'running' ? 0 : m.name.startsWith('_') ? 2 : 1;
+        row.dataset.sortRam = m.stats ? m.stats.memory_mb : -1;
+        row.dataset.sortCpu = m.stats ? m.stats.cpu_percent : -1;
+        row.dataset.sortUptime = m.stats ? m.stats.uptime_seconds : -1;
+        const isRunning = m.status === 'running';
+        row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning);
+        row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning);
+        row.querySelector('[data-action="stop"]')?.toggleAttribute('disabled', !isRunning);
+      }
     });
     const elRunning = document.getElementById('stat-running');
     const elStopped = document.getElementById('stat-stopped');
@@ -148,36 +251,10 @@ async function refreshAllStatuses() {
     const elCpu = document.getElementById('stat-cpu');
     if (elRunning) elRunning.textContent = running;
     if (elStopped) elStopped.textContent = stopped;
-    if (elRam) elRam.textContent = running > 0 ? fmtRam(totalRamMb) : '—';
+    if (elRam) elRam.textContent = running > 0 ? `${(totalRamMb / 1024).toFixed(1)} GB` : '—';
     if (elCpu) elCpu.textContent = running > 0 ? `${totalCpu.toFixed(1)}%` : '—';
 
-    // Re-sort cards: running first, then stopped, each group alphabetically
-    const grid = document.getElementById('module-grid');
-    if (grid) {
-      const sorted = [...grid.children]
-        .filter(el => el.dataset.groupDivider !== 'true')
-        .sort((a, b) => {
-          const na = a.querySelector('[data-module]')?.dataset.module ?? '';
-          const nb = b.querySelector('[data-module]')?.dataset.module ?? '';
-          const sa = statusMap[na] === 'running' ? 0 : 1;
-          const sb = statusMap[nb] === 'running' ? 0 : 1;
-          return sa !== sb ? sa - sb : na.localeCompare(nb);
-        });
-
-      grid.innerHTML = '';
-      let dividerInserted = false;
-      sorted.forEach(el => {
-        const name = el.querySelector('[data-module]')?.dataset.module ?? '';
-        if (!dividerInserted && statusMap[name] !== 'running') {
-          const sep = document.createElement('div');
-          sep.className = 'col-12 mt-2';
-          sep.dataset.groupDivider = 'true';
-          grid.appendChild(sep);
-          dividerInserted = true;
-        }
-        grid.appendChild(el);
-      });
-    }
+    sortAndRender();
   } catch (_) {}
 }
 
@@ -250,6 +327,7 @@ async function refreshLogStats() {
   } catch (_) {}
 }
 
+updateSortHeaders();
 refreshAllStatuses();
 setInterval(refreshAllStatuses, 10000);
 refreshLogStats();

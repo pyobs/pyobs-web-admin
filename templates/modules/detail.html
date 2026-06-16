@@ -172,8 +172,8 @@ async function updateStatus() {
     document.getElementById('stat-pid').textContent = data.stats.pid;
     pidRow.classList.remove('d-none');
     document.getElementById('stat-uptime').textContent = fmtUptime(data.stats.uptime_seconds);
-    document.getElementById('stat-memory').textContent = `${data.stats.memory_mb} MB`;
-    document.getElementById('stat-cpu').textContent = `${data.stats.cpu_percent}%`;
+    document.getElementById('stat-memory').textContent = `${data.stats.memory_mb.toFixed(1)} MB`;
+    document.getElementById('stat-cpu').textContent = `${data.stats.cpu_percent.toFixed(1)}%`;
     uptimeRow.classList.remove('d-none');
     memRow.classList.remove('d-none');
     cpuRow.classList.remove('d-none');

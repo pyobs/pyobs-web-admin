@@ -6,13 +6,15 @@ filter their logs, and view and edit their configuration files — all from a br
 
 ## Features
 
-- **Dashboard** — overview of all modules with:
-  - Running / stopped / total summary counts
-  - Per-module status badge, uptime, CPU usage, and memory usage (RSS)
+- **Dashboard** — sortable list view of all modules with:
+  - Running / stopped / total summary counts plus total CPU and RAM
+  - Per-module status badge, RAM, CPU, and uptime columns — click any header to sort, reset icon restores default grouping
+  - Modules grouped under *Running / Stopped / Deactivated* headers when sorted by status
   - Warning/error log counts for the last 24 h (highlighted in colour if non-zero)
   - Quick start, restart, stop, and activate/deactivate buttons per module
   - *Start All*, *Restart All*, and *Stop All* bulk actions
-  - Inactive modules (prefixed with `_`) are dimmed and excluded from bulk start/restart
+  - Inactive modules (prefixed with `_`) are excluded from bulk start/restart
+  - Responsive: on small screens the table collapses to status dot + name + log counts + actions
 - **Module detail** — per-module view with three tabs:
   - *Overview* — current status, PID, uptime, CPU and memory usage, per-level log message counts (last 24 h), start/restart/stop/activate/deactivate control
   - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
