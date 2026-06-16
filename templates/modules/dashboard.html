@@ -139,7 +139,7 @@ function fmtUptime(s) {
 
 function fmtRam(mb) {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
+  return `${mb.toFixed(1)} MB`;
 }
 
 let sortCol = 'status', sortDir = 1;
@@ -226,7 +226,7 @@ async function refreshAllStatuses() {
       const cpuEl = document.querySelector(`.module-cpu[data-module="${m.name}"]`);
       const uptimeEl = document.querySelector(`.module-uptime[data-module="${m.name}"]`);
       if (ramEl) ramEl.textContent = m.stats ? fmtRam(m.stats.memory_mb) : '';
-      if (cpuEl) cpuEl.textContent = m.stats ? `${m.stats.cpu_percent}%` : '';
+      if (cpuEl) cpuEl.textContent = m.stats ? `${m.stats.cpu_percent.toFixed(1)}%` : '';
       if (uptimeEl) uptimeEl.textContent = m.stats ? fmtUptime(m.stats.uptime_seconds) : '';
       if (m.status === 'running') {
         running++;
