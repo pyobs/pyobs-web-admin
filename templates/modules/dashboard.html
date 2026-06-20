@@ -85,14 +85,14 @@
   {% for mod in modules %}
   <tr data-module-row="{{ mod }}">
     <td class="text-nowrap" style="width:1%"><span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span></td>
-    <td class="fw-semibold">{{ mod }}</td>
+    <td class="fw-semibold"><a href="{% url 'module_detail' mod %}" class="text-decoration-none text-reset">{{ mod }}</a></td>
     <td class="text-secondary small text-nowrap module-ram d-none d-md-table-cell" data-module="{{ mod }}"></td>
     <td class="text-secondary small text-nowrap module-cpu d-none d-md-table-cell" data-module="{{ mod }}"></td>
     <td class="text-secondary small text-nowrap module-uptime d-none d-md-table-cell" data-module="{{ mod }}"></td>
     <td><div class="module-log-stats d-flex gap-1 flex-wrap" data-module="{{ mod }}"></div></td>
     <td class="text-end text-nowrap">
-      <a href="{% url 'module_detail' mod %}" class="btn btn-sm btn-outline-primary me-1">
-        <i class="bi bi-box-arrow-up-right"></i> Details
+      <a href="{% url 'module_detail' mod %}#tab-logs" class="btn btn-sm btn-outline-primary me-1">
+        <i class="bi bi-journal-text"></i> Logs
       </a>
       <button class="btn btn-sm btn-outline-success" title="Start" data-action="start" onclick="quickControl('{{ mod }}', 'start', this)">
         <i class="bi bi-play-fill"></i>
