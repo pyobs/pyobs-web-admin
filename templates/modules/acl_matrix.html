@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+
+{% block title %}ACL Matrix — pyobs Web Admin{% endblock %}
+
+{% block extra_head %}
+<style>
+  #acl-matrix th, #acl-matrix td { white-space: nowrap; }
+  #acl-matrix .col-target {
+    position: sticky;
+    left: 0;
+    background-color: #212529;
+    z-index: 2;
+  }
+  #acl-matrix thead .col-target { background-color: #1a1d21; z-index: 3; }
+  .acl-cell-methods { white-space: normal; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">ACL Matrix</h4>
+</div>
+
+{% if unreachable_hosts %}
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>Could not reach
+  {% for h in unreachable_hosts %}<strong>{{ h.name }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}
+  — its modules aren't shown below, so the matrix may be missing part of the fleet's ACL policy.
+</div>
+{% endif %}
+{% if not targets %}
+<div class="alert alert-warning">
+  No modules found. Make sure <code>PYOBS_CONFIG_DIR</code> points to your config directory
+  and contains <code>.yaml</code> files.
+</div>
+{% else %}
+<p class="text-muted small">
+  Rows are modules across every configured host (this installation plus any hub hosts); columns
+  are every caller name referenced in any module's <code>acl:</code> block, whether or not that
+  caller is itself a managed module.
+  <span class="badge bg-danger-subtle text-danger-emphasis">open</span> rows have no
+  <code>acl:</code> key at all — any caller may reach them.
+  The <i class="bi bi-pencil" style="font-size:0.7rem"></i> next to a module name opens a form
+  to edit that module's <code>acl:</code> block directly; a row whose <code>acl:</code> comes
+  from a shared fragment instead shows that fragment's name — edit it there, since it also
+  applies to every other module listed as sharing it.
+</p>
+
+<div class="table-responsive border rounded" style="max-height: 75vh;">
+<table class="table table-sm table-hover align-middle mb-0" id="acl-matrix">
+  <thead>
+    <tr>
+      <th class="col-target">Target</th>
+      {% for caller in caller_headers %}
+      <th class="text-center small">
+        {% if caller.url %}
+        <a href="{{ caller.url }}" class="text-decoration-none text-reset">{{ caller.name }}</a>
+        {% else %}
+        {{ caller.name }}
+        {% endif %}
+      </th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in targets %}
+  <tr>
+    <td class="col-target fw-semibold">
+      <a href="{{ row.module_url }}" class="text-decoration-none text-reset">{{ row.name }}</a>
+      {% if show_host_badges %}
+      <span class="badge bg-dark-subtle text-body-secondary ms-1" title="managed by host {{ row.host }}">
+        <i class="bi bi-hdd-network"></i> {{ row.host }}
+      </span>
+      {% endif %}
+      {% if row.mode == 'log' %}
+      <span class="badge bg-warning text-dark ms-1" title="acl: mode: log — not yet enforced">log</span>
+      {% endif %}
+      {% if row.source %}
+      <a href="{{ row.shared_url }}" class="badge bg-secondary text-decoration-none ms-1"
+         title="acl: block comes from shared fragment {{ row.source }}, included by {{ row.source_count }} module{{ row.source_count|pluralize }} — edit it there so the change applies consistently, not just to this row.">
+        <i class="bi bi-file-earmark-text"></i> {{ row.source }} · {{ row.source_count }} module{{ row.source_count|pluralize }}
+      </a>
+      {% elif row.error %}
+      <a href="{{ row.module_config_url }}" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
+         title="This module's acl: block failed to parse — fix the raw YAML directly">
+        <i class="bi bi-pencil" style="font-size:0.7rem"></i>
+      </a>
+      {% else %}
+      <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
+              title="Edit this module's acl: block" onclick="openAclEditor('{{ row.name }}', '{{ row.host }}')">
+        <i class="bi bi-pencil" style="font-size:0.7rem"></i>
+      </button>
+      {{ row.acl|json_script:row.acl_data_id }}
+      {% endif %}
+    </td>
+    {% if row.error %}
+    <td colspan="{{ callers|length }}" class="text-danger small">
+      <i class="bi bi-exclamation-triangle me-1"></i>{{ row.error }}
+    </td>
+    {% elif row.open %}
+    <td colspan="{{ callers|length }}">
+      <span class="badge bg-danger-subtle text-danger-emphasis">open — no acl:, every caller allowed</span>
+    </td>
+    {% else %}
+    {% for cell in row.cell_list %}
+    <td class="text-center small">
+      {% if cell.kind == 'denied' %}
+      <span class="text-muted">—</span>
+      {% elif cell.kind == 'all' %}
+      <span class="badge bg-success">all</span>
+      {% elif cell.kind == 'methods' %}
+      <div class="acl-cell-methods">
+        {% for m in cell.methods %}
+        <span class="badge {% if m.is_interface %}bg-info text-dark{% else %}bg-primary{% endif %} me-1 mb-1"
+              {% if m.is_interface %}title="interface shorthand — pyobs-core expands this to that interface's methods at runtime"{% endif %}>
+          {{ m.name }}{% if m.is_interface %} (interface){% endif %}
+        </span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </td>
+    {% endfor %}
+    {% endif %}
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="modal fade" id="acl-edit-modal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit ACL: <span id="acl-modal-name"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="acl-modal-error" class="alert alert-danger d-none small"></div>
+
+        <div class="mb-3">
+          <label class="form-label small text-muted mb-1 d-block">Mode</label>
+          <div class="btn-group" role="group">
+            <input type="radio" class="btn-check" name="acl-mode" id="acl-mode-enforce" value="enforce" autocomplete="off" checked>
+            <label class="btn btn-outline-secondary btn-sm" for="acl-mode-enforce">Enforce</label>
+            <input type="radio" class="btn-check" name="acl-mode" id="acl-mode-log" value="log" autocomplete="off">
+            <label class="btn btn-outline-secondary btn-sm" for="acl-mode-log">Log only <span class="text-muted">(not yet enforced)</span></label>
+          </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small text-muted mb-1 d-block">Policy</label>
+          <div class="btn-group" role="group">
+            <input type="radio" class="btn-check" name="acl-policy" id="acl-policy-allow" value="allow" autocomplete="off" checked>
+            <label class="btn btn-outline-secondary btn-sm" for="acl-policy-allow">Allow list <span class="text-muted">— everyone else denied</span></label>
+            <input type="radio" class="btn-check" name="acl-policy" id="acl-policy-deny" value="deny" autocomplete="off">
+            <label class="btn btn-outline-secondary btn-sm" for="acl-policy-deny">Deny list <span class="text-muted">— everyone else all-access</span></label>
+          </div>
+        </div>
+
+        <div id="acl-allow-editor">
+          <label class="form-label small text-muted mb-1 d-block">Callers</label>
+          <div id="acl-allow-rows"></div>
+          <button type="button" class="btn btn-sm btn-outline-primary mt-1" onclick="addAllowRow()">
+            <i class="bi bi-plus-lg me-1"></i>Add caller
+          </button>
+        </div>
+
+        <div id="acl-deny-editor" class="d-none">
+          <label class="form-label small text-muted mb-1 d-block">Denied callers</label>
+          <div id="acl-deny-rows"></div>
+          <button type="button" class="btn btn-sm btn-outline-primary mt-1" onclick="addDenyRow()">
+            <i class="bi bi-plus-lg me-1"></i>Add caller
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer justify-content-between">
+        <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeAcl()">
+          <i class="bi bi-trash me-1"></i>Remove ACL (open access)
+        </button>
+        <div>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveAcl()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+let aclModal = null;
+let currentAclModule = null;
+let currentAclHost = null;
+
+function getAclModal() {
+  if (!aclModal) aclModal = new bootstrap.Modal(document.getElementById('acl-edit-modal'));
+  return aclModal;
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function allowRowHtml(caller, value) {
+  const isAll = value === '*';
+  const methods = Array.isArray(value) ? value.join(', ') : '';
+  return `
+    <div class="d-flex gap-2 align-items-center mb-2 acl-allow-row">
+      <input type="text" class="form-control form-control-sm acl-caller" style="max-width:180px" placeholder="caller name" value="${escapeAttr(caller)}">
+      <select class="form-select form-select-sm acl-allow-kind" style="max-width:160px" onchange="toggleAllowMethods(this)">
+        <option value="all" ${isAll ? 'selected' : ''}>All methods</option>
+        <option value="methods" ${isAll ? '' : 'selected'}>Specific methods</option>
+      </select>
+      <input type="text" class="form-control form-control-sm acl-methods" placeholder="method1, method2, IInterface" value="${escapeAttr(methods)}" ${isAll ? 'disabled' : ''}>
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.acl-allow-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`;
+}
+
+function denyRowHtml(caller) {
+  return `
+    <div class="d-flex gap-2 align-items-center mb-2 acl-deny-row">
+      <input type="text" class="form-control form-control-sm acl-caller" style="max-width:220px" placeholder="caller name" value="${escapeAttr(caller)}">
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.acl-deny-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`;
+}
+
+function addAllowRow(caller = '', value = '*') {
+  document.getElementById('acl-allow-rows').insertAdjacentHTML('beforeend', allowRowHtml(caller, value));
+}
+
+function addDenyRow(caller = '') {
+  document.getElementById('acl-deny-rows').insertAdjacentHTML('beforeend', denyRowHtml(caller));
+}
+
+function toggleAllowMethods(select) {
+  const input = select.closest('.acl-allow-row').querySelector('.acl-methods');
+  input.disabled = select.value === 'all';
+  if (select.value === 'all') input.value = '';
+}
+
+function togglePolicy() {
+  const isAllow = document.getElementById('acl-policy-allow').checked;
+  document.getElementById('acl-allow-editor').classList.toggle('d-none', !isAllow);
+  document.getElementById('acl-deny-editor').classList.toggle('d-none', isAllow);
+}
+document.querySelectorAll('input[name="acl-policy"]').forEach(el => el.addEventListener('change', togglePolicy));
+
+function openAclEditor(name, host) {
+  currentAclModule = name;
+  currentAclHost = host;
+  document.getElementById('acl-modal-name').textContent = host === 'localhost' ? name : `${name} (${host})`;
+  document.getElementById('acl-modal-error').classList.add('d-none');
+  document.getElementById('acl-allow-rows').innerHTML = '';
+  document.getElementById('acl-deny-rows').innerHTML = '';
+
+  const dataEl = document.getElementById(`acl-data-${host}-${name}`);
+  const acl = dataEl ? JSON.parse(dataEl.textContent) : null;
+
+  const mode = (acl && acl.mode) || 'enforce';
+  document.getElementById(`acl-mode-${mode}`).checked = true;
+
+  if (acl && acl.deny) {
+    document.getElementById('acl-policy-deny').checked = true;
+    acl.deny.forEach(c => addDenyRow(c));
+  } else {
+    document.getElementById('acl-policy-allow').checked = true;
+    if (acl && acl.allow) {
+      Object.entries(acl.allow).forEach(([caller, value]) => addAllowRow(caller, value));
+    }
+  }
+  togglePolicy();
+  getAclModal().show();
+}
+
+function collectAcl() {
+  const mode = document.querySelector('input[name="acl-mode"]:checked').value;
+  const policy = document.querySelector('input[name="acl-policy"]:checked').value;
+  const result = {};
+  if (mode === 'log') result.mode = 'log';
+
+  if (policy === 'allow') {
+    const allow = {};
+    document.querySelectorAll('#acl-allow-rows .acl-allow-row').forEach(row => {
+      const caller = row.querySelector('.acl-caller').value.trim();
+      if (!caller) return;
+      const kind = row.querySelector('.acl-allow-kind').value;
+      if (kind === 'all') {
+        allow[caller] = '*';
+      } else {
+        allow[caller] = row.querySelector('.acl-methods').value.split(',').map(m => m.trim()).filter(Boolean);
+      }
+    });
+    if (Object.keys(allow).length === 0) return null;
+    result.allow = allow;
+  } else {
+    const deny = [];
+    document.querySelectorAll('#acl-deny-rows .acl-deny-row').forEach(row => {
+      const caller = row.querySelector('.acl-caller').value.trim();
+      if (caller) deny.push(caller);
+    });
+    if (deny.length === 0) return null;
+    result.deny = deny;
+  }
+  return result;
+}
+
+async function submitAcl(acl) {
+  const errBox = document.getElementById('acl-modal-error');
+  errBox.classList.add('d-none');
+  try {
+    const resp = await fetch(`/api/modules/${currentAclModule}/acl/`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
+      body: JSON.stringify({acl, host: currentAclHost}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errBox.textContent = data.error || 'Save failed.';
+      errBox.classList.remove('d-none');
+      return;
+    }
+    window.location.reload();
+  } catch (e) {
+    errBox.textContent = `Request failed: ${e}`;
+    errBox.classList.remove('d-none');
+  }
+}
+
+function saveAcl() {
+  const acl = collectAcl();
+  if (acl === null) {
+    const errBox = document.getElementById('acl-modal-error');
+    errBox.textContent = 'Add at least one caller, or use "Remove ACL" to clear the policy entirely.';
+    errBox.classList.remove('d-none');
+    return;
+  }
+  submitAcl(acl);
+}
+
+function removeAcl() {
+  if (!confirm(`Remove the acl: block for "${currentAclModule}" entirely? This opens it to every caller.`)) return;
+  submitAcl(null);
+}
+</script>
+{% endblock %}

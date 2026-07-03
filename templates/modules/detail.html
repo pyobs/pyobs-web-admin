@@ -53,8 +53,13 @@
     </button>
   </li>
   <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config" type="button">
+    <button id="tab-btn-config" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config" type="button">
       <i class="bi bi-gear me-1"></i>Config
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-acl" type="button">
+      <i class="bi bi-shield-lock me-1"></i>ACL
     </button>
   </li>
 </ul>
@@ -134,7 +139,73 @@ Loading…</pre>
     {% endif %}
   </div>
 
+  <!-- ACL Tab -->
+  <div class="tab-pane fade" id="tab-acl">
+    <div id="acl-tab-loading" class="text-muted small">Loading…</div>
+    <div id="acl-tab-error" class="alert alert-danger d-none"></div>
+    <div id="acl-tab-source" class="alert alert-secondary d-none"></div>
+
+    <div id="acl-tab-editor" class="d-none">
+      <div id="acl-tab-save-error" class="alert alert-danger d-none small"></div>
+
+      <div class="mb-3">
+        <label class="form-label small text-muted mb-1 d-block">Mode</label>
+        <div class="btn-group" role="group">
+          <input type="radio" class="btn-check" name="acl-tab-mode" id="acl-tab-mode-enforce" value="enforce" autocomplete="off" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-mode-enforce">Enforce</label>
+          <input type="radio" class="btn-check" name="acl-tab-mode" id="acl-tab-mode-log" value="log" autocomplete="off">
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-mode-log">Log only <span class="text-muted">(not yet enforced)</span></label>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label small text-muted mb-1 d-block">Policy</label>
+        <div class="btn-group" role="group">
+          <input type="radio" class="btn-check" name="acl-tab-policy" id="acl-tab-policy-allow" value="allow" autocomplete="off" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-policy-allow">Allow list <span class="text-muted">— everyone else denied</span></label>
+          <input type="radio" class="btn-check" name="acl-tab-policy" id="acl-tab-policy-deny" value="deny" autocomplete="off">
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-policy-deny">Deny list <span class="text-muted">— everyone else all-access</span></label>
+        </div>
+      </div>
+
+      <div id="acl-tab-allow-section">
+        <label class="form-label small text-muted mb-1 d-block">Callers (click to allow)</label>
+        <div id="acl-tab-allow-known"></div>
+        <div id="acl-tab-allow-extra-rows" class="mt-2"></div>
+        <div class="d-flex gap-2 align-items-center mt-2">
+          <input type="text" id="acl-tab-allow-new-caller" class="form-control form-control-sm" style="max-width:220px" placeholder="other caller name (e.g. pyobs-gui)">
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="aclTabAddOtherAllow()">
+            <i class="bi bi-plus-lg me-1"></i>Add other caller
+          </button>
+        </div>
+      </div>
+
+      <div id="acl-tab-deny-section" class="d-none">
+        <label class="form-label small text-muted mb-1 d-block">Callers (click to deny)</label>
+        <div id="acl-tab-deny-known"></div>
+        <div id="acl-tab-deny-extra-rows" class="mt-2"></div>
+        <div class="d-flex gap-2 align-items-center mt-2">
+          <input type="text" id="acl-tab-deny-new-caller" class="form-control form-control-sm" style="max-width:220px" placeholder="other caller name">
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="aclTabAddOtherDeny()">
+            <i class="bi bi-plus-lg me-1"></i>Add other caller
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-3 d-flex gap-2 align-items-center">
+        <button class="btn btn-primary" onclick="saveAclTab()">
+          <i class="bi bi-floppy me-1"></i>Save
+        </button>
+        <button class="btn btn-outline-danger" onclick="removeAclTab()">
+          <i class="bi bi-trash me-1"></i>Remove ACL (open access)
+        </button>
+        <span id="acl-tab-save-status" class="small"></span>
+      </div>
+    </div>
+  </div>
+
 </div>
+{{ other_modules|json_script:"acl-tab-other-modules-data" }}
 {% endblock %}
 
 {% block scripts %}
@@ -454,5 +525,274 @@ document.querySelector('[data-bs-target="#tab-logs"]').addEventListener('shown.b
 
 // Fetch immediately if starting on the logs tab
 if (location.hash === '#tab-logs') fetchLogs();
+
+// ── ACL tab ───────────────────────────────────────────────────────────────────
+const ACTIVE_HOST = "{{ active_host|default:'localhost' }}";
+const OTHER_MODULES = JSON.parse(document.getElementById('acl-tab-other-modules-data').textContent);
+let aclTabLoaded = false;
+
+function aclTabEscapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function aclTabKnownAllowRowHtml(caller) {
+  return `
+    <div class="d-flex gap-2 align-items-center mb-1 acl-known-allow-row" data-caller="${aclTabEscapeAttr(caller)}">
+      <div class="form-check" style="width:180px">
+        <input class="form-check-input acl-known-check" type="checkbox" onchange="aclTabToggleKnownAllow(this)">
+        <label class="form-check-label">${caller}</label>
+      </div>
+      <select class="form-select form-select-sm acl-known-kind d-none" style="max-width:160px" onchange="aclTabToggleKnownMethods(this)">
+        <option value="all">All methods</option>
+        <option value="methods">Specific methods</option>
+      </select>
+      <input type="text" class="form-control form-control-sm acl-known-methods d-none" placeholder="method1, method2, IInterface">
+    </div>`;
+}
+
+function aclTabKnownDenyRowHtml(caller) {
+  return `
+    <div class="form-check mb-1 acl-known-deny-row" data-caller="${aclTabEscapeAttr(caller)}">
+      <input class="form-check-input acl-known-check" type="checkbox">
+      <label class="form-check-label">${caller}</label>
+    </div>`;
+}
+
+function aclTabAllowRowHtml(caller, value) {
+  const isAll = value === '*';
+  const methods = Array.isArray(value) ? value.join(', ') : '';
+  return `
+    <div class="d-flex gap-2 align-items-center mb-2 acl-allow-row">
+      <input type="text" class="form-control form-control-sm acl-caller" style="max-width:180px" placeholder="caller name" value="${aclTabEscapeAttr(caller)}">
+      <select class="form-select form-select-sm acl-allow-kind" style="max-width:160px" onchange="aclTabToggleAllowMethods(this)">
+        <option value="all" ${isAll ? 'selected' : ''}>All methods</option>
+        <option value="methods" ${isAll ? '' : 'selected'}>Specific methods</option>
+      </select>
+      <input type="text" class="form-control form-control-sm acl-methods" placeholder="method1, method2, IInterface" value="${aclTabEscapeAttr(methods)}" ${isAll ? 'disabled' : ''}>
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.acl-allow-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`;
+}
+
+function aclTabDenyRowHtml(caller) {
+  return `
+    <div class="d-flex gap-2 align-items-center mb-2 acl-deny-row">
+      <input type="text" class="form-control form-control-sm acl-caller" style="max-width:220px" placeholder="caller name" value="${aclTabEscapeAttr(caller)}">
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.acl-deny-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`;
+}
+
+function aclTabToggleKnownAllow(checkbox) {
+  const row = checkbox.closest('.acl-known-allow-row');
+  const show = checkbox.checked;
+  row.querySelector('.acl-known-kind').classList.toggle('d-none', !show);
+  row.querySelector('.acl-known-methods').classList.toggle('d-none', !show || row.querySelector('.acl-known-kind').value === 'all');
+}
+
+function aclTabToggleKnownMethods(select) {
+  const row = select.closest('.acl-known-allow-row');
+  row.querySelector('.acl-known-methods').classList.toggle('d-none', select.value === 'all');
+}
+
+function aclTabToggleAllowMethods(select) {
+  const input = select.closest('.acl-allow-row').querySelector('.acl-methods');
+  input.disabled = select.value === 'all';
+  if (select.value === 'all') input.value = '';
+}
+
+function aclTabTogglePolicy() {
+  const isAllow = document.getElementById('acl-tab-policy-allow').checked;
+  document.getElementById('acl-tab-allow-section').classList.toggle('d-none', !isAllow);
+  document.getElementById('acl-tab-deny-section').classList.toggle('d-none', isAllow);
+}
+document.querySelectorAll('input[name="acl-tab-policy"]').forEach(el => el.addEventListener('change', aclTabTogglePolicy));
+
+function aclTabAddOtherAllow() {
+  const input = document.getElementById('acl-tab-allow-new-caller');
+  const caller = input.value.trim();
+  if (!caller) return;
+  document.getElementById('acl-tab-allow-extra-rows').insertAdjacentHTML('beforeend', aclTabAllowRowHtml(caller, '*'));
+  input.value = '';
+}
+
+function aclTabAddOtherDeny() {
+  const input = document.getElementById('acl-tab-deny-new-caller');
+  const caller = input.value.trim();
+  if (!caller) return;
+  document.getElementById('acl-tab-deny-extra-rows').insertAdjacentHTML('beforeend', aclTabDenyRowHtml(caller));
+  input.value = '';
+}
+
+// Known-module rows are built once, up front -- OTHER_MODULES doesn't change while the
+// page is open, only which ones are checked (and with what methods) does.
+document.getElementById('acl-tab-allow-known').innerHTML = OTHER_MODULES.map(aclTabKnownAllowRowHtml).join('');
+document.getElementById('acl-tab-deny-known').innerHTML = OTHER_MODULES.map(aclTabKnownDenyRowHtml).join('');
+
+function populateAclTab(data) {
+  document.getElementById('acl-tab-loading').classList.add('d-none');
+  document.getElementById('acl-tab-error').classList.add('d-none');
+  document.getElementById('acl-tab-source').classList.add('d-none');
+  document.getElementById('acl-tab-editor').classList.add('d-none');
+
+  if (data.error) {
+    const box = document.getElementById('acl-tab-error');
+    box.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>This module's acl: block failed to parse: ${data.error} — fix the raw YAML in the <a href="javascript:void(0)" class="alert-link" onclick="document.getElementById('tab-btn-config').click()">Config</a> tab.`;
+    box.classList.remove('d-none');
+    return;
+  }
+
+  if (data.source) {
+    const sharedUrl = ACTIVE_HOST === 'localhost' ? `/shared/${data.source}/` : `/set-host/${ACTIVE_HOST}/?next=/shared/${data.source}/`;
+    const box = document.getElementById('acl-tab-source');
+    box.innerHTML = `<i class="bi bi-file-earmark-text me-1"></i>This module's acl: block comes from shared fragment
+      <strong>${data.source}</strong> — editing it here would also change every other module that includes it.
+      <a href="${sharedUrl}" class="alert-link">Edit the shared fragment instead</a>.`;
+    box.classList.remove('d-none');
+    return;
+  }
+
+  document.getElementById('acl-tab-editor').classList.remove('d-none');
+
+  const acl = data.acl;
+  const mode = (acl && acl.mode) || 'enforce';
+  document.getElementById(`acl-tab-mode-${mode}`).checked = true;
+
+  document.querySelectorAll('.acl-known-allow-row').forEach(row => {
+    row.querySelector('.acl-known-check').checked = false;
+    row.querySelector('.acl-known-kind').value = 'all';
+    row.querySelector('.acl-known-methods').value = '';
+    aclTabToggleKnownAllow(row.querySelector('.acl-known-check'));
+  });
+  document.querySelectorAll('.acl-known-deny-row').forEach(row => {
+    row.querySelector('.acl-known-check').checked = false;
+  });
+  document.getElementById('acl-tab-allow-extra-rows').innerHTML = '';
+  document.getElementById('acl-tab-deny-extra-rows').innerHTML = '';
+
+  const knownSet = new Set(OTHER_MODULES);
+
+  if (acl && acl.deny) {
+    document.getElementById('acl-tab-policy-deny').checked = true;
+    acl.deny.forEach(caller => {
+      if (knownSet.has(caller)) {
+        document.querySelector(`.acl-known-deny-row[data-caller="${caller}"] .acl-known-check`).checked = true;
+      } else {
+        document.getElementById('acl-tab-deny-extra-rows').insertAdjacentHTML('beforeend', aclTabDenyRowHtml(caller));
+      }
+    });
+  } else {
+    document.getElementById('acl-tab-policy-allow').checked = true;
+    if (acl && acl.allow) {
+      Object.entries(acl.allow).forEach(([caller, value]) => {
+        if (knownSet.has(caller)) {
+          const row = document.querySelector(`.acl-known-allow-row[data-caller="${caller}"]`);
+          row.querySelector('.acl-known-check').checked = true;
+          const isAll = value === '*';
+          row.querySelector('.acl-known-kind').value = isAll ? 'all' : 'methods';
+          row.querySelector('.acl-known-methods').value = Array.isArray(value) ? value.join(', ') : '';
+          aclTabToggleKnownAllow(row.querySelector('.acl-known-check'));
+        } else {
+          document.getElementById('acl-tab-allow-extra-rows').insertAdjacentHTML('beforeend', aclTabAllowRowHtml(caller, value));
+        }
+      });
+    }
+  }
+  aclTabTogglePolicy();
+}
+
+async function fetchAclTab() {
+  if (aclTabLoaded) return;
+  aclTabLoaded = true;
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/acl/`);
+    const data = await resp.json();
+    populateAclTab(data);
+  } catch (e) {
+    document.getElementById('acl-tab-loading').classList.add('d-none');
+    const box = document.getElementById('acl-tab-error');
+    box.textContent = `Request failed: ${e}`;
+    box.classList.remove('d-none');
+  }
+}
+
+function collectAclTab() {
+  const mode = document.querySelector('input[name="acl-tab-mode"]:checked').value;
+  const policy = document.querySelector('input[name="acl-tab-policy"]:checked').value;
+  const result = {};
+  if (mode === 'log') result.mode = 'log';
+
+  if (policy === 'allow') {
+    const allow = {};
+    document.querySelectorAll('.acl-known-allow-row').forEach(row => {
+      if (!row.querySelector('.acl-known-check').checked) return;
+      const caller = row.dataset.caller;
+      const kind = row.querySelector('.acl-known-kind').value;
+      allow[caller] = kind === 'all' ? '*' : row.querySelector('.acl-known-methods').value.split(',').map(m => m.trim()).filter(Boolean);
+    });
+    document.querySelectorAll('#acl-tab-allow-extra-rows .acl-allow-row').forEach(row => {
+      const caller = row.querySelector('.acl-caller').value.trim();
+      if (!caller) return;
+      const kind = row.querySelector('.acl-allow-kind').value;
+      allow[caller] = kind === 'all' ? '*' : row.querySelector('.acl-methods').value.split(',').map(m => m.trim()).filter(Boolean);
+    });
+    if (Object.keys(allow).length === 0) return null;
+    result.allow = allow;
+  } else {
+    const deny = [];
+    document.querySelectorAll('.acl-known-deny-row').forEach(row => {
+      if (row.querySelector('.acl-known-check').checked) deny.push(row.dataset.caller);
+    });
+    document.querySelectorAll('#acl-tab-deny-extra-rows .acl-deny-row').forEach(row => {
+      const caller = row.querySelector('.acl-caller').value.trim();
+      if (caller) deny.push(caller);
+    });
+    if (deny.length === 0) return null;
+    result.deny = deny;
+  }
+  return result;
+}
+
+async function submitAclTab(acl) {
+  const status = document.getElementById('acl-tab-save-status');
+  const errBox = document.getElementById('acl-tab-save-error');
+  errBox.classList.add('d-none');
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/acl/`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
+      body: JSON.stringify({acl, host: ACTIVE_HOST}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errBox.textContent = data.error || 'Save failed.';
+      errBox.classList.remove('d-none');
+      return;
+    }
+    status.textContent = 'Saved!';
+    status.className = 'small text-success';
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  } catch (e) {
+    errBox.textContent = `Request failed: ${e}`;
+    errBox.classList.remove('d-none');
+  }
+}
+
+function saveAclTab() {
+  const acl = collectAclTab();
+  if (acl === null) {
+    const errBox = document.getElementById('acl-tab-save-error');
+    errBox.textContent = 'Allow or deny at least one caller, or use "Remove ACL" to clear the policy entirely.';
+    errBox.classList.remove('d-none');
+    return;
+  }
+  submitAclTab(acl);
+}
+
+function removeAclTab() {
+  if (!confirm(`Remove the acl: block for "${MODULE}" entirely? This opens it to every caller.`)) return;
+  submitAclTab(null).then(() => { aclTabLoaded = false; fetchAclTab(); });
+}
+
+document.querySelector('[data-bs-target="#tab-acl"]').addEventListener('shown.bs.tab', fetchAclTab);
+if (location.hash === '#tab-acl') fetchAclTab();
 </script>
 {% endblock %}

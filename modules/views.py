@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.http import Http404, JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
 from modules import proxy, services
@@ -41,7 +42,8 @@ def set_host(request, name: str):
     valid = {h["name"] for h in proxy.all_hosts()}
     if name in valid:
         request.session["active_host"] = name
-    return redirect("/")
+    next_url = request.GET.get("next")
+    return redirect(next_url if next_url and next_url.startswith("/") else "/")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,12 +103,18 @@ def module_detail(request, name: str):
             config = cfg_data.get("content", "")
         except Exception:
             config = ""
+        try:
+            statuses = proxy.call(host, "GET", "/api/statuses/")
+            other_modules = [m["name"] for m in statuses.get("modules", []) if m["name"] != name]
+        except Exception:
+            other_modules = []
         return render(request, "modules/detail.html", {
             "module_name": name,
             "config": config,
             "active_module": name,
             "config_dir": "(remote)",
             "log_dir": "(remote)",
+            "other_modules": other_modules,
         })
     _get_module_or_404(name)
     config = services.get_config(name)
@@ -116,6 +124,7 @@ def module_detail(request, name: str):
         "active_module": name,
         "config_dir": settings.PYOBS_CONFIG_DIR,
         "log_dir": settings.PYOBS_LOG_DIR,
+        "other_modules": [m for m in services.list_modules() if m != name],
     })
 
 
@@ -126,6 +135,76 @@ def shared_detail(request, name: str):
         "config": services.get_shared_config(name) or "",
         "active_shared": name,
         "config_dir": settings.PYOBS_CONFIG_DIR,
+    })
+
+
+def _cross_host_url(host: str, url_name: str, arg: str) -> str:
+    """A link to another page that's correct regardless of which host is currently
+    "active" in the session -- for localhost it's just the plain URL, for a hub host it
+    first switches the session's active host (existing set_host view) via its "next"
+    redirect, since module_detail/shared_detail always operate on the session's active
+    host rather than taking one as a URL argument."""
+    target = reverse(url_name, args=[arg])
+    if host == "localhost":
+        return target
+    return f"{reverse('set_host', args=[host])}?next={target}"
+
+
+def acl_matrix(request):
+    # Aggregates across every configured hub host (see DEVELOPMENT.md, "Hub mode
+    # interaction") regardless of which host is currently "active" in the session --
+    # unlike the rest of this app's hub-mode views, this page's whole point is to show
+    # fleet-wide policy in one place, not to view one host at a time.
+    per_host = [("localhost", services.build_acl_matrix())]
+    unreachable = []
+    for host_cfg in getattr(settings, "HUB_HOSTS", []):
+        try:
+            per_host.append((host_cfg["name"], proxy.call(host_cfg, "GET", "/api/acl-matrix/")))
+        except Exception as e:
+            unreachable.append({"name": host_cfg["name"], "error": str(e)})
+
+    matrix = services.merge_acl_matrices(per_host)
+    callers = matrix["callers"]
+
+    module_hosts: dict[str, str] = {}
+    for row in matrix["targets"]:
+        module_hosts.setdefault(row["name"], row["host"])
+    caller_headers = [
+        {"name": c, "url": _cross_host_url(module_hosts[c], "module_detail", c) if c in module_hosts else None}
+        for c in callers
+    ]
+
+    source_counts: dict[tuple[str, str], int] = {}
+    for row in matrix["targets"]:
+        if row["source"]:
+            key = (row["host"], row["source"])
+            source_counts[key] = source_counts.get(key, 0) + 1
+
+    rows = []
+    for row in matrix["targets"]:
+        mode = row["acl"].get("mode", "enforce") if row["acl"] else "enforce"
+        rows.append({
+            **row,
+            "mode": mode,
+            "source_count": source_counts.get((row["host"], row["source"])) if row["source"] else None,
+            "acl_data_id": f"acl-data-{row['host']}-{row['name']}",
+            "module_url": _cross_host_url(row["host"], "module_detail", row["name"]),
+            # local: jump straight to the Config tab; remote: the set_host detour can't
+            # carry a #fragment through the redirect, so this just lands on Overview.
+            "module_config_url": (
+                reverse("module_detail", args=[row["name"]]) + "#tab-config"
+                if row["host"] == "localhost" else _cross_host_url(row["host"], "module_detail", row["name"])
+            ),
+            "shared_url": _cross_host_url(row["host"], "shared_detail", row["source"]) if row["source"] else None,
+            "cell_list": [{"caller": c, **row["cells"][c]} for c in callers],
+        })
+    return render(request, "modules/acl_matrix.html", {
+        "active_acl_matrix": True,
+        "targets": rows,
+        "callers": callers,
+        "caller_headers": caller_headers,
+        "unreachable_hosts": unreachable,
+        "show_host_badges": len(per_host) > 1,
     })
 
 
@@ -289,3 +368,74 @@ def api_shared_config(request, name: str):
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)}, status=500)
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@require_GET
+def api_acl_matrix(request):
+    """Queried by another pyobs-web-admin instance acting as a hub, to fold this
+    installation's own local ACL matrix into its fleet-wide view -- see
+    services.merge_acl_matrices and DEVELOPMENT.md, "Hub mode interaction"."""
+    return JsonResponse(services.build_acl_matrix())
+
+
+def api_acl(request, name: str):
+    """Reads or saves a module's structured acl: edit -- used by both the matrix page's
+    per-row modal and module_detail's own ACL tab.
+
+    GET follows the session's active host, like every other module_detail-feeding endpoint
+    (api_config, api_logs, ...) -- module_detail only ever shows one host at a time.
+
+    POST instead trusts an explicit "host" field in the request body, defaulting to
+    "localhost" when absent. The matrix page aggregates every configured host on one page
+    (see acl_matrix), so it can't rely on "the" active host the way GET does; module_detail's
+    own ACL tab sends its page's active host explicitly too, for the same reason GET can't
+    just be reused for POST here -- a POST with no "host" must mean "localhost" even if the
+    session happens to have switched to a remote host elsewhere, since silently consulting
+    session state here was a real footgun during the matrix's hub-mode work (see
+    DEVELOPMENT.md, Work Plan item 8).
+    """
+    if request.method == "GET":
+        host = _active_host(request)
+        if host:
+            return _proxy(host, "GET", f"/api/modules/{name}/acl/")
+        _get_module_or_404(name)
+        acl, source, error = services.resolve_and_validate_acl(name)
+        return JsonResponse({"acl": acl, "source": source, "error": error})
+
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+
+    host_name = data.get("host") or "localhost"
+    if host_name != "localhost":
+        host = proxy.get_host_config(host_name)
+        if not host:
+            return JsonResponse({"success": False, "error": f"Unknown host: {host_name!r}"}, status=400)
+        return _proxy(host, "POST", f"/api/modules/{name}/acl/", json={"acl": data.get("acl")})
+
+    _get_module_or_404(name)
+    acl = data.get("acl")
+    if acl is not None:
+        if not isinstance(acl, dict):
+            return JsonResponse({"success": False, "error": "acl must be an object or null"}, status=400)
+        allow, deny = acl.get("allow"), acl.get("deny")
+        if allow is not None and deny is not None:
+            return JsonResponse({"success": False, "error": "acl cannot have both allow and deny"}, status=400)
+        if allow is not None and not isinstance(allow, dict):
+            return JsonResponse({"success": False, "error": "allow must be a mapping of caller -> methods"}, status=400)
+        if deny is not None and not isinstance(deny, list):
+            return JsonResponse({"success": False, "error": "deny must be a list of callers"}, status=400)
+        if acl.get("mode") not in (None, "enforce", "log"):
+            return JsonResponse({"success": False, "error": "mode must be 'enforce' or 'log'"}, status=400)
+
+    try:
+        services.save_local_acl(name, acl)
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=409)
+    except FileNotFoundError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=404)

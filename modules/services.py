@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import signal
@@ -5,11 +6,25 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
 import psutil
+import yaml
 from django.conf import settings
+from ruamel.yaml import YAML as _RuamelYAML
+
+from modules.pyobs_config import pre_process_yaml
+
+# Used only to serialize a *fresh* acl: block for _replace_local_acl_block -- ruamel's
+# round-trip dumper reads more like hand-written YAML (indented block sequences, minimal
+# quoting) than plain pyyaml's default output. Not used for reading/round-tripping a whole
+# config file: the raw file can contain bare {include ...} lines that aren't valid
+# standalone YAML (see pyobs_config.pre_process_yaml), so it's never parsed generically.
+_ACL_YAML = _RuamelYAML()
+_ACL_YAML.indent(mapping=2, sequence=4, offset=2)
+_ACL_YAML.default_flow_style = False
 
 
 def _config_dir() -> Path:
@@ -337,3 +352,305 @@ def save_config(name: str, content: str) -> None:
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_file}")
     config_file.write_text(content)
+
+
+# ── ACL resolution ────────────────────────────────────────────────────────────
+
+_TOP_LEVEL_KEY_RE = re.compile(r"^(\S+):(.*)$")
+_INCLUDE_RE = re.compile(r"{include (\S+)(?: (\S+))?}")
+
+
+def _shared_name(filename: str) -> str:
+    """Turns an {include ...}'d filename (e.g. "acl.shared.yaml") into the name
+    list_shared_configs()/get_shared_config() use (e.g. "acl.shared")."""
+    return filename[: -len(".yaml")] if filename.endswith(".yaml") else filename
+
+
+def _acl_source_file(raw: str) -> str | None:
+    """Given a module's raw (unprocessed) config text, determines whether its "acl:" key's
+    value is defined directly in the module's own file or pulled in from a shared fragment
+    via {include}. Returns the shared fragment's name (as used by list_shared_configs()),
+    or None if the acl block (if any) is defined locally.
+
+    Only recognizes the two patterns pyobs-web-admin's own editor can produce (see
+    DEVELOPMENT.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
+    whose target's own top-level content defines "acl:", or an "acl:" key whose entire
+    value is a single `{include x.shared.yaml}`. A more deeply nested include structure
+    (e.g. an include reaching into a dotted sub-key of a larger fragment) falls back to
+    being reported as "own file" -- a conservative default: such a rule just isn't routed
+    to a shared-fragment edit yet, and is edited in the module's own file instead.
+    """
+    lines = raw.splitlines()
+    acl_block: list[str] | None = None
+    bare_includes: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "acl":
+                block = [line]
+                i += 1
+                while i < len(lines) and (lines[i] == "" or lines[i][0].isspace()):
+                    block.append(lines[i])
+                    i += 1
+                acl_block = block
+                continue
+            inc = _INCLUDE_RE.fullmatch(line.strip())
+            if inc:
+                bare_includes.append(inc.group(1))
+        i += 1
+
+    if acl_block is not None:
+        inline_value = acl_block[0].split(":", 1)[1].strip()
+        body = "\n".join(acl_block[1:]).strip() or inline_value
+        inc = _INCLUDE_RE.fullmatch(body)
+        return _shared_name(inc.group(1)) if inc else None
+
+    for filename in bare_includes:
+        included = _config_dir() / filename
+        if included.exists() and re.search(r"(?m)^acl:", included.read_text()):
+            return _shared_name(filename)
+    return None
+
+
+def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
+    """Returns (acl_block, source) for a module's *effective* acl: config, resolving any
+    {include} the same way pyobs-core does.
+
+    acl_block is the raw "acl:" dict (with "allow"/"deny"/"mode" keys) or None if the
+    module has no acl: key at all (fully open access). source is None if the block is
+    defined directly in the module's own config file, or the shared fragment's name (as
+    used by list_shared_configs()/get_shared_config()) if pulled in via {include}.
+    """
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if not config_file.exists():
+        return None, None
+    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    acl = resolved.get("acl")
+    if acl is None:
+        return None, None
+    return acl, _acl_source_file(config_file.read_text())
+
+
+def _dump_acl_block(acl: dict) -> list[str]:
+    """Serializes {"acl": acl} via ruamel.yaml into the lines spliced into a module's raw
+    config text by _replace_local_acl_block. This only ever generates a *fresh* acl: block
+    from scratch -- it isn't a round-trip of the file's previous acl: content, so any
+    comments a human had written inside the old block are lost on save (comments elsewhere
+    in the file are untouched, since the splice never rewrites those lines)."""
+    buf = io.StringIO()
+    _ACL_YAML.dump({"acl": acl}, buf)
+    return buf.getvalue().rstrip("\n").splitlines()
+
+
+def _replace_local_acl_block(raw: str, acl: dict | None) -> str:
+    """Replaces (or adds, or removes) a module's top-level "acl:" block in its raw config
+    text, leaving every other line -- other keys, {include ...} directives, comments, blank
+    lines -- byte-for-byte untouched. Only valid to call when the acl: block is known to be
+    defined directly in this file rather than pulled in via {include} (callers must check
+    get_resolved_acl's source is None first -- see DEVELOPMENT.md, "Editing from the
+    matrix", for why writing through a shared fragment must never happen silently).
+
+    Locates the block the same way _acl_source_file does (walk top-level keys, a "acl:"
+    line plus every following blank-or-indented line is the block), except a blank line
+    ends the block here rather than being absorbed into it -- a simplifying assumption
+    (an acl: block with an intentional blank line in the middle of it, e.g. between "mode:"
+    and "allow:", would confuse this). save_local_acl re-resolves the acl: after writing
+    and rolls back on mismatch, which catches this rather than silently corrupting the file.
+    """
+    lines = raw.splitlines()
+    start = end = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "acl":
+                start = i
+                i += 1
+                while i < len(lines) and lines[i] != "" and lines[i][0].isspace():
+                    i += 1
+                end = i
+                break
+        i += 1
+
+    new_block = _dump_acl_block(acl) if acl else []
+
+    if start is not None:
+        result = lines[:start] + new_block + lines[end:]
+    elif new_block:
+        result = lines + ([""] if lines and lines[-1] != "" else []) + new_block
+    else:
+        return raw
+
+    return "\n".join(result) + "\n"
+
+
+def save_local_acl(name: str, acl: dict | None) -> None:
+    """Writes a structured acl: edit (from the matrix's per-target edit form) into a
+    module's own raw config file.
+
+    Splices just the acl: block into the raw text (_replace_local_acl_block) rather than
+    doing a full YAML round-trip of the whole file, since the raw file can contain bare
+    {include ...} lines that aren't valid standalone YAML on their own (see
+    pyobs_config.pre_process_yaml) -- a generic YAML parser can't load it directly.
+
+    Refuses to write if the module's acl: currently comes from a shared fragment; callers
+    must route that edit to the fragment's own file instead (get_resolved_acl's source).
+    After writing, re-resolves the module's acl: and rolls back to the original content if
+    it doesn't match what was requested -- seeing DEVELOPMENT.md's note on the splice's
+    simplifying assumption, this is the safety net against a silent bad write rather than
+    trying to make the splice logic exhaustively correct up front.
+    """
+    validate_name(name)
+    _, source = get_resolved_acl(name)
+    if source is not None:
+        raise ValueError(f'acl: for "{name}" comes from shared fragment "{source}" -- edit it there instead')
+
+    original = get_config(name)
+    if original is None:
+        raise FileNotFoundError(f"Config file not found for module: {name}")
+
+    save_config(name, _replace_local_acl_block(original, acl))
+
+    resolved, new_source = get_resolved_acl(name)
+    if new_source is not None or (resolved or None) != (acl or None):
+        save_config(name, original)
+        raise ValueError("could not verify the acl: edit after writing -- rolled back, no changes made")
+
+
+# ── ACL matrix ────────────────────────────────────────────────────────────────
+
+_INTERFACE_NAME_RE = re.compile(r"^I[A-Z]\w*$")
+
+
+def _is_interface_name(entry: str) -> bool:
+    """Heuristic for telling an interface-name shorthand entry (e.g. "ICamera") in an acl
+    allow list apart from a plain method name, without importing pyobs-core's own
+    pyobs.interfaces to check against (see DEVELOPMENT.md, "Interface-name shorthand").
+    Relies on pyobs's own naming convention: interfaces are always IPascalCase, method
+    names are always snake_case, so the two can never collide.
+    """
+    return bool(_INTERFACE_NAME_RE.match(entry))
+
+
+def _acl_cell(acl: dict | None, caller: str) -> dict:
+    """Computes one (target, caller) cell's value from the target's resolved acl: block,
+    per the table in DEVELOPMENT.md, "What the matrix shows"."""
+    if not acl:
+        return {"kind": "open", "methods": None, "mode": "enforce"}
+
+    mode = acl.get("mode", "enforce")
+    allow: dict[str, Any] | None = acl.get("allow")
+    deny = acl.get("deny")
+
+    if allow is not None:
+        entries = allow.get(caller)
+        if entries is None:
+            kind, methods = "denied", None
+        elif entries == "*":
+            kind, methods = "all", None
+        else:
+            kind, methods = "methods", [
+                {"name": e, "is_interface": _is_interface_name(e)} for e in entries
+            ]
+    elif deny is not None:
+        kind, methods = ("denied", None) if caller in deny else ("all", None)
+    else:
+        # acl: present but neither allow nor deny set -- pyobs-core's Module._acl_denied()
+        # treats this the same as no acl block at all (nothing to check against).
+        kind, methods = "all", None
+
+    return {"kind": kind, "methods": methods, "mode": mode}
+
+
+def resolve_and_validate_acl(name: str) -> tuple[dict | None, str | None, str | None]:
+    """Like get_resolved_acl, but also validates the acl:'s shape (allow must be a mapping,
+    deny must be a list) and catches any resolution error (bad YAML, broken {include}, ...)
+    into a returned message instead of raising. Returns (acl, source, error) -- acl and
+    source are None whenever error is set. Shared by build_acl_matrix (one row's error
+    shouldn't abort the whole fleet-wide scan) and the single-module ACL tab endpoint
+    (api_acl's GET), which need the identical error-handling contract.
+    """
+    try:
+        acl, source = get_resolved_acl(name)
+        if acl is not None:
+            allow = acl.get("allow")
+            deny = acl.get("deny")
+            if allow is not None and not isinstance(allow, dict):
+                raise ValueError(f'acl "allow" must be a mapping of caller -> methods, got {type(allow).__name__}')
+            if deny is not None and not isinstance(deny, list):
+                raise ValueError(f'acl "deny" must be a list of callers, got {type(deny).__name__}')
+        return acl, source, None
+    except Exception as e:
+        return None, None, str(e)
+
+
+def build_acl_matrix() -> dict:
+    """Builds the fleet-wide (target x caller) ACL matrix.
+
+    Rows are every module list_modules() returns; columns are the union of every caller
+    name mentioned in any module's resolved acl: block ("allow" keys or "deny" entries) --
+    not the same set as the modules themselves, see DEVELOPMENT.md, "What the matrix
+    shows". A module whose config/acl can't be resolved (bad YAML, broken {include}, ...)
+    is still included as a row, with its "error" set, rather than aborting the whole scan.
+    """
+    targets = list_modules()
+    acls: dict[str, dict | None] = {}
+    sources: dict[str, str | None] = {}
+    errors: dict[str, str] = {}
+    callers: set[str] = set()
+
+    for name in targets:
+        acl, source, error = resolve_and_validate_acl(name)
+        acls[name] = acl
+        sources[name] = source
+        if error:
+            errors[name] = error
+        if acl:
+            allow = acl.get("allow")
+            deny = acl.get("deny")
+            if isinstance(allow, dict):
+                callers.update(allow.keys())
+            if isinstance(deny, list):
+                callers.update(deny)
+
+    caller_names = sorted(callers)
+    rows = [
+        {
+            "name": name,
+            "acl": acls[name],
+            "source": sources[name],
+            "open": acls[name] is None and name not in errors,
+            "error": errors.get(name),
+            "cells": {caller: _acl_cell(acls[name], caller) for caller in caller_names},
+        }
+        for name in targets
+    ]
+
+    return {"targets": rows, "callers": caller_names}
+
+
+def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
+    """Combines each host's build_acl_matrix()-shaped result into one fleet-wide matrix --
+    see DEVELOPMENT.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
+    pairs, e.g. [("localhost", build_acl_matrix()), ("MONETS", <that host's own matrix,
+    fetched via the hub proxy>), ...].
+
+    Each host only knows about the callers its own modules' acl: blocks reference, so a
+    row fetched from one host is missing cells for callers that only appear on some other
+    host. Cells are therefore recomputed here against the union of every host's callers,
+    reusing _acl_cell (a pure function of a target's acl: dict + a caller name -- safe to
+    call again outside the host that originally resolved that acl:) rather than trusting
+    each host's own host-local cells.
+    """
+    caller_names = sorted({c for _, matrix in per_host for c in matrix["callers"]})
+    rows = [
+        {**row, "host": host_name, "cells": {c: _acl_cell(row["acl"], c) for c in caller_names}}
+        for host_name, matrix in per_host
+        for row in matrix["targets"]
+    ]
+    return {"targets": rows, "callers": caller_names}

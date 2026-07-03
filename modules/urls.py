@@ -7,6 +7,7 @@ urlpatterns = [
     path("set-host/<str:name>/", views.set_host, name="set_host"),
     path("modules/<str:name>/", views.module_detail, name="module_detail"),
     path("shared/<str:name>/", views.shared_detail, name="shared_detail"),
+    path("acl/", views.acl_matrix, name="acl_matrix"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),
@@ -20,4 +21,6 @@ urlpatterns = [
     path("api/log-stats/", views.api_all_log_stats, name="api_all_log_stats"),
     path("api/modules/<str:name>/config/", views.api_config, name="api_config"),
     path("api/shared/<str:name>/config/", views.api_shared_config, name="api_shared_config"),
+    path("api/modules/<str:name>/acl/", views.api_acl, name="api_acl"),
+    path("api/acl-matrix/", views.api_acl_matrix, name="api_acl_matrix"),
 ]
