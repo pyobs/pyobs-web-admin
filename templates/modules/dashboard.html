@@ -380,12 +380,18 @@ async function refreshEjabberd() {
   } catch (_) {}
 }
 
+// refreshEjabberd cross-references each row's data-comm-user, which refreshAllStatuses
+// sets -- sequenced, not both fired independently, so there's no race where the ejabberd
+// fetch resolves first and finds every row's comm_user still unset.
+async function refreshStatusesThenEjabberd() {
+  await refreshAllStatuses();
+  await refreshEjabberd();
+}
+
 updateSortHeaders();
-refreshAllStatuses();
-setInterval(refreshAllStatuses, 10000);
+refreshStatusesThenEjabberd();
+setInterval(refreshStatusesThenEjabberd, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
-refreshEjabberd();
-setInterval(refreshEjabberd, 10000);
 </script>
 {% endblock %}

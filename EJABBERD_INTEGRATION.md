@@ -158,6 +158,18 @@ authoritative state, this log just narrates it.
   `HttpFileCache`. `python manage.py test modules` — 63/63 passing (no new permanent tests
   for these views, matching this repo's established convention).
 
+  **Real deployment, real second bug.** After actually enabling this in `local_settings.py`
+  for the first time (`EJABBERD_ENABLED = True` etc., pointed at the same co-located
+  ejabberd instance this whole doc was verified against) and checking the live dashboard,
+  the per-module indicator was intermittently missing on page load — a genuine race, not
+  the "silent absence" gap above: `refreshAllStatuses()` (which sets each row's
+  `data-comm-user`) and `refreshEjabberd()` (which reads it to decide the icon) were fired
+  independently on the same 10s tick, both `async` and un-awaited, so whichever one's
+  `fetch()` happened to resolve first ran against data the other hadn't written yet.
+  Self-corrected on the next tick, but the first ~10s after every page load was
+  unreliable. Fixed by sequencing them (`await refreshAllStatuses()` before
+  `refreshEjabberd()` in one combined tick function) rather than firing both independently.
+
 ## Motivation
 
 `pyobs-web-admin` usually runs on the same host as the `ejabberd` server pyobs-core's comm
