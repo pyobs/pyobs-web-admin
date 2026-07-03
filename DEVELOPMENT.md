@@ -30,8 +30,8 @@ is fine, that's what the Design section of the eventual doc is for.
 - [EJABBERD_INTEGRATION.md](EJABBERD_INTEGRATION.md) — read-only visibility into ejabberd's
   own state (registered/connected users, per-module session info) on the dashboard and
   module pages, closing the "process running ≠ XMPP connected" and "config vs. reality" gaps.
-  **Design verified against a live instance** (including the `mod_http_api` config and its
-  security model); no implementation yet.
+  **Shipped, all 7 Work Plan items done and verified against a live instance** (including
+  the `mod_http_api` config and its security model).
 
 ## Ideas (not yet designed)
 

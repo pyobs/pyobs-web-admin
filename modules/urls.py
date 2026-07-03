@@ -25,4 +25,6 @@ urlpatterns = [
     path("api/acl-matrix/", views.api_acl_matrix, name="api_acl_matrix"),
     path("api/ejabberd/status/", views.api_ejabberd_status, name="api_ejabberd_status"),
     path("api/ejabberd/user/<str:user>/", views.api_ejabberd_user, name="api_ejabberd_user"),
+    path("api/ejabberd-summary/", views.api_ejabberd_summary, name="api_ejabberd_summary"),
+    path("api/modules/<str:name>/ejabberd/", views.api_module_ejabberd, name="api_module_ejabberd"),
 ]

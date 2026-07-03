@@ -58,6 +58,14 @@
       <div class="text-secondary small">CPU</div>
     </div>
   </div>
+  {% if ejabberd_enabled %}
+  <div class="col">
+    <div class="card border-secondary text-center py-2" id="ejabberd-tile" title="">
+      <div class="fs-3 fw-bold" id="stat-ejabberd">—</div>
+      <div class="text-secondary small">XMPP online</div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <table class="table table-hover align-middle mb-0" id="module-grid">
@@ -84,7 +92,12 @@
   <tbody>
   {% for mod in modules %}
   <tr data-module-row="{{ mod }}">
-    <td class="text-nowrap" style="width:1%"><span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span></td>
+    <td class="text-nowrap" style="width:1%">
+      <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
+      {% if ejabberd_enabled %}
+      <i class="bi xmpp-indicator d-none ms-1" data-module="{{ mod }}"></i>
+      {% endif %}
+    </td>
     <td class="fw-semibold"><a href="{% url 'module_detail' mod %}" class="text-decoration-none text-reset">{{ mod }}</a></td>
     <td class="text-secondary small text-nowrap module-ram d-none d-md-table-cell" data-module="{{ mod }}"></td>
     <td class="text-secondary small text-nowrap module-cpu d-none d-md-table-cell" data-module="{{ mod }}"></td>
@@ -125,7 +138,7 @@
 @media (max-width: 767.98px) {
   .status-badge { width: .65rem; height: .65rem; padding: 0; font-size: 0; vertical-align: middle; }
   .module-thead { display: none; }
-  #stat-total, #stat-running, #stat-stopped, #stat-ram, #stat-cpu { font-size: 1.1rem !important; }
+  #stat-total, #stat-running, #stat-stopped, #stat-ram, #stat-cpu, #stat-ejabberd { font-size: 1.1rem !important; }
 }
 </style>
 <script>
@@ -239,6 +252,7 @@ async function refreshAllStatuses() {
         row.dataset.sortRam = m.stats ? m.stats.memory_mb : -1;
         row.dataset.sortCpu = m.stats ? m.stats.cpu_percent : -1;
         row.dataset.sortUptime = m.stats ? m.stats.uptime_seconds : -1;
+        row.dataset.commUser = m.comm_user || '';
         const isRunning = m.status === 'running';
         row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning);
         row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning);
@@ -327,10 +341,51 @@ async function refreshLogStats() {
   } catch (_) {}
 }
 
+async function refreshEjabberd() {
+  const tile = document.getElementById('ejabberd-tile');
+  if (!tile) return;  // ejabberd_enabled was false server-side -- don't even fetch
+  try {
+    const resp = await fetch("{% url 'api_ejabberd_summary' %}");
+    const data = await resp.json();
+    const statEl = document.getElementById('stat-ejabberd');
+    if (data.error) {
+      statEl.textContent = '?';
+      tile.title = `ejabberd unreachable: ${data.error}`;
+      tile.className = 'card border-danger text-center py-2';
+      return;
+    }
+    statEl.textContent = `${data.online_count} / ${data.registered_count}`;
+    tile.title = data.node_status;
+    tile.className = 'card border-secondary text-center py-2';
+
+    // bare JID local-parts currently connected, e.g. "camera@localhost/pyobs" -> "camera"
+    const connected = new Set(data.connected.map(s => s.jid.split('@')[0]));
+
+    document.querySelectorAll('tr[data-module-row]').forEach(row => {
+      const commUser = row.dataset.commUser;
+      const indicator = row.querySelector('.xmpp-indicator');
+      if (!commUser) {
+        indicator.classList.add('d-none');
+        return;
+      }
+      indicator.classList.remove('d-none');
+      if (connected.has(commUser)) {
+        indicator.className = 'bi bi-chat-dots-fill xmpp-indicator ms-1 text-success';
+        indicator.title = `XMPP connected as "${commUser}"`;
+      } else {
+        indicator.className = 'bi bi-chat-dots xmpp-indicator ms-1 text-warning';
+        indicator.title = `XMPP not connected (expected identity: "${commUser}")`;
+      }
+    });
+  } catch (_) {}
+}
+
 updateSortHeaders();
 refreshAllStatuses();
 setInterval(refreshAllStatuses, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
+refreshEjabberd();
+setInterval(refreshEjabberd, 10000);
 </script>
 {% endblock %}

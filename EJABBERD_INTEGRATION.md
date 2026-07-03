@@ -1,15 +1,18 @@
-# pyobs-web-admin: ejabberd integration — v0.6 (2026-07-03, 20:30)
+# pyobs-web-admin: ejabberd integration — v0.7 (2026-07-03, 21:15)
 
 ## Status
 
-Design settled (v0.2–v0.5, see version history in git blame if needed), implementation
-starting now — see **Progress log** below for exactly what's done and what's next, kept
-current the same way ACL_MATRIX.md's is. `ejabberdctl` is kept as a documented fallback to
-`mod_http_api`, not deleted from the plan. IP-only (`acl: loopback`) is the settled v1
-security model — see "Credential layer investigation" in Security model for why. See
-ACL_MATRIX.md for the ACL matrix feature this one is related to but separate from (both
-surface "who can talk to what," but this one reads live XMPP server state rather than
-static config).
+**All 7 Work Plan items done — this feature is fully implemented and verified against a
+live instance, end to end.** See **Progress log** below for exactly what shipped and how it
+was verified; that section stays the authoritative record even though there's no more Work
+Plan left to narrate. `ejabberdctl` is kept as a documented fallback to `mod_http_api`, not
+deleted from the plan. IP-only (`acl: loopback`) is the settled security model — see
+"Credential layer investigation" in Security model for why. Not in this pass, and open for
+later if wanted: the "typo/staleness detection" tie-in with `ACL_MATRIX.md` (cross-checking
+`acl:` callers against `registered_users`) mentioned in Current state, and write actions
+(register/unregister/password), explicitly out of scope per Motivation. See ACL_MATRIX.md
+for the ACL matrix feature this one is related to but separate from (both surface "who can
+talk to what," but this one reads live XMPP server state rather than static config).
 
 ## Progress log
 
@@ -110,6 +113,50 @@ authoritative state, this log just narrates it.
   silently wrong answer. Not yet wired into any page — that's item 7, which is also where an
   "ejabberd unreachable" indicator (if ever needed) would be built around this same
   exception, the same way the ACL matrix already handles one host being down.
+- **Done — Work Plan item 7. Last Work Plan item — this doc's implementation phase is
+  complete.** Two new *browser-facing* endpoints, distinct from item 5's hub-facing "dumb"
+  ones: `GET /api/ejabberd-summary/` (delegates via `_ejabberd_status()`, gated by
+  `EJABBERD_ENABLED` — returns `{"enabled": false}` without querying anything if the feature
+  is off; deliberately *not* host-aware via the session's active host like most API views
+  here, since ejabberd is one shared server for the whole fleet, so the summary is the same
+  regardless of which host's dashboard is being viewed) and `GET
+  /api/modules/<name>/ejabberd/` (host-aware in the module sense — proxies the whole
+  request to the module's own host first, exactly like `api_acl`'s GET branch, then once
+  local, resolves `comm.user` and delegates to `_ejabberd_user()`). `api_all_statuses` also
+  gained a `comm_user` field per module, reusing the existing 10s status-poll response
+  rather than a separate request.
+
+  Dashboard: a summary tile (`online / registered` counts, node status as a tooltip) next
+  to the existing Total/Running/Stopped/RAM/CPU tiles, plus a small icon next to each
+  module's status badge — filled green "connected" if that module's `comm_user` is in the
+  live connected list, outlined amber "not connected" if it has a `comm_user` but isn't,
+  and altogether absent (not just hidden) for a module with no `comm_user` at all. Both
+  poll on the existing 10s `refreshAllStatuses`/new `refreshEjabberd` cadence, per the
+  resolved refresh-cadence question. Module page: a new row in the Overview tab (alongside
+  PID/uptime/memory/CPU), showing connected-since/IP/connection type if live, last-seen (or
+  "never connected") if not, or a distinct "not a registered account" state — omitted
+  entirely for a module with no `comm_user`.
+
+  **A real gap caught by testing, not just assumed correct**: the per-module dashboard
+  indicator and the module page's row were initially only CSS-hidden (`d-none`) when
+  `EJABBERD_ENABLED` was `False`, not template-omitted like the summary tile — meaning the
+  resolved "silent absence" decision was only half-implemented. Caught by testing the
+  disabled case explicitly with the Django test client (checking for the literal HTML tag,
+  not a naive substring match — a first pass at that same check gave a false positive by
+  matching JS code's own `getElementById('ejabberd-tile')` string). Fixed by wrapping both
+  in `{% if ejabberd_enabled %}`, then re-verified disabled produces zero markup and enabled
+  produces exactly the expected elements, both via the test client and against the live
+  scratch server.
+
+  Verified live end-to-end against the real instance (scratch settings module pointed at
+  the real `PYOBS_CONFIG_DIR` and real ejabberd, not touching `local_settings.py`): dashboard
+  tile and `/api/ejabberd-summary/` correct; `/api/modules/camera/ejabberd/` correctly
+  showed the real "not connected, last seen with an actual disconnect reason" state (`camera`
+  didn't stay running long enough in this sandbox to catch it live-connected again, but that
+  exact response shape was already verified as real earlier in this doc's design phase);
+  `/api/modules/filecache/ejabberd/` correctly returned `{"comm_user": null}` for
+  `HttpFileCache`. `python manage.py test modules` — 63/63 passing (no new permanent tests
+  for these views, matching this repo's established convention).
 
 ## Motivation
 
@@ -465,5 +512,5 @@ static; this is live server state):
 - [x] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config. → `modules/services.py`, tests in `modules/tests.py`.
 - [x] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`). → `GET /api/ejabberd/status/`, `GET /api/ejabberd/user/<user>/` in `views.py`/`urls.py`.
 - [x] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation). → `views._ejabberd_host_config`/`_ejabberd_status`/`_ejabberd_user`, verified via a real two-instance hub/spoke pair.
-- [ ] Dashboard: summary tile + per-module "XMPP connected" indicator, on the existing 10s status-poll cadence (no longer needs its own slower schedule, see Open questions).
-- [ ] Module detail page: session / last-seen / registered-check block in the Overview tab.
+- [x] Dashboard: summary tile + per-module "XMPP connected" indicator, on the existing 10s status-poll cadence (no longer needs its own slower schedule, see Open questions). → `templates/modules/dashboard.html`, `api_ejabberd_summary`, `comm_user` added to `api_all_statuses`.
+- [x] Module detail page: session / last-seen / registered-check block in the Overview tab. → `templates/modules/detail.html`, `api_module_ejabberd`.

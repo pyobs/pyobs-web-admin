@@ -92,7 +92,10 @@ def dashboard(request):
             modules = []
     else:
         modules = services.list_modules()
-    return render(request, "modules/dashboard.html", {"modules": modules})
+    return render(request, "modules/dashboard.html", {
+        "modules": modules,
+        "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
+    })
 
 
 def module_detail(request, name: str):
@@ -115,6 +118,7 @@ def module_detail(request, name: str):
             "config_dir": "(remote)",
             "log_dir": "(remote)",
             "other_modules": other_modules,
+            "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
         })
     _get_module_or_404(name)
     config = services.get_config(name)
@@ -125,6 +129,7 @@ def module_detail(request, name: str):
         "config_dir": settings.PYOBS_CONFIG_DIR,
         "log_dir": settings.PYOBS_LOG_DIR,
         "other_modules": [m for m in services.list_modules() if m != name],
+        "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
     })
 
 
@@ -220,7 +225,7 @@ def api_all_statuses(request):
     for m in modules:
         status = services.get_module_status(m)
         stats = services.get_module_stats(m) if status == "running" else None
-        result.append({"name": m, "status": status, "stats": stats})
+        result.append({"name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m)})
     return JsonResponse({"modules": result})
 
 
@@ -520,3 +525,45 @@ def api_ejabberd_user(request, user: str):
         "sessions": ejabberd.user_sessions_info(user),
         "last": ejabberd.get_last(user),
     })
+
+
+# ── ejabberd browser-facing API ─────────────────────────────────────────────────
+#
+# Unlike api_ejabberd_status/api_ejabberd_user above (dumb, hub-facing, always local), these
+# two are what the dashboard/module page's own JS calls directly -- they delegate per
+# EJABBERD_HOST via _ejabberd_status/_ejabberd_user, so they're correct to call regardless
+# of where ejabberd actually lives (see EJABBERD_INTEGRATION.md, Hub-mode delegation).
+
+@require_GET
+def api_ejabberd_summary(request):
+    """Fleet-wide ejabberd summary for the dashboard's tile + per-module indicator. Not
+    host-aware via _active_host like most of this app's other API views -- ejabberd is
+    normally one shared server for the whole fleet (see EJABBERD_INTEGRATION.md), so this
+    answers the same regardless of which host's dashboard is currently being viewed."""
+    if not getattr(settings, "EJABBERD_ENABLED", False):
+        return JsonResponse({"enabled": False})
+    try:
+        return JsonResponse({"enabled": True, **_ejabberd_status()})
+    except Exception as e:
+        return JsonResponse({"enabled": True, "error": str(e)}, status=502)
+
+
+@require_GET
+def api_module_ejabberd(request, name: str):
+    """Per-module ejabberd state for the module page's Overview tab. Host-aware in two
+    separate layers: which instance actually runs module `name` (session's active host,
+    like every other module_detail-feeding endpoint -- proxies the whole request there if
+    remote), and, once resolved locally, which host ejabberd itself lives on (EJABBERD_HOST,
+    via _ejabberd_user) -- these can be two different hosts entirely. A module with no
+    comm.user answers {"comm_user": None} without attempting any ejabberd query at all."""
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", f"/api/modules/{name}/ejabberd/")
+    _get_module_or_404(name)
+    comm_user = services.get_comm_user(name)
+    if comm_user is None:
+        return JsonResponse({"comm_user": None})
+    try:
+        return JsonResponse(_ejabberd_user(comm_user))
+    except Exception as e:
+        return JsonResponse({"comm_user": comm_user, "error": str(e)}, status=502)

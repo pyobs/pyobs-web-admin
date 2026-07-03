@@ -77,6 +77,9 @@
         <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
+        {% if ejabberd_enabled %}
+        <tr id="stat-ejabberd-row" class="d-none"><th class="text-muted fw-normal pe-4">XMPP</th><td id="stat-ejabberd"></td></tr>
+        {% endif %}
         <tr><th class="text-muted fw-normal pe-4">Log messages</th>
           <td>
             <div class="d-flex gap-3 flex-wrap">
@@ -214,6 +217,7 @@ Loading…</pre>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/addon/mode/overlay.min.js"></script>
 <script>
 const MODULE = "{{ module_name }}";
+const EJABBERD_ENABLED = {{ ejabberd_enabled|yesno:"true,false" }};
 
 // ── Status ────────────────────────────────────────────────────────────────────
 function fmtUptime(s) {
@@ -254,6 +258,40 @@ async function updateStatus() {
     memRow.classList.add('d-none');
     cpuRow.classList.add('d-none');
   }
+}
+
+// ── ejabberd ────────────────────────────────────────────────────────────────────
+async function refreshEjabberd() {
+  if (!EJABBERD_ENABLED) return;  // don't even fetch -- feature is off for this fleet
+  const row = document.getElementById('stat-ejabberd-row');
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/ejabberd/`);
+    const data = await resp.json();
+    if (!data.comm_user) {
+      row.classList.add('d-none');  // module has no comm.user -- was never expected to connect
+      return;
+    }
+    const cell = document.getElementById('stat-ejabberd');
+    const commUser = escapeHtml(data.comm_user);
+    if (data.error) {
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>ejabberd unreachable: ${escapeHtml(data.error)}</span>`;
+      row.classList.remove('d-none');
+      return;
+    }
+    if (!data.registered) {
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>"${commUser}" is not a registered XMPP account</span>`;
+    } else if (data.sessions && data.sessions.length > 0) {
+      const s = data.sessions[0];
+      cell.innerHTML = `<span class="text-success"><i class="bi bi-chat-dots-fill me-1"></i>Connected as "${commUser}"</span>
+        <span class="text-secondary small ms-2">${fmtUptime(s.uptime)} · ${escapeHtml(s.ip)} · ${escapeHtml(s.connection)}</span>`;
+    } else {
+      const last = data.last;
+      const lastText = last && last.status !== 'NOT FOUND' ? `last seen ${escapeHtml(last.timestamp)} (${escapeHtml(last.status)})` : 'never connected';
+      cell.innerHTML = `<span class="text-warning"><i class="bi bi-chat-dots me-1"></i>"${commUser}" not connected</span>
+        <span class="text-secondary small ms-2">${lastText}</span>`;
+    }
+    row.classList.remove('d-none');
+  } catch (_) {}
 }
 
 // ── Activate / Deactivate ─────────────────────────────────────────────────────
@@ -516,6 +554,8 @@ updateStatus();
 setInterval(updateStatus, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
+refreshEjabberd();
+setInterval(refreshEjabberd, 10000);
 
 // Start auto-refresh if enabled (default: on)
 if (autoRefreshEl.checked) logTimer = setInterval(fetchLogs, 3000);
