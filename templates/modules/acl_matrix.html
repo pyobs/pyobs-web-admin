@@ -36,6 +36,10 @@
   module's <code>acl:</code> block, whether or not that caller is itself a managed module.
   <span class="badge bg-danger-subtle text-danger-emphasis">open</span> rows have no
   <code>acl:</code> key at all — any caller may reach them.
+  The <i class="bi bi-pencil" style="font-size:0.7rem"></i> next to a module name opens its
+  config directly to the <code>acl:</code> block; a row whose <code>acl:</code> comes from a
+  shared fragment instead shows that fragment's name — edit it there, since it also applies to
+  every other module listed as sharing it.
 </p>
 
 <div class="table-responsive border rounded" style="max-height: 75vh;">
@@ -64,8 +68,13 @@
       {% endif %}
       {% if row.source %}
       <a href="{% url 'shared_detail' row.source %}" class="badge bg-secondary text-decoration-none ms-1"
-         title="acl: block is defined in shared fragment {{ row.source }}">
-        <i class="bi bi-file-earmark-text"></i> {{ row.source }}
+         title="acl: block comes from shared fragment {{ row.source }}, included by {{ row.source_count }} module{{ row.source_count|pluralize }} — edit it there so the change applies consistently, not just to this row.">
+        <i class="bi bi-file-earmark-text"></i> {{ row.source }} · {{ row.source_count }} module{{ row.source_count|pluralize }}
+      </a>
+      {% else %}
+      <a href="{% url 'module_detail' row.name %}#tab-config" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
+         title="Edit this module's acl: block directly">
+        <i class="bi bi-pencil" style="font-size:0.7rem"></i>
       </a>
       {% endif %}
     </td>

@@ -140,12 +140,17 @@ def acl_matrix(request):
         })
     matrix = services.build_acl_matrix()
     callers = matrix["callers"]
+    source_counts: dict[str, int] = {}
+    for row in matrix["targets"]:
+        if row["source"]:
+            source_counts[row["source"]] = source_counts.get(row["source"], 0) + 1
     rows = []
     for row in matrix["targets"]:
         mode = row["acl"].get("mode", "enforce") if row["acl"] else "enforce"
         rows.append({
             **row,
             "mode": mode,
+            "source_count": source_counts.get(row["source"]) if row["source"] else None,
             "cell_list": [{"caller": c, **row["cells"][c]} for c in callers],
         })
     return render(request, "modules/acl_matrix.html", {
