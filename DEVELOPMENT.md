@@ -1,8 +1,17 @@
-# pyobs-web-admin: ACL matrix page — v0.4 (2026-07-03, 12:41)
+# pyobs-web-admin: ACL matrix page — v0.5 (2026-07-03, 13:05)
 
 ## Status
 
-Design settled, implementation starting now. v0.2 added the groups/profiles concept; v0.3 added interface-name shorthand handling and the live-XMPP-discovery idea; v0.4 decides against XMPP discovery (custom wire protocol, would need real `pyobs-core` dependency) in favor of literal/badged shorthand display.
+Design settled, implementation in progress — see **Progress log** below for exactly what's done and what's next; that section is kept current so work can resume from a different machine without re-deriving state from this conversation. v0.2 added the groups/profiles concept; v0.3 added interface-name shorthand handling and the live-XMPP-discovery idea; v0.4 decided against XMPP discovery (custom wire protocol, would need real `pyobs-core` dependency) in favor of literal/badged shorthand display; v0.5 starts implementing the Work Plan below, in order.
+
+## Progress log
+
+Work Plan items are implemented top-to-bottom; check the item list at the bottom for the authoritative state, this log just narrates it.
+
+- **Done — Work Plan items 1–2.** `pyyaml>=6.0` added to `pyproject.toml` (`uv sync` run, `uv.lock` updated). `pre_process_yaml`/`include_parts`/`reload_anchors`/`replace_aliases` vendored verbatim into `modules/pyobs_config.py`, with a header comment recording the exact `pyobs-core` commit/version synced against. Unit tests in `modules/tests.py` (`IncludePartsTests`, `ReloadAnchorsTests`, `PreProcessYamlTests`) port `pyobs-core`'s own fixtures from `tests/utils/test_config.py` plus one ACL-specific case (`test_acl_block_via_include`). Uses plain `unittest.TestCase`, not Django's `TestCase` — this app has no `DATABASES` configured (sessions are signed-cookie based), so DB-wrapped test cases aren't appropriate here. Run with `python manage.py test modules` — 17/17 passing as of this entry.
+- **Done — Work Plan item 3.** `modules/services.py`: `get_resolved_acl(name) -> tuple[dict | None, str | None]` returns the module's effective `acl:` block (via `pyobs_config.pre_process_yaml` + `yaml.safe_load`) and its provenance. Provenance detection (`_acl_source_file`, private helper) only recognizes the two patterns `pyobs-web-admin`'s own editor can produce — a bare top-level `{include x.shared.yaml}` whose target defines `acl:` itself, or an `acl:` key whose entire value is one `{include x.shared.yaml}` — and conservatively falls back to reporting "own file" for anything more deeply nested (documented as a known simplifying assumption in the function's docstring, not silently). Tests: `GetResolvedAclTests` in `modules/tests.py`, using `django.test.override_settings` to point `PYOBS_CONFIG_DIR` at a temp dir (safe with plain `unittest.TestCase`, no DB involved). `python manage.py test modules` — 22/22 passing as of this entry.
+- **Done — Work Plan items 4–5.** `modules/services.py`: `build_acl_matrix() -> dict` returns `{"targets": [...], "callers": [...]}` — rows are every `list_modules()` entry (with resolved `acl`, `source`, an `open` flag, an `error` slot), columns are the sorted union of every caller name mentioned in any target's `allow` keys or `deny` list (via `get_resolved_acl`), not limited to modules this installation itself runs. Per-`(target, caller)` cell values (`_acl_cell`) follow the table in "What the matrix shows": `open`/`all`/`methods`/`denied`, each carrying `mode` (`enforce`/`log`). Interface-name shorthand entries (item 5) are tagged `is_interface: True` per method-list entry via `_is_interface_name` — a regex heuristic (`^I[A-Z]\w*$`) rather than importing `pyobs-core`, since pyobs's own naming convention (interfaces `IPascalCase`, methods `snake_case`) makes the two patterns non-overlapping; the template layer (not yet built) is responsible for actually badging it. A malformed `acl:` block (bad YAML, non-mapping `allow`, non-list `deny`, broken `{include}`) is caught per-target and recorded in that row's `error` field rather than aborting the whole scan — validated by `test_broken_config_reported_as_error_not_crash`. Tests: `BuildAclMatrixTests` in `modules/tests.py`. `python manage.py test modules` — 28/28 passing as of this entry.
+- **Next — Work Plan item 6.** New view + template + URL entry (`modules/urls.py`) for the matrix page itself — nothing user-facing exists yet, everything so far is `services.py` plumbing only.
 
 ## Motivation
 
@@ -10,9 +19,9 @@ Design settled, implementation starting now. v0.2 added the groups/profiles conc
 
 This is a visibility/authoring problem, not an enforcement one, and `pyobs-web-admin` is the right place to solve it — it already owns exactly this kind of fleet-wide, config-editing surface (dashboard across all modules, hub mode across multiple hosts, per-module Config tab).
 
-## Current state (checked against this repo)
+## Current state (checked against this repo before implementation started; see Progress log above for what's changed since)
 
-- `modules/services.py`'s `get_config(name)`/`save_config(name, content)` and `get_shared_config`/`save_shared_config` treat config files as **opaque text** — read and written as raw strings, no YAML parsing anywhere in this repo. `pyproject.toml` has no `pyyaml` (or any YAML library) dependency.
+- `modules/services.py`'s `get_config(name)`/`save_config(name, content)` and `get_shared_config`/`save_shared_config` treat config files as **opaque text** — read and written as raw strings, no YAML parsing anywhere in this repo. `pyproject.toml` had no `pyyaml` (or any YAML library) dependency — now added, see Progress log.
 - `*.shared.yaml` fragments (`services.list_shared_configs`, matched via `*.shared.yaml` glob) and `{include}` references are a first-class *editing* concept (their own sidebar section, own editor) but `{include}` resolution itself doesn't happen server-side — the Config tab's "included shared configs are shown as clickable links" is a display affordance over the raw text, not an actual merge.
 - `pyobs-core`'s real `{include}` resolution lives in `pyobs.utils.config.pre_process_yaml` (`pyobs-core/pyobs/utils/config.py`) — regex-driven, recursive, handles nested `{include file key}` and YAML anchors/aliases across included files. It depends only on `os`, `re`, `yaml`, `io.StringIO`, `typing` — nothing else from `pyobs-core`. That matters here because this repo's README explicitly advertises "No pyobs-core dependency — communicates with pyobs directly via subprocess," so reproducing this logic has to either vendor that one function or take a very narrow dependency, not pull in all of `pyobs-core`.
 - `list_modules()` enumerates module names from config filenames in `PYOBS_CONFIG_DIR` (`*.yaml`, excluding `*.shared.yaml`). This is the existing source of truth for "which modules does this installation manage," reused below.
@@ -87,11 +96,11 @@ Hub mode already proxies dashboard/config/log actions to remote hosts transparen
 
 ## Work Plan
 
-- [ ] Add `pyyaml` to `pyproject.toml`.
-- [ ] Vendor (or reimplement, scoped to just `{include}`) `pre_process_yaml`-equivalent resolution; unit-test against `pyobs-core`'s own test fixtures for `{include}` if available, to catch drift early.
-- [ ] `services.py`: a function that, for a given module name, returns its resolved `acl:` block (`dict | None`) plus, if present, which file it actually came from (the module's own config, or a named shared fragment).
-- [ ] `services.py`: a fleet-wide scan building the (target × caller) matrix data structure described above, including the "callers not in `list_modules()`" case.
-- [ ] Cell rendering: show interface-name shorthand entries (e.g. `ICamera`) as a literal, badged value, not expanded into method names.
+- [x] Add `pyyaml` to `pyproject.toml`.
+- [x] Vendor (or reimplement, scoped to just `{include}`) `pre_process_yaml`-equivalent resolution; unit-test against `pyobs-core`'s own test fixtures for `{include}` if available, to catch drift early. → `modules/pyobs_config.py`, tests in `modules/tests.py`.
+- [x] `services.py`: a function that, for a given module name, returns its resolved `acl:` block (`dict | None`) plus, if present, which file it actually came from (the module's own config, or a named shared fragment). → `services.get_resolved_acl`.
+- [x] `services.py`: a fleet-wide scan building the (target × caller) matrix data structure described above, including the "callers not in `list_modules()`" case. → `services.build_acl_matrix`.
+- [x] Cell rendering: show interface-name shorthand entries (e.g. `ICamera`) as a literal, badged value, not expanded into method names. → data side done (`_acl_cell`/`_is_interface_name` tag each method entry with `is_interface`); template-side badge still pending, bundled into the next item.
 - [ ] New view + template + URL entry (`modules/urls.py`) for the matrix page, following the existing dashboard/module_detail pattern.
 - [ ] Editing: direct save for module-local `acl:` blocks; shared-fragment case routes to (or at minimum clearly links to) the existing `shared_detail` editor rather than writing through silently.
 - [ ] Hub mode: confirm the matrix aggregates across configured remote hosts using the existing proxying mechanism.

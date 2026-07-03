@@ -5,11 +5,15 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
 import psutil
+import yaml
 from django.conf import settings
+
+from modules.pyobs_config import pre_process_yaml
 
 
 def _config_dir() -> Path:
@@ -337,3 +341,183 @@ def save_config(name: str, content: str) -> None:
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_file}")
     config_file.write_text(content)
+
+
+# ── ACL resolution ────────────────────────────────────────────────────────────
+
+_TOP_LEVEL_KEY_RE = re.compile(r"^(\S+):(.*)$")
+_INCLUDE_RE = re.compile(r"{include (\S+)(?: (\S+))?}")
+
+
+def _shared_name(filename: str) -> str:
+    """Turns an {include ...}'d filename (e.g. "acl.shared.yaml") into the name
+    list_shared_configs()/get_shared_config() use (e.g. "acl.shared")."""
+    return filename[: -len(".yaml")] if filename.endswith(".yaml") else filename
+
+
+def _acl_source_file(raw: str) -> str | None:
+    """Given a module's raw (unprocessed) config text, determines whether its "acl:" key's
+    value is defined directly in the module's own file or pulled in from a shared fragment
+    via {include}. Returns the shared fragment's name (as used by list_shared_configs()),
+    or None if the acl block (if any) is defined locally.
+
+    Only recognizes the two patterns pyobs-web-admin's own editor can produce (see
+    DEVELOPMENT.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
+    whose target's own top-level content defines "acl:", or an "acl:" key whose entire
+    value is a single `{include x.shared.yaml}`. A more deeply nested include structure
+    (e.g. an include reaching into a dotted sub-key of a larger fragment) falls back to
+    being reported as "own file" -- a conservative default: such a rule just isn't routed
+    to a shared-fragment edit yet, and is edited in the module's own file instead.
+    """
+    lines = raw.splitlines()
+    acl_block: list[str] | None = None
+    bare_includes: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "acl":
+                block = [line]
+                i += 1
+                while i < len(lines) and (lines[i] == "" or lines[i][0].isspace()):
+                    block.append(lines[i])
+                    i += 1
+                acl_block = block
+                continue
+            inc = _INCLUDE_RE.fullmatch(line.strip())
+            if inc:
+                bare_includes.append(inc.group(1))
+        i += 1
+
+    if acl_block is not None:
+        inline_value = acl_block[0].split(":", 1)[1].strip()
+        body = "\n".join(acl_block[1:]).strip() or inline_value
+        inc = _INCLUDE_RE.fullmatch(body)
+        return _shared_name(inc.group(1)) if inc else None
+
+    for filename in bare_includes:
+        included = _config_dir() / filename
+        if included.exists() and re.search(r"(?m)^acl:", included.read_text()):
+            return _shared_name(filename)
+    return None
+
+
+def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
+    """Returns (acl_block, source) for a module's *effective* acl: config, resolving any
+    {include} the same way pyobs-core does.
+
+    acl_block is the raw "acl:" dict (with "allow"/"deny"/"mode" keys) or None if the
+    module has no acl: key at all (fully open access). source is None if the block is
+    defined directly in the module's own config file, or the shared fragment's name (as
+    used by list_shared_configs()/get_shared_config()) if pulled in via {include}.
+    """
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if not config_file.exists():
+        return None, None
+    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    acl = resolved.get("acl")
+    if acl is None:
+        return None, None
+    return acl, _acl_source_file(config_file.read_text())
+
+
+# ── ACL matrix ────────────────────────────────────────────────────────────────
+
+_INTERFACE_NAME_RE = re.compile(r"^I[A-Z]\w*$")
+
+
+def _is_interface_name(entry: str) -> bool:
+    """Heuristic for telling an interface-name shorthand entry (e.g. "ICamera") in an acl
+    allow list apart from a plain method name, without importing pyobs-core's own
+    pyobs.interfaces to check against (see DEVELOPMENT.md, "Interface-name shorthand").
+    Relies on pyobs's own naming convention: interfaces are always IPascalCase, method
+    names are always snake_case, so the two can never collide.
+    """
+    return bool(_INTERFACE_NAME_RE.match(entry))
+
+
+def _acl_cell(acl: dict | None, caller: str) -> dict:
+    """Computes one (target, caller) cell's value from the target's resolved acl: block,
+    per the table in DEVELOPMENT.md, "What the matrix shows"."""
+    if not acl:
+        return {"kind": "open", "methods": None, "mode": "enforce"}
+
+    mode = acl.get("mode", "enforce")
+    allow: dict[str, Any] | None = acl.get("allow")
+    deny = acl.get("deny")
+
+    if allow is not None:
+        entries = allow.get(caller)
+        if entries is None:
+            kind, methods = "denied", None
+        elif entries == "*":
+            kind, methods = "all", None
+        else:
+            kind, methods = "methods", [
+                {"name": e, "is_interface": _is_interface_name(e)} for e in entries
+            ]
+    elif deny is not None:
+        kind, methods = ("denied", None) if caller in deny else ("all", None)
+    else:
+        # acl: present but neither allow nor deny set -- pyobs-core's Module._acl_denied()
+        # treats this the same as no acl block at all (nothing to check against).
+        kind, methods = "all", None
+
+    return {"kind": kind, "methods": methods, "mode": mode}
+
+
+def build_acl_matrix() -> dict:
+    """Builds the fleet-wide (target x caller) ACL matrix.
+
+    Rows are every module list_modules() returns; columns are the union of every caller
+    name mentioned in any module's resolved acl: block ("allow" keys or "deny" entries) --
+    not the same set as the modules themselves, see DEVELOPMENT.md, "What the matrix
+    shows". A module whose config/acl can't be resolved (bad YAML, broken {include}, ...)
+    is still included as a row, with its "error" set, rather than aborting the whole scan.
+    """
+    targets = list_modules()
+    acls: dict[str, dict | None] = {}
+    sources: dict[str, str | None] = {}
+    errors: dict[str, str] = {}
+    callers: set[str] = set()
+
+    for name in targets:
+        try:
+            acl, source = get_resolved_acl(name)
+            if acl is not None:
+                allow = acl.get("allow")
+                deny = acl.get("deny")
+                if allow is not None and not isinstance(allow, dict):
+                    raise ValueError(f'acl "allow" must be a mapping of caller -> methods, got {type(allow).__name__}')
+                if deny is not None and not isinstance(deny, list):
+                    raise ValueError(f'acl "deny" must be a list of callers, got {type(deny).__name__}')
+        except Exception as e:
+            acl, source = None, None
+            errors[name] = str(e)
+        acls[name] = acl
+        sources[name] = source
+        if acl:
+            allow = acl.get("allow")
+            deny = acl.get("deny")
+            if isinstance(allow, dict):
+                callers.update(allow.keys())
+            if isinstance(deny, list):
+                callers.update(deny)
+
+    caller_names = sorted(callers)
+    rows = [
+        {
+            "name": name,
+            "acl": acls[name],
+            "source": sources[name],
+            "open": acls[name] is None and name not in errors,
+            "error": errors.get(name),
+            "cells": {caller: _acl_cell(acls[name], caller) for caller in caller_names},
+        }
+        for name in targets
+    ]
+
+    return {"targets": rows, "callers": caller_names}
