@@ -207,6 +207,44 @@ class GetResolvedAclTests(unittest.TestCase):
         self.assertEqual(source, "acl.shared")
 
 
+# ── services.resolve_and_validate_acl ────────────────────────────────────────────
+
+class ResolveAndValidateAclTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def test_valid_local_acl(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\nacl:\n  allow:\n    scheduler: '*'\n")
+        acl, source, error = services.resolve_and_validate_acl("cam1")
+        self.assertEqual(acl, {"allow": {"scheduler": "*"}})
+        self.assertIsNone(source)
+        self.assertIsNone(error)
+
+    def test_open_module_has_no_error(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\n")
+        acl, source, error = services.resolve_and_validate_acl("cam1")
+        self.assertIsNone(acl)
+        self.assertIsNone(source)
+        self.assertIsNone(error)
+
+    def test_malformed_allow_reports_error_not_raise(self):
+        self._write("cam1", "acl:\n  allow: [this, is, not, a, mapping]\n")
+        acl, source, error = services.resolve_and_validate_acl("cam1")
+        self.assertIsNone(acl)
+        self.assertIsNone(source)
+        self.assertIsNotNone(error)
+
+
 # ── services.build_acl_matrix ──────────────────────────────────────────────────
 
 class BuildAclMatrixTests(unittest.TestCase):

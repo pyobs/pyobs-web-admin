@@ -567,6 +567,28 @@ def _acl_cell(acl: dict | None, caller: str) -> dict:
     return {"kind": kind, "methods": methods, "mode": mode}
 
 
+def resolve_and_validate_acl(name: str) -> tuple[dict | None, str | None, str | None]:
+    """Like get_resolved_acl, but also validates the acl:'s shape (allow must be a mapping,
+    deny must be a list) and catches any resolution error (bad YAML, broken {include}, ...)
+    into a returned message instead of raising. Returns (acl, source, error) -- acl and
+    source are None whenever error is set. Shared by build_acl_matrix (one row's error
+    shouldn't abort the whole fleet-wide scan) and the single-module ACL tab endpoint
+    (api_acl's GET), which need the identical error-handling contract.
+    """
+    try:
+        acl, source = get_resolved_acl(name)
+        if acl is not None:
+            allow = acl.get("allow")
+            deny = acl.get("deny")
+            if allow is not None and not isinstance(allow, dict):
+                raise ValueError(f'acl "allow" must be a mapping of caller -> methods, got {type(allow).__name__}')
+            if deny is not None and not isinstance(deny, list):
+                raise ValueError(f'acl "deny" must be a list of callers, got {type(deny).__name__}')
+        return acl, source, None
+    except Exception as e:
+        return None, None, str(e)
+
+
 def build_acl_matrix() -> dict:
     """Builds the fleet-wide (target x caller) ACL matrix.
 
@@ -583,20 +605,11 @@ def build_acl_matrix() -> dict:
     callers: set[str] = set()
 
     for name in targets:
-        try:
-            acl, source = get_resolved_acl(name)
-            if acl is not None:
-                allow = acl.get("allow")
-                deny = acl.get("deny")
-                if allow is not None and not isinstance(allow, dict):
-                    raise ValueError(f'acl "allow" must be a mapping of caller -> methods, got {type(allow).__name__}')
-                if deny is not None and not isinstance(deny, list):
-                    raise ValueError(f'acl "deny" must be a list of callers, got {type(deny).__name__}')
-        except Exception as e:
-            acl, source = None, None
-            errors[name] = str(e)
+        acl, source, error = resolve_and_validate_acl(name)
         acls[name] = acl
         sources[name] = source
+        if error:
+            errors[name] = error
         if acl:
             allow = acl.get("allow")
             deny = acl.get("deny")

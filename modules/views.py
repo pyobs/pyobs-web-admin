@@ -103,12 +103,18 @@ def module_detail(request, name: str):
             config = cfg_data.get("content", "")
         except Exception:
             config = ""
+        try:
+            statuses = proxy.call(host, "GET", "/api/statuses/")
+            other_modules = [m["name"] for m in statuses.get("modules", []) if m["name"] != name]
+        except Exception:
+            other_modules = []
         return render(request, "modules/detail.html", {
             "module_name": name,
             "config": config,
             "active_module": name,
             "config_dir": "(remote)",
             "log_dir": "(remote)",
+            "other_modules": other_modules,
         })
     _get_module_or_404(name)
     config = services.get_config(name)
@@ -118,6 +124,7 @@ def module_detail(request, name: str):
         "active_module": name,
         "config_dir": settings.PYOBS_CONFIG_DIR,
         "log_dir": settings.PYOBS_LOG_DIR,
+        "other_modules": [m for m in services.list_modules() if m != name],
     })
 
 
@@ -371,13 +378,33 @@ def api_acl_matrix(request):
     return JsonResponse(services.build_acl_matrix())
 
 
-@require_POST
 def api_acl(request, name: str):
-    """Saves a structured acl: edit. The matrix page is host-explicit (it aggregates every
-    configured host on one page, see acl_matrix), so this always trusts the request body's
-    own "host" field rather than the session's active host -- proxying to that host's own
-    copy of this same endpoint when it isn't "localhost", exactly like the rest of this
-    app's hub-mode API views proxy per-module actions."""
+    """Reads or saves a module's structured acl: edit -- used by both the matrix page's
+    per-row modal and module_detail's own ACL tab.
+
+    GET follows the session's active host, like every other module_detail-feeding endpoint
+    (api_config, api_logs, ...) -- module_detail only ever shows one host at a time.
+
+    POST instead trusts an explicit "host" field in the request body, defaulting to
+    "localhost" when absent. The matrix page aggregates every configured host on one page
+    (see acl_matrix), so it can't rely on "the" active host the way GET does; module_detail's
+    own ACL tab sends its page's active host explicitly too, for the same reason GET can't
+    just be reused for POST here -- a POST with no "host" must mean "localhost" even if the
+    session happens to have switched to a remote host elsewhere, since silently consulting
+    session state here was a real footgun during the matrix's hub-mode work (see
+    DEVELOPMENT.md, Work Plan item 8).
+    """
+    if request.method == "GET":
+        host = _active_host(request)
+        if host:
+            return _proxy(host, "GET", f"/api/modules/{name}/acl/")
+        _get_module_or_404(name)
+        acl, source, error = services.resolve_and_validate_acl(name)
+        return JsonResponse({"acl": acl, "source": source, "error": error})
+
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError as e:
