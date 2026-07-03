@@ -151,6 +151,7 @@ def acl_matrix(request):
             **row,
             "mode": mode,
             "source_count": source_counts.get(row["source"]) if row["source"] else None,
+            "acl_data_id": f"acl-data-{row['name']}",
             "cell_list": [{"caller": c, **row["cells"][c]} for c in callers],
         })
     return render(request, "modules/acl_matrix.html", {
@@ -321,3 +322,39 @@ def api_shared_config(request, name: str):
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)}, status=500)
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@require_POST
+def api_acl(request, name: str):
+    if _active_host(request):
+        return JsonResponse(
+            {"success": False, "error": "ACL editing isn't available yet for remote hub hosts."},
+            status=400,
+        )
+    _get_module_or_404(name)
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+
+    acl = data.get("acl")
+    if acl is not None:
+        if not isinstance(acl, dict):
+            return JsonResponse({"success": False, "error": "acl must be an object or null"}, status=400)
+        allow, deny = acl.get("allow"), acl.get("deny")
+        if allow is not None and deny is not None:
+            return JsonResponse({"success": False, "error": "acl cannot have both allow and deny"}, status=400)
+        if allow is not None and not isinstance(allow, dict):
+            return JsonResponse({"success": False, "error": "allow must be a mapping of caller -> methods"}, status=400)
+        if deny is not None and not isinstance(deny, list):
+            return JsonResponse({"success": False, "error": "deny must be a list of callers"}, status=400)
+        if acl.get("mode") not in (None, "enforce", "log"):
+            return JsonResponse({"success": False, "error": "mode must be 'enforce' or 'log'"}, status=400)
+
+    try:
+        services.save_local_acl(name, acl)
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=409)
+    except FileNotFoundError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=404)

@@ -300,3 +300,86 @@ class BuildAclMatrixTests(unittest.TestCase):
         row = self._row(matrix, "cam1")
         self.assertIsNotNone(row["error"])
         self.assertFalse(row["open"])
+
+
+# ── services.save_local_acl ─────────────────────────────────────────────────────
+
+class SaveLocalAclTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def _read(self, name: str) -> str:
+        return (self.tmp_path / f"{name}.yaml").read_text()
+
+    def test_adds_acl_to_module_with_none(self):
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\n")
+        services.save_local_acl("telescope", {"allow": {"scheduler": "*"}})
+        acl, source = services.get_resolved_acl("telescope")
+        self.assertEqual(acl, {"allow": {"scheduler": "*"}})
+        self.assertIsNone(source)
+        # the rest of the file must survive untouched
+        self.assertIn("class: pyobs.modules.telescope.BaseTelescope", self._read("telescope"))
+
+    def test_replaces_existing_local_acl_block(self):
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n"
+            "acl:\n  allow:\n    scheduler: '*'\n"
+            "world:\n  class: pyobs.utils.simulation.world.SimWorld\n",
+        )
+        services.save_local_acl("cam1", {"mode": "log", "deny": ["rogue-client"]})
+        acl, source = services.get_resolved_acl("cam1")
+        self.assertEqual(acl, {"mode": "log", "deny": ["rogue-client"]})
+        self.assertIsNone(source)
+        # unrelated keys before and after the acl: block must survive untouched
+        raw = self._read("cam1")
+        self.assertIn("class: pyobs.modules.camera.BaseCamera", raw)
+        self.assertIn("world:\n  class: pyobs.utils.simulation.world.SimWorld", raw)
+
+    def test_preserves_unrelated_include_lines(self):
+        self._write("comm.shared", "comm:\n  class: pyobs.comm.xmpp.XmppComm\n")
+        self._write(
+            "cam1",
+            "{include comm.shared.yaml}\n"
+            "class: pyobs.modules.camera.BaseCamera\n"
+            "acl:\n  allow:\n    scheduler: '*'\n",
+        )
+        services.save_local_acl("cam1", {"allow": {"gui": ["expose"]}})
+        raw = self._read("cam1")
+        self.assertIn("{include comm.shared.yaml}", raw)
+        acl, _ = services.get_resolved_acl("cam1")
+        self.assertEqual(acl, {"allow": {"gui": ["expose"]}})
+
+    def test_removes_acl_entirely(self):
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\nacl:\n  allow:\n    scheduler: '*'\n",
+        )
+        services.save_local_acl("cam1", None)
+        acl, source = services.get_resolved_acl("cam1")
+        self.assertIsNone(acl)
+        self.assertIsNone(source)
+        self.assertIn("class: pyobs.modules.camera.BaseCamera", self._read("cam1"))
+
+    def test_refuses_to_write_through_shared_fragment(self):
+        self._write("acl.shared", "acl:\n  allow:\n    scheduler: '*'\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n{include acl.shared.yaml}\n",
+        )
+        with self.assertRaises(ValueError):
+            services.save_local_acl("cam1", {"allow": {"gui": ["expose"]}})
+        # nothing written -- the module's own file and the shared fragment are untouched
+        acl, source = services.get_resolved_acl("cam1")
+        self.assertEqual(acl, {"allow": {"scheduler": "*"}})
+        self.assertEqual(source, "acl.shared")

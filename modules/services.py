@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import signal
@@ -12,8 +13,18 @@ _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 import psutil
 import yaml
 from django.conf import settings
+from ruamel.yaml import YAML as _RuamelYAML
 
 from modules.pyobs_config import pre_process_yaml
+
+# Used only to serialize a *fresh* acl: block for _replace_local_acl_block -- ruamel's
+# round-trip dumper reads more like hand-written YAML (indented block sequences, minimal
+# quoting) than plain pyyaml's default output. Not used for reading/round-tripping a whole
+# config file: the raw file can contain bare {include ...} lines that aren't valid
+# standalone YAML (see pyobs_config.pre_process_yaml), so it's never parsed generically.
+_ACL_YAML = _RuamelYAML()
+_ACL_YAML.indent(mapping=2, sequence=4, offset=2)
+_ACL_YAML.default_flow_style = False
 
 
 def _config_dir() -> Path:
@@ -422,6 +433,93 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     if acl is None:
         return None, None
     return acl, _acl_source_file(config_file.read_text())
+
+
+def _dump_acl_block(acl: dict) -> list[str]:
+    """Serializes {"acl": acl} via ruamel.yaml into the lines spliced into a module's raw
+    config text by _replace_local_acl_block. This only ever generates a *fresh* acl: block
+    from scratch -- it isn't a round-trip of the file's previous acl: content, so any
+    comments a human had written inside the old block are lost on save (comments elsewhere
+    in the file are untouched, since the splice never rewrites those lines)."""
+    buf = io.StringIO()
+    _ACL_YAML.dump({"acl": acl}, buf)
+    return buf.getvalue().rstrip("\n").splitlines()
+
+
+def _replace_local_acl_block(raw: str, acl: dict | None) -> str:
+    """Replaces (or adds, or removes) a module's top-level "acl:" block in its raw config
+    text, leaving every other line -- other keys, {include ...} directives, comments, blank
+    lines -- byte-for-byte untouched. Only valid to call when the acl: block is known to be
+    defined directly in this file rather than pulled in via {include} (callers must check
+    get_resolved_acl's source is None first -- see DEVELOPMENT.md, "Editing from the
+    matrix", for why writing through a shared fragment must never happen silently).
+
+    Locates the block the same way _acl_source_file does (walk top-level keys, a "acl:"
+    line plus every following blank-or-indented line is the block), except a blank line
+    ends the block here rather than being absorbed into it -- a simplifying assumption
+    (an acl: block with an intentional blank line in the middle of it, e.g. between "mode:"
+    and "allow:", would confuse this). save_local_acl re-resolves the acl: after writing
+    and rolls back on mismatch, which catches this rather than silently corrupting the file.
+    """
+    lines = raw.splitlines()
+    start = end = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "acl":
+                start = i
+                i += 1
+                while i < len(lines) and lines[i] != "" and lines[i][0].isspace():
+                    i += 1
+                end = i
+                break
+        i += 1
+
+    new_block = _dump_acl_block(acl) if acl else []
+
+    if start is not None:
+        result = lines[:start] + new_block + lines[end:]
+    elif new_block:
+        result = lines + ([""] if lines and lines[-1] != "" else []) + new_block
+    else:
+        return raw
+
+    return "\n".join(result) + "\n"
+
+
+def save_local_acl(name: str, acl: dict | None) -> None:
+    """Writes a structured acl: edit (from the matrix's per-target edit form) into a
+    module's own raw config file.
+
+    Splices just the acl: block into the raw text (_replace_local_acl_block) rather than
+    doing a full YAML round-trip of the whole file, since the raw file can contain bare
+    {include ...} lines that aren't valid standalone YAML on their own (see
+    pyobs_config.pre_process_yaml) -- a generic YAML parser can't load it directly.
+
+    Refuses to write if the module's acl: currently comes from a shared fragment; callers
+    must route that edit to the fragment's own file instead (get_resolved_acl's source).
+    After writing, re-resolves the module's acl: and rolls back to the original content if
+    it doesn't match what was requested -- seeing DEVELOPMENT.md's note on the splice's
+    simplifying assumption, this is the safety net against a silent bad write rather than
+    trying to make the splice logic exhaustively correct up front.
+    """
+    validate_name(name)
+    _, source = get_resolved_acl(name)
+    if source is not None:
+        raise ValueError(f'acl: for "{name}" comes from shared fragment "{source}" -- edit it there instead')
+
+    original = get_config(name)
+    if original is None:
+        raise FileNotFoundError(f"Config file not found for module: {name}")
+
+    save_config(name, _replace_local_acl_block(original, acl))
+
+    resolved, new_source = get_resolved_acl(name)
+    if new_source is not None or (resolved or None) != (acl or None):
+        save_config(name, original)
+        raise ValueError("could not verify the acl: edit after writing -- rolled back, no changes made")
 
 
 # ── ACL matrix ────────────────────────────────────────────────────────────────

@@ -12,4 +12,5 @@ dependencies = [
     "psutil>=6.0",
     "pyyaml>=6.0",
     "requests>=2.32",
+    "ruamel.yaml>=0.18",
 ]
