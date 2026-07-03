@@ -1,8 +1,8 @@
-# pyobs-web-admin: ACL matrix page — v0.2 (2026-07-03, 12:28)
+# pyobs-web-admin: ACL matrix page — v0.4 (2026-07-03, 12:41)
 
 ## Status
 
-Design only, nothing implemented yet. First entry in this file. v0.2 adds the groups/profiles concept below.
+Design settled, implementation starting now. v0.2 added the groups/profiles concept; v0.3 added interface-name shorthand handling and the live-XMPP-discovery idea; v0.4 decides against XMPP discovery (custom wire protocol, would need real `pyobs-core` dependency) in favor of literal/badged shorthand display.
 
 ## Motivation
 
@@ -39,11 +39,21 @@ Cell values, derived per (target, caller) pair from the target's resolved `acl:`
 
 "Open" targets (no `acl:` at all) are worth surfacing prominently rather than just leaving blank — the matrix's main value is spotting modules that *should* have a policy and don't, not just displaying ones that already do.
 
+> **Call-out:** an `allow` entry may itself be an interface name (e.g. `ICamera`) rather than a method name — `pyobs-core` expands this at runtime into that interface's full method list (see below). The matrix does **not** perform this expansion; it shows the entry as-is, badged to distinguish it from a plain method name (e.g. `ICamera (interface)`). See "Interface-name shorthand" below for why, and for a possible way to close this gap later.
+
 ### Resolving `{include}` correctly
 
 The matrix has to read each module's **effective** config, not its literal file content — an `acl:` block that lives in a `*.shared.yaml` fragment and is pulled in via `{include acl.shared.yaml}` must show up for every module that includes it. Vendor `pre_process_yaml` (or a trimmed subset covering just `{include}`, if the anchor/alias handling turns out unnecessary for `acl:` blocks specifically) rather than reimplementing `{include}` parsing independently — two independent implementations of the same include syntax drifting apart is a worse outcome than one vendored copy with a comment noting its origin (`pyobs-core/pyobs/utils/config.py`) and a `pyobs-core` version it was last synced against, re-checked whenever `pyobs-core`'s version bumps.
 
 Add `pyyaml` as a real dependency of this repo — required either way (vendoring `pre_process_yaml` still needs it), and matches what `pyobs-core` already depends on.
+
+### Interface-name shorthand: static display vs. live XMPP discovery
+
+`Module.__init__` (`pyobs-core/pyobs/modules/module.py`) expands interface names in `allow` entries into that interface's full method list via `_get_interfaces_and_methods()`, which does `isinstance(self, interface)` against the module's **actual runtime class** — a class that can live in `pyobs-core` itself or in any device-driver package (`pyobs-sbig`, `pyobs-fli`, `pyobs-alpaca`, ...). Reproducing that expansion statically would mean importing the concrete class named in every module's `class:` key, i.e. potentially every device package present in the fleet, installed into `pyobs-web-admin`'s own venv — a far bigger dependency footprint than the one vendored `{include}` function, and it reintroduces the coupling the "no `pyobs-core` dependency" design principle exists to avoid. First cut, therefore: show interface-name shorthand as a literal, badged cell value rather than expanding it (see call-out above) — the matrix's job is to surface configured policy, not simulate `Module.execute()`'s runtime resolution bit-for-bit.
+
+**Idea raised: a dedicated XMPP account for `pyobs-web-admin`.** `Comm.get_interfaces(client)` (`pyobs-core/pyobs/comm/comm.py`, implemented in `pyobs/comm/xmpp/xmppcomm.py` over `slixmpp`) asks a *running* module, live, which interfaces it implements — this is XMPP disco-based, resolved by the module itself (which already has its own class and `pyobs-core` loaded) and returned as interface **names** over the wire, so the querying side never needs to import any device-driver class at all. Paired with a small vendored, `pyobs-core`-only static table of interface name → method names (built from `pyobs.interfaces`, which unlike device drivers is small, stable, and has no hardware coupling), this would let the matrix expand interface-name shorthand into real method lists without ever importing a device package — closing the gap the static approach above can't.
+
+**Decided: not pursuing this.** `get_interfaces` isn't standard XEP-0030 disco — it rides on `pyobs-core`'s own bespoke stanzas (`pyobs:event`, `pyobs:state`) and a custom `rpc.py`/`serializer.py` protocol for dataclasses and interface schemas. A "thin, vendored XMPP client" would mean reimplementing that custom wire protocol too, which is a much bigger and more drift-prone undertaking than the one `pre_process_yaml` function — doing this properly means using `pyobs-core`'s actual `XmppComm`, i.e. taking the real dependency, not a narrow one. That also adds a live network dependency (XMPP server reachability, credentials, an async session) to what is otherwise a fast, file-based page, and only works for modules that happen to be running at query time. Weighed against what it buys — expanding a cosmetic shorthand into a method list — that's disproportionate, and it breaks the README's explicit "no `pyobs-core` dependency" claim for a non-essential feature. Staying with the narrow vendor approach and literal/badged shorthand display (see call-out and cell-rendering item above) for the foreseeable future; revisit only if some other feature creates independent justification for a full `pyobs-core` dependency.
 
 ### Editing from the matrix
 
@@ -81,6 +91,7 @@ Hub mode already proxies dashboard/config/log actions to remote hosts transparen
 - [ ] Vendor (or reimplement, scoped to just `{include}`) `pre_process_yaml`-equivalent resolution; unit-test against `pyobs-core`'s own test fixtures for `{include}` if available, to catch drift early.
 - [ ] `services.py`: a function that, for a given module name, returns its resolved `acl:` block (`dict | None`) plus, if present, which file it actually came from (the module's own config, or a named shared fragment).
 - [ ] `services.py`: a fleet-wide scan building the (target × caller) matrix data structure described above, including the "callers not in `list_modules()`" case.
+- [ ] Cell rendering: show interface-name shorthand entries (e.g. `ICamera`) as a literal, badged value, not expanded into method names.
 - [ ] New view + template + URL entry (`modules/urls.py`) for the matrix page, following the existing dashboard/module_detail pattern.
 - [ ] Editing: direct save for module-local `acl:` blocks; shared-fragment case routes to (or at minimum clearly links to) the existing `shared_detail` editor rather than writing through silently.
 - [ ] Hub mode: confirm the matrix aggregates across configured remote hosts using the existing proxying mechanism.
