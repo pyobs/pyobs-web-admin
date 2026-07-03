@@ -192,6 +192,35 @@ authoritative state, this log just narrates it.
   without a false "connected" claim, while `camera` (running) still shows its real live
   session.
 
+  **Real deployment, real fourth bug — same root cause, different surface.** Reported
+  immediately after the third bug's fix: the dashboard tile showed "2 / 6," and the "6"
+  didn't correspond to anything the user recognized as their own modules. Root cause:
+  the tile's denominator was `data.registered_count`, straight from `api_ejabberd_summary`
+  — but that's `stats("registeredusers")`, ejabberd's **fleet-wide** total (every account
+  registered on the whole server, including `admin` and other roles unrelated to any
+  module this installation manages), not "how many of my own modules should be connected."
+  On the real instance: 6 registered accounts server-wide, but only 2 local, non-deactivated
+  modules (`camera`, `telescope`) actually have a `comm_user` at all — the correct fraction
+  is "2 / 2," not "2 / 6." This is architecturally the same class of mistake as the third
+  bug (trusting a broader, less-scoped signal for a claim that has to be scoped to *this
+  installation's own modules*), just on the summary tile instead of a per-module row.
+
+  Fixed by computing both numbers client-side from data already on hand, instead of
+  `api_ejabberd_summary`'s fleet-wide counts: `expected` (the denominator) is a stable,
+  config-derived tally — has a `comm_user`, isn't deactivated — deliberately independent of
+  current running status, so starting/stopping a module doesn't change what it's "supposed"
+  to add up to; `connectedCount` (the numerator) reuses the exact same per-row loop and
+  running/connected checks that already drive each row's own indicator, so the tile and the
+  indicators can never disagree with each other by construction. `api_ejabberd_summary`
+  itself is unchanged — `registered_count`/`online_count` remain accurate for what they
+  actually measure (ejabberd's own fleet-wide state); the fix was in how the dashboard
+  interpreted them, not in the data itself. Verified against the real instance: with
+  `_test` (stopped, shares `camera`'s identity), `camera` and `telescope` (both running and
+  connected), and `filecache` (no `comm_user`), manually traced the new logic against the
+  real per-module data and confirmed it now yields "2 / 2," and confirmed via `node --check`
+  against the JS actually served by the real page that the change introduced no syntax
+  errors.
+
 ## Motivation
 
 `pyobs-web-admin` usually runs on the same host as the `ejabberd` server pyobs-core's comm

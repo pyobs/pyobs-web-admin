@@ -62,7 +62,7 @@
   <div class="col">
     <div class="card border-secondary text-center py-2" id="ejabberd-tile" title="">
       <div class="fs-3 fw-bold" id="stat-ejabberd">—</div>
-      <div class="text-secondary small">XMPP online</div>
+      <div class="text-secondary small">XMPP connected</div>
     </div>
   </div>
   {% endif %}
@@ -355,28 +355,43 @@ async function refreshEjabberd() {
       tile.className = 'card border-danger text-center py-2';
       return;
     }
-    statEl.textContent = `${data.online_count} / ${data.registered_count}`;
-    tile.title = data.node_status;
     tile.className = 'card border-secondary text-center py-2';
 
     // bare JID local-parts currently connected, e.g. "camera@localhost/pyobs" -> "camera"
     const connected = new Set(data.connected.map(s => s.jid.split('@')[0]));
 
+    // The tile counts *this installation's own* modules, not data.registered_count/
+    // online_count -- those are ejabberd's fleet-wide account totals (e.g. 6 registered
+    // accounts server-wide, most of them belonging to other modules/roles this instance
+    // doesn't manage at all), which is a meaningless denominator on a per-installation
+    // dashboard. Tallied from the same rows/logic that drives each row's own indicator, so
+    // the tile and the indicators can never disagree with each other. "Expected" (the
+    // denominator) is a stable, config-derived count -- has a comm_user and isn't
+    // deactivated -- independent of whether the module happens to be running right now, so
+    // starting/stopping a module doesn't change what it's "supposed" to add up to; only the
+    // numerator (actually connected) reflects live state.
+    let expected = 0, connectedCount = 0;
+
     document.querySelectorAll('tr[data-module-row]').forEach(row => {
       const commUser = row.dataset.commUser;
       const indicator = row.querySelector('.xmpp-indicator');
-      // Gate on this module's *own* running status, not just whether commUser's bare JID
-      // happens to be connected -- two modules can share the same comm.user (e.g. a "_test"
-      // copy reusing a real module's identity), so a stopped module must never be shown as
-      // "connected" just because some other, currently-running module holds that identity's
-      // live session. Same "nothing meaningful to show" treatment as RAM/CPU/uptime, which
-      // are already blank for a module that isn't running.
+      // Deactivated modules (name starts with "_") are excluded, matching the existing
+      // Stopped-tile convention below, which already skips them the same way.
+      const deactivated = row.dataset.moduleRow.startsWith('_');
+      if (commUser && !deactivated) expected++;
+      // Gate the *indicator* on this module's own running status, not just whether
+      // commUser's bare JID happens to be connected -- two modules can share the same
+      // comm.user (e.g. a "_test" copy reusing a real module's identity), so a stopped
+      // module must never be shown as "connected" just because some other, currently-
+      // running module holds that identity's live session. Same "nothing meaningful to
+      // show" treatment as RAM/CPU/uptime, already blank for a module that isn't running.
       if (!commUser || row.dataset.moduleStatus !== 'running') {
         indicator.classList.add('d-none');
         return;
       }
       indicator.classList.remove('d-none');
       if (connected.has(commUser)) {
+        if (!deactivated) connectedCount++;
         indicator.className = 'bi bi-chat-dots-fill xmpp-indicator ms-1 text-success';
         indicator.title = `XMPP connected as "${commUser}"`;
       } else {
@@ -384,6 +399,9 @@ async function refreshEjabberd() {
         indicator.title = `XMPP not connected (expected identity: "${commUser}")`;
       }
     });
+
+    statEl.textContent = `${connectedCount} / ${expected}`;
+    tile.title = `${connectedCount} of ${expected} of this installation's own modules are XMPP-connected · ${data.node_status}`;
   } catch (_) {}
 }
 
