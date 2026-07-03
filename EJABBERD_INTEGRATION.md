@@ -11,14 +11,14 @@ depending on a not-guaranteed-to-be-enabled module; **v0.4 verifies the resultin
 control model against a real non-loopback request** (see "Security model" in Data layer)
 rather than trusting the ACL's behavior on paper, and states plainly what it does and
 doesn't protect against. `ejabberdctl` is kept as a documented fallback, not deleted from
-the plan. See DEVELOPMENT.md for the ACL matrix feature this one is related to but separate
+the plan. See ACL_MATRIX.md for the ACL matrix feature this one is related to but separate
 from (both surface "who can talk to what," but this one reads live XMPP server state rather
 than static config).
 
 ## Motivation
 
 `pyobs-web-admin` usually runs on the same host as the `ejabberd` server pyobs-core's comm
-layer connects through (`pyobs.comm.xmpp.XmppComm`, per DEVELOPMENT.md's ACL matrix doc).
+layer connects through (`pyobs.comm.xmpp.XmppComm`, per ACL_MATRIX.md's ACL matrix doc).
 ejabberd exposes the same underlying admin commands through several independent interfaces
 (`ejabberdctl`, the CLI; `mod_http_api`, HTTP+JSON; others) — either way, this is a local
 daemon this app can already query directly, the same architectural shape this app already

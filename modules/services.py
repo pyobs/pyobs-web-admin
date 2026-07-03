@@ -373,7 +373,7 @@ def _acl_source_file(raw: str) -> str | None:
     or None if the acl block (if any) is defined locally.
 
     Only recognizes the two patterns pyobs-web-admin's own editor can produce (see
-    DEVELOPMENT.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
+    ACL_MATRIX.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
     whose target's own top-level content defines "acl:", or an "acl:" key whose entire
     value is a single `{include x.shared.yaml}`. A more deeply nested include structure
     (e.g. an include reaching into a dotted sub-key of a larger fragment) falls back to
@@ -451,7 +451,7 @@ def _replace_local_acl_block(raw: str, acl: dict | None) -> str:
     text, leaving every other line -- other keys, {include ...} directives, comments, blank
     lines -- byte-for-byte untouched. Only valid to call when the acl: block is known to be
     defined directly in this file rather than pulled in via {include} (callers must check
-    get_resolved_acl's source is None first -- see DEVELOPMENT.md, "Editing from the
+    get_resolved_acl's source is None first -- see ACL_MATRIX.md, "Editing from the
     matrix", for why writing through a shared fragment must never happen silently).
 
     Locates the block the same way _acl_source_file does (walk top-level keys, a "acl:"
@@ -501,7 +501,7 @@ def save_local_acl(name: str, acl: dict | None) -> None:
     Refuses to write if the module's acl: currently comes from a shared fragment; callers
     must route that edit to the fragment's own file instead (get_resolved_acl's source).
     After writing, re-resolves the module's acl: and rolls back to the original content if
-    it doesn't match what was requested -- seeing DEVELOPMENT.md's note on the splice's
+    it doesn't match what was requested -- seeing ACL_MATRIX.md's note on the splice's
     simplifying assumption, this is the safety net against a silent bad write rather than
     trying to make the splice logic exhaustively correct up front.
     """
@@ -530,7 +530,7 @@ _INTERFACE_NAME_RE = re.compile(r"^I[A-Z]\w*$")
 def _is_interface_name(entry: str) -> bool:
     """Heuristic for telling an interface-name shorthand entry (e.g. "ICamera") in an acl
     allow list apart from a plain method name, without importing pyobs-core's own
-    pyobs.interfaces to check against (see DEVELOPMENT.md, "Interface-name shorthand").
+    pyobs.interfaces to check against (see ACL_MATRIX.md, "Interface-name shorthand").
     Relies on pyobs's own naming convention: interfaces are always IPascalCase, method
     names are always snake_case, so the two can never collide.
     """
@@ -539,7 +539,7 @@ def _is_interface_name(entry: str) -> bool:
 
 def _acl_cell(acl: dict | None, caller: str) -> dict:
     """Computes one (target, caller) cell's value from the target's resolved acl: block,
-    per the table in DEVELOPMENT.md, "What the matrix shows"."""
+    per the table in ACL_MATRIX.md, "What the matrix shows"."""
     if not acl:
         return {"kind": "open", "methods": None, "mode": "enforce"}
 
@@ -594,7 +594,7 @@ def build_acl_matrix() -> dict:
 
     Rows are every module list_modules() returns; columns are the union of every caller
     name mentioned in any module's resolved acl: block ("allow" keys or "deny" entries) --
-    not the same set as the modules themselves, see DEVELOPMENT.md, "What the matrix
+    not the same set as the modules themselves, see ACL_MATRIX.md, "What the matrix
     shows". A module whose config/acl can't be resolved (bad YAML, broken {include}, ...)
     is still included as a row, with its "error" set, rather than aborting the whole scan.
     """
@@ -636,7 +636,7 @@ def build_acl_matrix() -> dict:
 
 def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
     """Combines each host's build_acl_matrix()-shaped result into one fleet-wide matrix --
-    see DEVELOPMENT.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
+    see ACL_MATRIX.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
     pairs, e.g. [("localhost", build_acl_matrix()), ("MONETS", <that host's own matrix,
     fetched via the hub proxy>), ...].
 

@@ -151,7 +151,7 @@ def _cross_host_url(host: str, url_name: str, arg: str) -> str:
 
 
 def acl_matrix(request):
-    # Aggregates across every configured hub host (see DEVELOPMENT.md, "Hub mode
+    # Aggregates across every configured hub host (see ACL_MATRIX.md, "Hub mode
     # interaction") regardless of which host is currently "active" in the session --
     # unlike the rest of this app's hub-mode views, this page's whole point is to show
     # fleet-wide policy in one place, not to view one host at a time.
@@ -374,7 +374,7 @@ def api_shared_config(request, name: str):
 def api_acl_matrix(request):
     """Queried by another pyobs-web-admin instance acting as a hub, to fold this
     installation's own local ACL matrix into its fleet-wide view -- see
-    services.merge_acl_matrices and DEVELOPMENT.md, "Hub mode interaction"."""
+    services.merge_acl_matrices and ACL_MATRIX.md, "Hub mode interaction"."""
     return JsonResponse(services.build_acl_matrix())
 
 
@@ -392,7 +392,7 @@ def api_acl(request, name: str):
     just be reused for POST here -- a POST with no "host" must mean "localhost" even if the
     session happens to have switched to a remote host elsewhere, since silently consulting
     session state here was a real footgun during the matrix's hub-mode work (see
-    DEVELOPMENT.md, Work Plan item 8).
+    ACL_MATRIX.md, Work Plan item 8).
     """
     if request.method == "GET":
         host = _active_host(request)
