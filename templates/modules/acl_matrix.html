@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}ACL Matrix — pyobs Web Admin{% endblock %}
+
+{% block extra_head %}
+<style>
+  #acl-matrix th, #acl-matrix td { white-space: nowrap; }
+  #acl-matrix .col-target {
+    position: sticky;
+    left: 0;
+    background-color: #212529;
+    z-index: 2;
+  }
+  #acl-matrix thead .col-target { background-color: #1a1d21; z-index: 3; }
+  .acl-cell-methods { white-space: normal; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">ACL Matrix</h4>
+</div>
+
+{% if hub_unsupported %}
+<div class="alert alert-info">
+  The ACL matrix isn't available yet for remote hub hosts — switch to <strong>localhost</strong> to view it.
+</div>
+{% elif not targets %}
+<div class="alert alert-warning">
+  No modules found. Make sure <code>PYOBS_CONFIG_DIR</code> points to your config directory
+  and contains <code>.yaml</code> files.
+</div>
+{% else %}
+<p class="text-muted small">
+  Rows are modules this installation manages; columns are every caller name referenced in any
+  module's <code>acl:</code> block, whether or not that caller is itself a managed module.
+  <span class="badge bg-danger-subtle text-danger-emphasis">open</span> rows have no
+  <code>acl:</code> key at all — any caller may reach them.
+</p>
+
+<div class="table-responsive border rounded" style="max-height: 75vh;">
+<table class="table table-sm table-hover align-middle mb-0" id="acl-matrix">
+  <thead>
+    <tr>
+      <th class="col-target">Target</th>
+      {% for caller in callers %}
+      <th class="text-center small">
+        {% if caller in module_names %}
+        <a href="{% url 'module_detail' caller %}" class="text-decoration-none text-reset">{{ caller }}</a>
+        {% else %}
+        {{ caller }}
+        {% endif %}
+      </th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in targets %}
+  <tr>
+    <td class="col-target fw-semibold">
+      <a href="{% url 'module_detail' row.name %}" class="text-decoration-none text-reset">{{ row.name }}</a>
+      {% if row.mode == 'log' %}
+      <span class="badge bg-warning text-dark ms-1" title="acl: mode: log — not yet enforced">log</span>
+      {% endif %}
+      {% if row.source %}
+      <a href="{% url 'shared_detail' row.source %}" class="badge bg-secondary text-decoration-none ms-1"
+         title="acl: block is defined in shared fragment {{ row.source }}">
+        <i class="bi bi-file-earmark-text"></i> {{ row.source }}
+      </a>
+      {% endif %}
+    </td>
+    {% if row.error %}
+    <td colspan="{{ callers|length }}" class="text-danger small">
+      <i class="bi bi-exclamation-triangle me-1"></i>{{ row.error }}
+    </td>
+    {% elif row.open %}
+    <td colspan="{{ callers|length }}">
+      <span class="badge bg-danger-subtle text-danger-emphasis">open — no acl:, every caller allowed</span>
+    </td>
+    {% else %}
+    {% for cell in row.cell_list %}
+    <td class="text-center small">
+      {% if cell.kind == 'denied' %}
+      <span class="text-muted">—</span>
+      {% elif cell.kind == 'all' %}
+      <span class="badge bg-success">all</span>
+      {% elif cell.kind == 'methods' %}
+      <div class="acl-cell-methods">
+        {% for m in cell.methods %}
+        <span class="badge {% if m.is_interface %}bg-info text-dark{% else %}bg-primary{% endif %} me-1 mb-1"
+              {% if m.is_interface %}title="interface shorthand — pyobs-core expands this to that interface's methods at runtime"{% endif %}>
+          {{ m.name }}{% if m.is_interface %} (interface){% endif %}
+        </span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </td>
+    {% endfor %}
+    {% endif %}
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

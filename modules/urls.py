@@ -7,6 +7,7 @@ urlpatterns = [
     path("set-host/<str:name>/", views.set_host, name="set_host"),
     path("modules/<str:name>/", views.module_detail, name="module_detail"),
     path("shared/<str:name>/", views.shared_detail, name="shared_detail"),
+    path("acl/", views.acl_matrix, name="acl_matrix"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),

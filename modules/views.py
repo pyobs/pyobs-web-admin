@@ -129,6 +129,33 @@ def shared_detail(request, name: str):
     })
 
 
+def acl_matrix(request):
+    host = _active_host(request)
+    if host:
+        # Hub mode aggregation isn't wired up yet (see DEVELOPMENT.md Work Plan) --
+        # build_acl_matrix() only reads the local PYOBS_CONFIG_DIR.
+        return render(request, "modules/acl_matrix.html", {
+            "active_acl_matrix": True,
+            "hub_unsupported": True,
+        })
+    matrix = services.build_acl_matrix()
+    callers = matrix["callers"]
+    rows = []
+    for row in matrix["targets"]:
+        mode = row["acl"].get("mode", "enforce") if row["acl"] else "enforce"
+        rows.append({
+            **row,
+            "mode": mode,
+            "cell_list": [{"caller": c, **row["cells"][c]} for c in callers],
+        })
+    return render(request, "modules/acl_matrix.html", {
+        "active_acl_matrix": True,
+        "targets": rows,
+        "callers": callers,
+        "module_names": set(services.list_modules()),
+    })
+
+
 # ── Status API ────────────────────────────────────────────────────────────────
 
 @require_GET
