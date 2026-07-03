@@ -1,11 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import yaml
 from django.test import override_settings
 
-from modules import services
+from modules import ejabberd, services
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
 
 
@@ -463,3 +464,195 @@ class MergeAclMatricesTests(unittest.TestCase):
         cam1_cells = self._row(merged, "localhost", "cam1")["cells"]
         self.assertEqual(cam1_cells["scheduler"]["kind"], "all")
         self.assertEqual(cam1_cells["rogue-client"]["kind"], "denied")  # allow-listed, not mentioned -> denied
+
+
+# ── ejabberd ──────────────────────────────────────────────────────────────────
+#
+# Fixtures below are the exact responses captured against a real, running ejabberd 24.12-4
+# instance during EJABBERD_INTEGRATION.md's design phase (see that doc's Data layer), not
+# invented shapes -- both the HTTP (mod_http_api) and ejabberdctl paths are covered since
+# ejabberdctl is a real fallback, not dead code (see modules/ejabberd.py, _use_http).
+
+class EjabberdHttpTests(unittest.TestCase):
+    """EJABBERD_API_URL set -> HTTP path. Mocks requests.post's response only; the URL/JSON
+    body construction itself is exercised for real (not mocked) via the assertion on what
+    _http.post was called with."""
+
+    def setUp(self):
+        self._settings = override_settings(
+            EJABBERD_API_URL="http://127.0.0.1:5281/api", EJABBERD_DOMAIN="localhost",
+        )
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+
+    def _mock_response(self, json_body):
+        resp = MagicMock()
+        resp.json.return_value = json_body
+        resp.raise_for_status.return_value = None
+        return resp
+
+    @patch("modules.ejabberd._http.post")
+    def test_status(self, mock_post):
+        mock_post.return_value = self._mock_response(
+            "The node ejabberd@localhost is started. Status: started  ejabberd 24.12-4 is running in that node"
+        )
+        self.assertEqual(ejabberd.status(), "The node ejabberd@localhost is started. Status: started  ejabberd 24.12-4 is running in that node")
+        mock_post.assert_called_once_with("http://127.0.0.1:5281/api/status", json={}, timeout=5)
+
+    @patch("modules.ejabberd._http.post")
+    def test_stats(self, mock_post):
+        mock_post.return_value = self._mock_response(6)
+        self.assertEqual(ejabberd.stats("registeredusers"), 6)
+        mock_post.assert_called_once_with(
+            "http://127.0.0.1:5281/api/stats", json={"name": "registeredusers"}, timeout=5
+        )
+
+    @patch("modules.ejabberd._http.post")
+    def test_connected_users_info(self, mock_post):
+        mock_post.return_value = self._mock_response([{
+            "jid": "camera@localhost/pyobs", "connection": "c2s_tls", "ip": "::1", "port": 51918,
+            "priority": 0, "node": "ejabberd@localhost", "uptime": 5, "status": "available",
+            "resource": "pyobs", "statustext": "",
+        }])
+        result = ejabberd.connected_users_info()
+        self.assertEqual(result[0]["jid"], "camera@localhost/pyobs")
+        self.assertEqual(result[0]["resource"], "pyobs")
+
+    @patch("modules.ejabberd._http.post")
+    def test_registered_users(self, mock_post):
+        mock_post.return_value = self._mock_response(
+            ["admin", "camera", "mastermind", "observer", "scheduler", "telescope"]
+        )
+        self.assertEqual(
+            ejabberd.registered_users(),
+            ["admin", "camera", "mastermind", "observer", "scheduler", "telescope"],
+        )
+        mock_post.assert_called_once_with(
+            "http://127.0.0.1:5281/api/registered_users", json={"host": "localhost"}, timeout=5
+        )
+
+    @patch("modules.ejabberd._http.post")
+    def test_check_account_true_and_false(self, mock_post):
+        mock_post.return_value = self._mock_response(0)
+        self.assertTrue(ejabberd.check_account("camera"))
+        mock_post.return_value = self._mock_response(1)
+        self.assertFalse(ejabberd.check_account("nonexistent-user-xyz"))
+
+    @patch("modules.ejabberd._http.post")
+    def test_get_last_online(self, mock_post):
+        mock_post.return_value = self._mock_response(
+            {"timestamp": "2026-07-03T17:15:25.464942Z", "status": "ONLINE"}
+        )
+        self.assertEqual(ejabberd.get_last("camera"), {"timestamp": "2026-07-03T17:15:25.464942Z", "status": "ONLINE"})
+
+
+class EjabberdCtlFallbackTests(unittest.TestCase):
+    """EJABBERD_API_URL empty -> ejabberdctl subprocess path. Raw stdout fixtures are the
+    exact text captured from the live instance, including the trailing-tab empty
+    statustext field confirmed via `cat -A` (see EJABBERD_INTEGRATION.md, Data layer)."""
+
+    def setUp(self):
+        self._settings = override_settings(EJABBERD_API_URL="", EJABBERDCTL="ejabberdctl", EJABBERD_DOMAIN="localhost")
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+
+    def _mock_result(self, stdout="", returncode=0):
+        result = MagicMock()
+        result.stdout = stdout
+        result.returncode = returncode
+        return result
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_status(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "The node ejabberd@localhost is started with status: started\nejabberd 24.12-4 is running in that node\n"
+        )
+        self.assertIn("started", ejabberd.status())
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "status"], capture_output=True, text=True, timeout=10
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_stats(self, mock_run):
+        mock_run.return_value = self._mock_result("6\n")
+        self.assertEqual(ejabberd.stats("registeredusers"), 6)
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_connected_users_info_parses_tab_separated_line_with_jid(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "camera@localhost/pyobs\tc2s_tls\t::1\t55368\t0\tejabberd@localhost\t23\tavailable\tpyobs\t\n"
+        )
+        result = ejabberd.connected_users_info()
+        self.assertEqual(result, [{
+            "jid": "camera@localhost/pyobs", "connection": "c2s_tls", "ip": "::1", "port": 55368,
+            "priority": 0, "node": "ejabberd@localhost", "uptime": 23, "status": "available",
+            "resource": "pyobs", "statustext": "",
+        }])
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_connected_users_info_empty_result_is_not_an_error(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        self.assertEqual(ejabberd.connected_users_info(), [])
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_user_sessions_info_parses_tab_separated_line_without_jid(self, mock_run):
+        mock_run.return_value = self._mock_result("c2s_tls\t::1\t55368\t0\tejabberd@localhost\t44\tavailable\tpyobs\t\n")
+        result = ejabberd.user_sessions_info("camera")
+        self.assertEqual(result, [{
+            "connection": "c2s_tls", "ip": "::1", "port": 55368, "priority": 0,
+            "node": "ejabberd@localhost", "uptime": 44, "status": "available",
+            "resource": "pyobs", "statustext": "",
+        }])
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_registered_users(self, mock_run):
+        mock_run.return_value = self._mock_result("admin\ncamera\nmastermind\nobserver\nscheduler\ntelescope\n")
+        self.assertEqual(
+            ejabberd.registered_users(),
+            ["admin", "camera", "mastermind", "observer", "scheduler", "telescope"],
+        )
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "registered_users", "localhost"], capture_output=True, text=True, timeout=10
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_last_while_online(self, mock_run):
+        mock_run.return_value = self._mock_result("2026-07-03T17:15:25.464942Z\tONLINE\n")
+        self.assertEqual(ejabberd.get_last("camera"), {"timestamp": "2026-07-03T17:15:25.464942Z", "status": "ONLINE"})
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_last_freeform_disconnect_reason_not_a_fixed_enum(self, mock_run):
+        mock_run.return_value = self._mock_result("2026-06-16T18:14:02Z\tStream reset by peer\n")
+        self.assertEqual(
+            ejabberd.get_last("scheduler"),
+            {"timestamp": "2026-06-16T18:14:02Z", "status": "Stream reset by peer"},
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_check_account_true(self, mock_run):
+        mock_run.return_value = self._mock_result(returncode=0)
+        self.assertTrue(ejabberd.check_account("camera"))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_check_account_false(self, mock_run):
+        mock_run.return_value = self._mock_result(stdout="Error: false\n", returncode=1)
+        self.assertFalse(ejabberd.check_account("nonexistent-user-xyz"))
+
+
+class EjabberdPathSelectionTests(unittest.TestCase):
+    """Which transport gets used is decided purely by whether EJABBERD_API_URL is set, not
+    by probing/falling back on HTTP failure -- see modules.ejabberd._use_http's docstring
+    for why (ejabberdctl is a fallback for un-configured hosts, not for real HTTP errors,
+    which should surface rather than be silently masked)."""
+
+    @override_settings(EJABBERD_API_URL="http://127.0.0.1:5281/api")
+    def test_http_used_when_api_url_set(self):
+        self.assertTrue(ejabberd._use_http())
+
+    @override_settings(EJABBERD_API_URL="")
+    def test_ctl_used_when_api_url_empty(self):
+        self.assertFalse(ejabberd._use_http())

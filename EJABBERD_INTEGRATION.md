@@ -34,6 +34,30 @@ authoritative state, this log just narrates it.
   configure ejabberd for a feature that doesn't do anything yet. Promoting this into README
   is bundled into the final "Dashboard + module page" Work Plan item instead, once the
   feature is actually end-to-end functional.
+- **Done — Work Plan item 3.** `modules/ejabberd.py`: one function per command
+  (`status`/`stats`/`connected_users_info`/`registered_users`/`user_sessions_info`/
+  `get_last`/`check_account`), each choosing HTTP (`mod_http_api`) or `ejabberdctl` purely
+  based on whether `EJABBERD_API_URL` is set (`_use_http()`) — not by catching HTTP failures
+  and falling back, since a real HTTP error (bad permissions, unreachable host) should
+  surface, not be silently masked by a slower path meant for hosts that simply haven't
+  configured the HTTP API yet. Found and fixed a real bug while testing against the mocked
+  fixtures: the `ejabberdctl` fallback's `_ctl_call` originally did `.strip()` on the whole
+  subprocess output, which silently ate a *meaningful* trailing tab (`connected_users_info`/
+  `user_sessions_info`'s last field, `statustext`, is legitimately empty in practice, and
+  ejabberd's own tab-separated format still emits the trailing tab for it) — dropping that
+  key from the parsed dict entirely. Fixed by only stripping where it's actually safe
+  (`status`/`stats`, single-value results) and using `.splitlines()` (which strips `\n`
+  without touching other whitespace) everywhere a trailing empty field can be meaningful.
+  Tests (`EjabberdHttpTests`, `EjabberdCtlFallbackTests`, `EjabberdPathSelectionTests` in
+  `modules/tests.py`) mock the transport layer (`requests.post`/`subprocess.run`) but use the
+  *exact* real response strings/JSON captured against the live instance during v0.2–v0.5 as
+  fixtures, not invented shapes — this is what caught the trailing-tab bug, since a made-up
+  fixture likely wouldn't have included it. `python manage.py test modules` — 57/57 passing.
+  Verified both code paths for real afterward, not just against mocks: ran every function
+  against the live instance with `EJABBERD_API_URL` set (HTTP path) and again with it unset
+  and `EJABBERDCTL` pointed at a small `sudo -n ejabberdctl "$@"` wrapper script (ctl path,
+  since this dev box needs `sudo` for `ejabberdctl`) — both produced identical, correct
+  results matching the mocked tests exactly.
 
 ## Motivation
 
@@ -384,7 +408,7 @@ static; this is live server state):
 
 - [x] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERD_API_URL` / `EJABBERDCTL` settings. → `pyobs_web_admin/settings.py`.
 - [x] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting. → "ejabberd-side configuration (verified working)" in Data layer, already written and verified against a live instance during v0.3–v0.5. Not yet promoted into README.md's operator-facing Configuration/production-setup sections — see Progress log for why.
-- [ ] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths.
+- [x] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths. → `modules/ejabberd.py`, tests in `modules/tests.py`.
 - [ ] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config.
 - [ ] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`).
 - [ ] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation).
