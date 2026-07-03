@@ -1,24 +1,30 @@
-# pyobs-web-admin: ejabberd integration — v0.2 (2026-07-03, 17:20)
+# pyobs-web-admin: ejabberd integration — v0.4 (2026-07-03, 18:05)
 
 ## Status
 
-Design sketch only — no implementation yet. Captures the conversation that led here, plus
-(v0.2) the exact `ejabberdctl` command output formats verified against a real, running
-ejabberd instance (including a live pyobs module connection), so work can start from this
-document rather than re-deriving the reasoning or guessing at output formats once
-implementation begins. See DEVELOPMENT.md for the ACL matrix feature this one is related to
-but separate from (both surface "who can talk to what," but this one reads live XMPP server
-state rather than static config).
+Design sketch only — no implementation yet. v0.2 verified `ejabberdctl` output formats
+against a real instance; v0.3 changed the primary data-layer mechanism from `ejabberdctl`
+subprocess calls to `mod_http_api` (HTTP+JSON), after actually configuring it on the same
+live instance and measuring a ~50–60x latency drop (see Data layer) — since the premise "we
+always have full control over the ejabberd server" removes the earlier hesitation about
+depending on a not-guaranteed-to-be-enabled module; **v0.4 verifies the resulting access
+control model against a real non-loopback request** (see "Security model" in Data layer)
+rather than trusting the ACL's behavior on paper, and states plainly what it does and
+doesn't protect against. `ejabberdctl` is kept as a documented fallback, not deleted from
+the plan. See DEVELOPMENT.md for the ACL matrix feature this one is related to but separate
+from (both surface "who can talk to what," but this one reads live XMPP server state rather
+than static config).
 
 ## Motivation
 
 `pyobs-web-admin` usually runs on the same host as the `ejabberd` server pyobs-core's comm
 layer connects through (`pyobs.comm.xmpp.XmppComm`, per DEVELOPMENT.md's ACL matrix doc).
-`ejabberdctl` is ejabberd's own admin CLI — a local daemon controllable via subprocess, the
-same architectural shape this app already uses for `pyobs` itself (README: "no `pyobs-core`
-dependency — communicates with pyobs directly via subprocess"). Surfacing some of what
-`ejabberdctl` already knows closes two real visibility gaps this tool doesn't currently
-cover:
+ejabberd exposes the same underlying admin commands through several independent interfaces
+(`ejabberdctl`, the CLI; `mod_http_api`, HTTP+JSON; others) — either way, this is a local
+daemon this app can already query directly, the same architectural shape this app already
+uses for `pyobs` itself (README: "no `pyobs-core` dependency — communicates with pyobs
+directly via subprocess"). Surfacing some of what ejabberd already knows closes two real
+visibility gaps this tool doesn't currently cover:
 
 - **Process running ≠ XMPP connected.** A module's process can be alive (this app's existing
   status check passes) while its XMPP session is stuck reconnecting after a network blip —
@@ -54,10 +60,11 @@ separate design pass if wanted later.
 ### Settings
 
 ```python
-EJABBERD_ENABLED = False      # does *some* host in this fleet run ejabberd we should query
-EJABBERD_HOST = "localhost"   # which host actually runs it -- "localhost" or a HUB_HOSTS name
-EJABBERD_DOMAIN = ""          # the XMPP vhost ejabberd serves
-EJABBERDCTL = "ejabberdctl"   # path to the script, like PYOBS_EXEC -- not always on PATH
+EJABBERD_ENABLED = False                       # does *some* host in this fleet run ejabberd we should query
+EJABBERD_HOST = "localhost"                     # which host actually runs it -- "localhost" or a HUB_HOSTS name
+EJABBERD_DOMAIN = ""                            # the XMPP vhost ejabberd serves
+EJABBERD_API_URL = "http://127.0.0.1:5281/api"  # mod_http_api base URL -- primary mechanism, see Data layer
+EJABBERDCTL = "ejabberdctl"                     # path to the script, like PYOBS_EXEC -- fallback only
 ```
 
 `EJABBERD_ENABLED` gates the feature off entirely for installations without ejabberd
@@ -66,43 +73,161 @@ co-location the feature is premised on). `EJABBERD_HOST` is explicit rather than
 auto-discovered or probed, matching how `HUB_HOSTS` itself is already explicit config, not
 something this app tries to detect — the user confirmed the common case is one shared
 ejabberd server for the whole fleet, so this is a single value, not a per-host flag.
-`EJABBERD_DOMAIN` is needed for two things: several `ejabberdctl` commands are per-vhost and
-take the domain as an argument (`registered_users <domain>`), and `connected_users`-family
-commands return full JIDs (`user@domain/resource`) that need the domain stripped before
-comparing against the bare caller/`comm.user` strings used elsewhere in this app.
+`EJABBERD_DOMAIN` is needed for two things: several commands are per-vhost and take the
+domain as an argument (`registered_users`), and `connected_users`-family results return full
+JIDs (`user@domain/resource`) that need the domain stripped before comparing against the
+bare caller/`comm.user` strings used elsewhere in this app. `EJABBERD_API_URL` defaults to
+loopback, matching the ejabberd-side config below, which restricts this API to loopback
+callers specifically — pointing it anywhere else requires loosening that ACL too, a
+deliberate two-key lock rather than a single default that's easy to widen by accident.
 
 ### Data layer
 
-New module `modules/ejabberd.py` (parallel to `services.py`/`proxy.py`), wrapping
-`ejabberdctl` subprocess calls and parsing each command's line-based output. Read-only
-commands only, per the Motivation section's scope call. **Verified against a real, running
-ejabberd 24.12-4 instance** (see below) rather than assumed from documentation alone —
-`sudo -n ejabberdctl ...` works passwordlessly on the dev machine this was checked on; a real
-deployment would need `EJABBERDCTL` to already be invokable by whatever user runs
-`pyobs-web-admin`, the same assumption `PYOBS_EXEC` already makes for `pyobs` itself.
+**Primary mechanism: `mod_http_api` over HTTP, not `ejabberdctl` subprocess calls.** v0.2
+planned a subprocess wrapper around `ejabberdctl`; both are now verified against the same
+live ejabberd 24.12-4 instance, including with a real connected pyobs module, and the
+difference is decisive:
 
-| Command | Gives | Used for |
+| | `ejabberdctl` (subprocess) | `mod_http_api` (HTTP) |
 |---|---|---|
-| `status` | Two lines of text; node up ⟺ exit code `0` | Dashboard: is the XMPP backbone itself healthy |
-| `stats registeredusers` / `stats onlineusers` / `stats uptimeseconds` | One bare integer each | Dashboard summary tile — one consistent parsing path instead of three different single-purpose commands (`connected_users_number` returns the same number `stats onlineusers` does) |
-| `connected_users_info` | One tab-separated line per session: `jid  connection  ip  port  priority  node  uptime  status  resource  statustext` (10 fields; `statustext` empty in practice) | Cross-reference against modules for the "connected" indicator |
-| `registered_users <domain>` | One username per line | Later: typo/staleness detection against `acl:` callers |
-| `user_sessions_info <user> <domain>` | Same as `connected_users_info` minus the leading `jid` field (9 fields) | Module page: is *this* module's identity connected, since when, from where |
-| `get_last <user> <domain>` | `<ISO-8601 timestamp>\t<status>` — `status` is the literal string `ONLINE` if currently connected, otherwise a **freeform last-disconnect reason** (e.g. `Stream reset by peer`), not a fixed enum | Module page: "last connected 3h ago (stream reset by peer)" for a module that looks stuck |
-| `check_account <user> <domain>` | **Exit code only** — `0` = registered, `1` = not (stdout prints `Error: false`/`Error: error` on failure, but that's not what to key parsing off of) | Module page: flag a `comm.user` that isn't a real XMPP account at all |
+| Latency per call | ~0.5–0.6s (Erlang VM boot + distribution handshake per invocation — confirmed by reading `/usr/sbin/ejabberdctl` itself, not assumed) | ~0.01s (hits the already-running node directly) |
+| Response format | Line-based text, tab-separated fields, inconsistent per command (see v0.2's table) | Clean JSON per command, one shape |
+| Extra ejabberd-side config | None | `mod_http_api` enabled + `api_permissions` grant (see below) |
+| Dependency | Subprocess spawn | `requests` (already a dependency, used for hub proxying) |
 
-Confirmed on the live instance: registered accounts on this dev box are literally
-`admin, camera, mastermind, observer, scheduler, telescope` — i.e. real pyobs module names
-plus `admin`, matching this doc's assumption that ejabberd usernames, `acl:` callers, and
-`comm.user` all share one identity space. Starting a real `camera` module and re-querying
-showed `connected_users` → `camera@localhost/pyobs` (resource is the fixed string `pyobs`,
-not per-instance-random) and `get_last camera localhost` → `...Z	ONLINE` while connected,
-confirming the "currently connected" vs. "last seen" distinction above. All three
-empty-result cases (`connected_users`, `connected_users_info`, `user_sessions_info` with no
-matching session) exit `0` with empty stdout — not an error, just "nothing to report."
-Querying an unconfigured vhost (`registered_users wrong-domain`) is the clearest failure
-signature short of the binary being entirely absent: exit `1`, stdout
-`Error: error\nError: "Unknown virtual host"`.
+Given the user's "we always have full control over the ejabberd server" — the one
+precondition that made `ejabberdctl`-via-subprocess attractive (zero extra config) doesn't
+actually hold as a constraint, so there's no reason to accept 50–60x the latency. New module
+`modules/ejabberd.py` (parallel to `services.py`/`proxy.py`) wraps `EJABBERD_API_URL` calls
+via `requests.post(f"{EJABBERD_API_URL}/{command}", json=args)`; each command returns JSON
+directly, no custom text parsing needed. `ejabberdctl` is kept as a **documented fallback**
+(e.g. if `EJABBERD_API_URL` is unset or unreachable) for hosts that haven't done the
+ejabberd-side setup yet, not removed from the plan — see Work Plan.
+
+| Command | Response (JSON) | Used for |
+|---|---|---|
+| `status` | A string like `"The node ejabberd@localhost is started. Status: started  ejabberd 24.12-4 is running in that node"` | Dashboard: is the XMPP backbone itself healthy |
+| `stats` (`{"name": "registeredusers"\|"onlineusers"\|"uptimeseconds"}`) | A bare integer | Dashboard summary tile |
+| `connected_users_info` (`{}`) | `[{"jid", "connection", "ip", "port", "priority", "node", "uptime", "status", "resource", "statustext"}, ...]` | Cross-reference against modules for the "connected" indicator |
+| `registered_users` (`{"host": ...}`) | `["admin", "camera", ...]` | Later: typo/staleness detection against `acl:` callers |
+| `user_sessions_info` (`{"user": ..., "host": ...}`) | Same shape as one `connected_users_info` entry, minus `jid` | Module page: is *this* module's identity connected, since when, from where |
+| `get_last` (`{"user": ..., "host": ...}`) | `{"timestamp": "...", "status": "ONLINE"}` while connected, otherwise a **freeform last-disconnect reason** in `status` (e.g. `"Stream reset by peer"`) — not a fixed enum | Module page: "last connected 3h ago (stream reset by peer)" for a module that looks stuck |
+| `check_account` (`{"user": ..., "host": ...}`) | HTTP `200` either way, body is a bare integer: `0` = registered, `1` = not (confirmed against both a real and a nonexistent account) | Module page: flag a `comm.user` that isn't a real XMPP account at all |
+
+Confirmed live, end to end: `registered_users` → exactly
+`["admin","camera","mastermind","observer","scheduler","telescope"]` (matching this doc's
+assumption that ejabberd usernames, `acl:` callers, and `comm.user` all share one identity
+space); starting a real `camera` module and re-querying `connected_users_info` returned
+`{"jid":"camera@localhost/pyobs","connection":"c2s_tls","ip":"::1",...,"resource":"pyobs",...}`
+— resource is the fixed string `pyobs`, not per-instance-random.
+
+**Access control, verified by testing the denial path, not just the happy path:** calling an
+admin-tagged command (`registered_users`, `stats`) with no `api_permissions` grant configured
+returned `403 Forbidden` with `{"code":32,"message":"AccessRules: Account does not have the
+right to perform the operation.", ...}` — confirming `mod_http_api`'s default is deny, not
+allow, for anything beyond a handful of commands ejabberd itself tags as harmless (`status`
+worked with zero configuration). After adding the `api_permissions` grant below, the same
+calls returned `200` with correct data. This means the ejabberd-side config isn't just
+plausible on paper — it was confirmed to actually gate access, not merely assumed to.
+
+#### ejabberd-side configuration (verified working)
+
+```yaml
+listen:
+  -
+    port: 5281
+    ip: "::"                      # as configured on the box this was tested on -- reachable
+                                   # on all interfaces, so the api_permissions ACL below is
+                                   # the *real* security boundary, not a loopback bind
+    module: ejabberd_http
+    request_handlers:
+      /ws: ejabberd_http_ws        # pre-existing, unrelated to this feature
+      /api: mod_http_api           # <- added
+
+modules:
+  mod_http_api: {}
+
+api_permissions:
+  "console commands":
+    from: [ejabberd_ctl]
+    who: all
+    what: "*"
+  "pyobs-web-admin readonly":
+    from: [mod_http_api]
+    who:
+      access:
+        allow:
+          - acl: loopback
+    what:
+      - "status"
+      - "stats"
+      - "connected_users_info"
+      - "registered_users"
+      - "user_sessions_info"
+      - "get_last"
+      - "check_account"
+```
+
+Only add `/api: mod_http_api` to an **existing** `ejabberd_http` listener's
+`request_handlers` if one's already there for something else (e.g. `/ws` for
+BOSH/WebSocket) — ejabberd allows one listener per port, so a second `listen:` entry on the
+same port would conflict, not layer on top. The `what:` list is a deliberate whitelist, not
+`"*"` — `mod_http_api` can also expose `register`/`unregister`/`change_password`/etc., and
+none of those should be reachable even from loopback, per this doc's write-actions-out-of-
+scope decision. Applying this required no ejabberd restart on the instance it was tested on
+(a config reload was sufficient) — worth reconfirming per ejabberd version, since listener
+changes sometimes do require a restart.
+
+#### Security model: IP-based, not credential-based — verified, not assumed
+
+**No password, API key, or token is involved at all.** The only gate is `acl: loopback` in
+`api_permissions`, which is purely a source-IP check applied by `mod_http_api` per request —
+there is no username/password or bearer token layer configured (`mod_http_api` supports
+adding HTTP Basic Auth against an ejabberd account, or an OAuth bearer token via
+`oauth_issue_token`, as optional additional layers; neither is configured here, by choice, to
+keep this scoped to what's actually needed).
+
+This was tested against a real non-loopback request, not just asserted from ejabberd's docs,
+after noticing the listener's `ip: "::"` binds the TCP socket on *every* interface — that's a
+different, separate layer from the ACL, and worth not conflating:
+
+- The **listener binding** (`ip: "::"`) controls what can *connect* — with `"::"`, literally
+  anyone who can route to port 5281 can open a connection and send a request. Nothing at the
+  socket level blocks that.
+- The **`api_permissions` ACL** is a *request-level* check `mod_http_api` applies after the
+  connection is accepted — it inspects that request's source IP and only lets the command
+  through if it matches `loopback`.
+
+Verified by curling `192.168.178.246:5281` (the box's own real LAN-facing IP, not
+`127.0.0.1`) instead of loopback: **every command tested returned `403 Forbidden`** —
+including `registered_users`/`stats` (in the explicit whitelist) *and* `status` (which,
+before the custom `api_permissions` block existed, had worked with zero configuration at
+all — confirming the custom block now governs `status` too, not just the commands explicitly
+listed in `what:`). The identical request against `127.0.0.1` succeeded. This is real
+evidence the ACL inspects the actual connecting peer's address rather than something
+trivially bypassable from userspace — **with one honest caveat: this was tested from the same
+machine, addressed to its own LAN-facing IP, not from a genuinely separate remote host**,
+since none was available to test from. Strong evidence, not an absolute proof of the
+cross-host case.
+
+**What this security model does and doesn't protect against**, stated plainly rather than
+left implicit:
+
+- **Does protect against**: any request arriving from outside this machine, over the
+  network — confirmed above.
+- **Does not protect against**: any *other* local process or user account on the same
+  machine. The ACL is IP-based, not identity-based — it can't distinguish
+  "`pyobs-web-admin` specifically" from "anything else running on this box that can reach
+  `127.0.0.1:5281`." Whatever it can read (registered usernames, live session IPs/ports,
+  connection metadata for every connected entity) is available to any local process, not
+  scoped to this app. On the dedicated, single-purpose observatory-control machine this
+  feature is premised on, that's a small and likely acceptable residual risk — but it's a
+  conscious tradeoff, not an oversight, and worth documenting as one rather than glossing
+  over it because the loopback case works.
+- **Open, not yet decided**: whether to add a credential layer (HTTP Basic Auth against an
+  ejabberd account, or an OAuth bearer token) on top of the IP restriction, tightening
+  "any local process" down to "only a process that also holds this specific secret" — see
+  Open questions.
 
 New `services.get_comm_user(name) -> str | None`, resolving a module's config the same way
 `get_resolved_acl` does and pulling out `comm.user` (or `None` if the module has no `comm:`
@@ -114,17 +239,24 @@ Unlike the ACL matrix (every host contributes its own rows, genuinely aggregated
 is typically **one** server for the whole fleet, so this isn't a many-hosts aggregation
 problem — it's a "delegate to the one host that has it" problem:
 
-- If `EJABBERD_HOST == "localhost"`: call `ejabberdctl` directly via subprocess.
+- If `EJABBERD_HOST == "localhost"`: call `EJABBERD_API_URL` directly (loopback, per the
+  ejabberd-side config above — this instance and ejabberd are on the same box, so the
+  `acl: loopback` grant covers it).
 - Otherwise: `proxy.call()` to that host's own new local endpoint (mirrors
   `GET /api/acl-matrix/`) — which, on *that* instance, has its own `EJABBERD_HOST =
-  "localhost"` and handles the request locally. This directly answers "what if ejabberd runs
-  on a different hub server": point `EJABBERD_HOST` at that server's `HUB_HOSTS` name, and
-  every other host in the fleet transparently proxies through to it.
+  "localhost"` and hits its own loopback `EJABBERD_API_URL` locally. This directly answers
+  "what if ejabberd runs on a different hub server": point `EJABBERD_HOST` at that server's
+  `HUB_HOSTS` name, and every other host in the fleet transparently proxies through to it —
+  **not** by pointing `EJABBERD_API_URL` at that remote host's IP directly. Keeping
+  `mod_http_api` loopback-only everywhere and routing cross-host traffic through the
+  existing hub-token-authenticated proxy (rather than widening ejabberd's own ACL to accept
+  a specific remote pyobs-web-admin IP) keeps the security boundary in one place — the proxy
+  mechanism — instead of two independently-configured ones.
 
 This also means only one instance in the whole fleet needs `EJABBERD_ENABLED = True` +
-correctly pointed `EJABBERD_HOST`/`EJABBERD_DOMAIN`/`EJABBERDCTL` (whichever one actually
-runs it); every other instance just needs `EJABBERD_ENABLED = True` and `EJABBERD_HOST` set
-to that instance's `HUB_HOSTS` name to see the same data.
+correctly pointed `EJABBERD_HOST`/`EJABBERD_DOMAIN`/`EJABBERD_API_URL` (whichever one
+actually runs it); every other instance just needs `EJABBERD_ENABLED = True` and
+`EJABBERD_HOST` set to that instance's `HUB_HOSTS` name to see the same data.
 
 ### Where it surfaces
 
@@ -134,10 +266,15 @@ static; this is live server state):
 
 - **Dashboard**: a summary tile (connected count / registered count / node status) in the
   same row as the existing Total/Running/Stopped/RAM/CPU tiles, plus a small "XMPP
-  connected" indicator per module row, distinct from (not replacing) the existing
-  process-status dot — the whole point being that these two signals can disagree.
-- **Module detail page**: for that module's own `comm.user` — connected-since/IP/resource if
-  live (`user_sessions_info`), last-seen if not (`get_last`), and a registered-or-not check
+  connected" indicator per module row — but **only for modules `get_comm_user` resolves a
+  name for**. A module with no `comm:` block at all (confirmed real example: `HttpFileCache`)
+  was never going to connect in the first place, so there's no "should be connected but
+  isn't" mismatch to surface for it — its own process-status dot already fully describes its
+  health. The indicator only exists to compare against modules that config says *should*
+  have an XMPP session.
+- **Module detail page**: same gate — the ejabberd stat block only appears at all if that
+  module has a `comm.user`. When it does: connected-since/IP/resource if live
+  (`user_sessions_info`), last-seen if not (`get_last`), and a registered-or-not check
   (`check_account`) to distinguish "not connected right now" from "this account doesn't even
   exist." Natural home: a new stat block in the existing Overview tab, alongside PID/uptime/
   memory/CPU — this is the same kind of "is this module healthy" information, just sourced
@@ -147,33 +284,54 @@ static; this is live server state):
 
 - ~~Exact `ejabberdctl` output format~~ — **resolved**, see Data layer above: verified against
   a real running instance rather than assumed from documentation.
-- **Silent-absence vs. visible "not configured"** when `EJABBERD_ENABLED` is `False` (or
-  `True` but unreachable) — leaning toward silently omitting the UI additions entirely when
-  disabled (matching how the sidebar's Hosts section only appears when `HUB_HOSTS` is
-  actually configured), and a small non-blocking warning (matching the ACL matrix's
-  unreachable-host banner) when enabled but the ejabberd host can't be reached.
-- **Refresh cadence.** Measured on the live instance: a single `ejabberdctl` subprocess call
-  (`connected_users_info` or `stats onlineusers`) takes **~0.5–0.6s wall-clock** — Erlang VM
-  startup/RPC dominates, not the query itself. That's roughly two orders of magnitude slower
-  than the dashboard's existing 10s-cadence in-process status polling (`psutil`-based, no
-  subprocess spawn). Polling every 10s per open dashboard tab would be a real, constant cost
-  for a mostly-static number. Leaning toward: dashboard summary tile refreshes on a slower
-  cadence (30–60s, closer to the existing log-stats poll) or piggybacks on the *existing*
-  10s status-poll's response rather than firing its own separate request every cycle; the
-  per-module page's block stays lazy-loaded once per tab-open, matching Config/Logs/ACL.
-- **Comm-user resolution edge cases** — what a module with no `comm:` block at all should
-  show (presumably just omit the ejabberd stat block entirely, mirroring how the ACL matrix
-  treats a module with no `acl:` block), and whether `comm.user` can itself come from a
-  shared fragment/anchor the same way `acl:` can (if so, `get_comm_user` likely wants the
-  same resolution approach as `get_resolved_acl`, minus the provenance tracking since there's
-  no editing use case here).
+- ~~Silent-absence vs. visible "not configured"~~ — **resolved: silent.** When
+  `EJABBERD_ENABLED` is `False`, the dashboard tile / per-module indicator / module-page
+  block are omitted entirely, no "not configured" placeholder anywhere — matching how the
+  sidebar's Hosts section only appears when `HUB_HOSTS` is actually configured. (The
+  separate *enabled-but-unreachable* case — `EJABBERD_ENABLED = True` yet the query fails —
+  still gets the small non-blocking warning proposed above, matching the ACL matrix's
+  unreachable-host banner; that's a live failure worth surfacing, not an unconfigured
+  feature worth hiding. Flagging this distinction explicitly in case "silent" was meant to
+  cover that case too — say so if it should.)
+- ~~Refresh cadence~~ — **resolved: `mod_http_api` is fast enough for normal polling, no
+  special-cased slower cadence needed.** `ejabberdctl` was measured at ~0.5–0.6s/call (every
+  invocation boots a fresh, throwaway Erlang node and connects to the running one via
+  distribution protocol — confirmed by reading `/usr/sbin/ejabberdctl` itself, not assumed).
+  `mod_http_api`, measured on the same live instance after configuring it (see Data layer),
+  came in at **~0.01s/call** — hitting the already-running node directly over HTTP, no new
+  VM per call. That's a ~50–60x difference, and it changes the conclusion entirely: the
+  dashboard's ejabberd summary tile and per-module indicator can piggyback on the *existing*
+  10s status-poll cadence directly, the same way `psutil`-based checks already do, rather
+  than needing their own slower, separately-justified schedule. The module page's block can
+  still just lazy-load once per tab-open like Config/Logs/ACL, but no longer *needs* to for
+  cost reasons — it's a design choice for consistency with those tabs, not a latency
+  workaround.
+- ~~Comm-user resolution edge cases~~ — **resolved for the no-`comm:` case**: confirmed real
+  modules exist with no `comm:` block at all (`HttpFileCache`), and since this app already
+  has each module's full resolved config on hand, "does this module even have a `comm.user`"
+  is a static, known-in-advance fact, not something that needs runtime probing to guess at —
+  `get_comm_user(name) is None` *is* "this module was never expected to connect," full stop,
+  and gates the UI accordingly (see "Where it surfaces" above). Still open: whether
+  `comm.user` can itself arrive via a shared fragment/anchor the same way `acl:` can (if so,
+  `get_comm_user` likely wants the same resolution approach as `get_resolved_acl`, minus the
+  provenance tracking since there's no editing use case here).
+- **Credential layer on top of the loopback ACL — not yet decided.** See "Security model" in
+  Data layer above: current config is IP-based only (`acl: loopback`), verified to correctly
+  reject a non-loopback source, but it can't distinguish `pyobs-web-admin` from any other
+  local process on the same machine. Adding HTTP Basic Auth (an ejabberd account's own
+  credentials) or an OAuth bearer token (`oauth_issue_token`, revocable, more in keeping with
+  how `HUB_TOKEN` already works in this app) would close that gap at the cost of one more
+  secret to provision and store (a new `local_settings.py` entry, same pattern as
+  `ADMIN_PASSWORD_HASH`/`HUB_TOKEN`). Whether that's worth it depends on how trusted the rest
+  of the machine's local processes are — genuinely open, not leaning either way yet.
 
 ## Work Plan
 
-- [ ] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERDCTL` settings.
-- [ ] `modules/ejabberd.py`: subprocess wrapper + output parsing for the read-only command set above; unit tests against captured real `ejabberdctl` output (see Open questions).
+- [ ] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERD_API_URL` / `EJABBERDCTL` settings.
+- [ ] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting.
+- [ ] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths.
 - [ ] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config.
 - [ ] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`).
-- [ ] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls directly, otherwise `proxy.call()` to that host's own endpoint.
-- [ ] Dashboard: summary tile + per-module "XMPP connected" indicator.
+- [ ] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation).
+- [ ] Dashboard: summary tile + per-module "XMPP connected" indicator, on the existing 10s status-poll cadence (no longer needs its own slower schedule, see Open questions).
 - [ ] Module detail page: session / last-seen / registered-check block in the Overview tab.
