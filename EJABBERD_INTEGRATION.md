@@ -91,6 +91,25 @@ authoritative state, this log just narrates it.
   more real discovery worth documenting: `get_last` for a user that was **never**
   registered returns `{"status": "NOT FOUND", "timestamp": <current time>}` — a third case
   beyond "ONLINE" and a real disconnect reason, now folded into the Data layer table.
+- **Done — Work Plan item 6.** Three new private helpers in `views.py`:
+  `_ejabberd_host_config()` (resolves `EJABBERD_HOST` into a proxy host dict or `None`,
+  mirroring `_active_host` — but reading fixed settings, not session state, since ejabberd
+  is normally one shared server for the whole fleet, not something an admin switches
+  per browser tab like the sidebar's host selector), `_ejabberd_status()`, and
+  `_ejabberd_user(user)` (both branch on `_ejabberd_host_config()`: call this instance's own
+  `ejabberd.py` directly if `None`/localhost, otherwise `proxy.call()` to that host's own
+  `api_ejabberd_status`/`api_ejabberd_user` — the item 5 endpoints, which stay "dumb" and
+  never redelegate further, so there's exactly one hop). Verified for real, not just
+  structurally: a genuine two-instance hub/spoke pair (same throwaway-settings-module
+  technique used for the ACL matrix's own hub-mode verification), both pointed at the same
+  real ejabberd instance since it's a single shared server here too — the hub's
+  `_ejabberd_status()`/`_ejabberd_user("camera")` correctly proxied to the spoke and
+  returned identical data to calling them directly on the spoke; stopping the spoke produced
+  a clean, catchable `ConnectionError` (matching how `proxy.call` failures already surface
+  elsewhere in this app, e.g. the ACL matrix's per-host try/except) rather than a hang or a
+  silently wrong answer. Not yet wired into any page — that's item 7, which is also where an
+  "ejabberd unreachable" indicator (if ever needed) would be built around this same
+  exception, the same way the ACL matrix already handles one host being down.
 
 ## Motivation
 
@@ -445,6 +464,6 @@ static; this is live server state):
 - [x] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths. → `modules/ejabberd.py`, tests in `modules/tests.py`.
 - [x] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config. → `modules/services.py`, tests in `modules/tests.py`.
 - [x] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`). → `GET /api/ejabberd/status/`, `GET /api/ejabberd/user/<user>/` in `views.py`/`urls.py`.
-- [ ] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation).
+- [x] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation). → `views._ejabberd_host_config`/`_ejabberd_status`/`_ejabberd_user`, verified via a real two-instance hub/spoke pair.
 - [ ] Dashboard: summary tile + per-module "XMPP connected" indicator, on the existing 10s status-poll cadence (no longer needs its own slower schedule, see Open questions).
 - [ ] Module detail page: session / last-seen / registered-check block in the Overview tab.

@@ -441,6 +441,53 @@ def api_acl(request, name: str):
         return JsonResponse({"success": False, "error": str(e)}, status=404)
 
 
+# ── ejabberd hub-mode delegation ────────────────────────────────────────────────
+
+def _ejabberd_host_config() -> dict | None:
+    """Resolves EJABBERD_HOST into a proxy host dict -- None means "query this instance's
+    own ejabberd.py directly," matching how _active_host resolves the session's active host
+    for the rest of this app's hub-mode views. Unlike _active_host, this isn't session
+    state -- EJABBERD_HOST is fixed config, since ejabberd is normally one shared server for
+    the whole fleet, not something an admin switches between per browser tab."""
+    return proxy.get_host_config(getattr(settings, "EJABBERD_HOST", "localhost"))
+
+
+def _ejabberd_status() -> dict:
+    """The fleet's ejabberd snapshot, delegating to wherever EJABBERD_HOST points (see
+    EJABBERD_INTEGRATION.md, Hub-mode delegation) -- calls this instance's own ejabberd.py
+    directly if EJABBERD_HOST is "localhost", otherwise proxies to that host's own
+    api_ejabberd_status. Never calls a remote host's EJABBERD_API_URL directly -- mod_http_api
+    stays loopback-only wherever it's configured; only the existing hub-token-authenticated
+    proxy mechanism crosses host boundaries."""
+    host = _ejabberd_host_config()
+    if host:
+        return proxy.call(host, "GET", "/api/ejabberd/status/")
+    return {
+        "node_status": ejabberd.status(),
+        "registered_count": ejabberd.stats("registeredusers"),
+        "online_count": ejabberd.stats("onlineusers"),
+        "connected": ejabberd.connected_users_info(),
+    }
+
+
+def _ejabberd_user(user: str) -> dict:
+    """Live ejabberd state for one JID local-part, delegating to wherever EJABBERD_HOST
+    points -- this can be a *different* host than whichever one actually runs the module
+    this JID belongs to (see EJABBERD_INTEGRATION.md, Hub-mode delegation): a module's
+    comm.user is always resolved locally on the host that runs it (services.get_comm_user),
+    but the live ejabberd query for that identity always goes through this function
+    instead, regardless of which host asked."""
+    host = _ejabberd_host_config()
+    if host:
+        return proxy.call(host, "GET", f"/api/ejabberd/user/{user}/")
+    return {
+        "comm_user": user,
+        "registered": ejabberd.check_account(user),
+        "sessions": ejabberd.user_sessions_info(user),
+        "last": ejabberd.get_last(user),
+    }
+
+
 # ── ejabberd API ──────────────────────────────────────────────────────────────
 
 @require_GET
