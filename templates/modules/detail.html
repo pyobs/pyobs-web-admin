@@ -271,6 +271,14 @@ async function refreshEjabberd() {
       row.classList.add('d-none');  // module has no comm.user -- was never expected to connect
       return;
     }
+    if (!data.module_running) {
+      // Not this module's own process -- another module can share the same comm.user (see
+      // api_module_ejabberd), so any live session for that identity isn't necessarily this
+      // module's. Same "nothing meaningful to show" treatment as PID/uptime/memory/CPU,
+      // already hidden for a module that isn't running.
+      row.classList.add('d-none');
+      return;
+    }
     const cell = document.getElementById('stat-ejabberd');
     const commUser = escapeHtml(data.comm_user);
     if (data.error) {

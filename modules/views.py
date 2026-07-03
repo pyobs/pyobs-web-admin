@@ -555,7 +555,13 @@ def api_module_ejabberd(request, name: str):
     like every other module_detail-feeding endpoint -- proxies the whole request there if
     remote), and, once resolved locally, which host ejabberd itself lives on (EJABBERD_HOST,
     via _ejabberd_user) -- these can be two different hosts entirely. A module with no
-    comm.user answers {"comm_user": None} without attempting any ejabberd query at all."""
+    comm.user answers {"comm_user": None} without attempting any ejabberd query at all.
+
+    Also reports module_running (this module's own process, via get_module_status) -- two
+    modules can share the same comm.user (e.g. a "_test" copy reusing a real module's
+    identity), so a live ejabberd session for that JID doesn't necessarily belong to *this*
+    module; the caller must not present it as "connected" unless this module is actually the
+    one running."""
     host = _active_host(request)
     if host:
         return _proxy(host, "GET", f"/api/modules/{name}/ejabberd/")
@@ -563,7 +569,10 @@ def api_module_ejabberd(request, name: str):
     comm_user = services.get_comm_user(name)
     if comm_user is None:
         return JsonResponse({"comm_user": None})
+    running = services.get_module_status(name) == "running"
+    if not running:
+        return JsonResponse({"comm_user": comm_user, "module_running": False})
     try:
-        return JsonResponse(_ejabberd_user(comm_user))
+        return JsonResponse({"module_running": True, **_ejabberd_user(comm_user)})
     except Exception as e:
-        return JsonResponse({"comm_user": comm_user, "error": str(e)}, status=502)
+        return JsonResponse({"comm_user": comm_user, "module_running": True, "error": str(e)}, status=502)

@@ -253,6 +253,7 @@ async function refreshAllStatuses() {
         row.dataset.sortCpu = m.stats ? m.stats.cpu_percent : -1;
         row.dataset.sortUptime = m.stats ? m.stats.uptime_seconds : -1;
         row.dataset.commUser = m.comm_user || '';
+        row.dataset.moduleStatus = m.status;
         const isRunning = m.status === 'running';
         row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning);
         row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning);
@@ -364,7 +365,13 @@ async function refreshEjabberd() {
     document.querySelectorAll('tr[data-module-row]').forEach(row => {
       const commUser = row.dataset.commUser;
       const indicator = row.querySelector('.xmpp-indicator');
-      if (!commUser) {
+      // Gate on this module's *own* running status, not just whether commUser's bare JID
+      // happens to be connected -- two modules can share the same comm.user (e.g. a "_test"
+      // copy reusing a real module's identity), so a stopped module must never be shown as
+      // "connected" just because some other, currently-running module holds that identity's
+      // live session. Same "nothing meaningful to show" treatment as RAM/CPU/uptime, which
+      // are already blank for a module that isn't running.
+      if (!commUser || row.dataset.moduleStatus !== 'running') {
         indicator.classList.add('d-none');
         return;
       }

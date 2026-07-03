@@ -170,6 +170,28 @@ authoritative state, this log just narrates it.
   unreliable. Fixed by sequencing them (`await refreshAllStatuses()` before
   `refreshEjabberd()` in one combined tick function) rather than firing both independently.
 
+  **Real deployment, real third bug — a correctness bug, not a UI-timing one.** Reported by
+  the user against the real dashboard: a stopped module (`_test`) showed as XMPP-connected.
+  Root cause: `_test`'s config reuses the *same* `comm.user` as the real, running `camera`
+  module (`get_comm_user("_test") == "camera"` — a real data point already surfaced by this
+  doc's own item-4 verification, but whose implication for item 7's design wasn't followed
+  through at the time: item 7's dashboard/module-page code implicitly assumed each module's
+  identity was unique, without that assumption ever being stated or checked). The
+  cross-reference logic only ever checked "is this bare JID connected by *anyone*," never
+  "is *this module's own process* the one holding that connection" — so a stopped module
+  sharing an identity with a running one inherited the running one's "connected" status.
+  Fixed on both surfaces by gating on the module's own running status before evaluating or
+  displaying any XMPP state at all, matching the existing precedent that RAM/CPU/uptime are
+  already blank for a stopped module: dashboard gates client-side (`row.dataset.moduleStatus
+  !== 'running'`, using data `refreshAllStatuses` already fetches); module page gates
+  server-side in `api_module_ejabberd` itself (new `module_running` field, checked via
+  `services.get_module_status` before ever calling `_ejabberd_user` — a stopped module
+  doesn't even attempt the ejabberd query now, since whatever it would find can't be this
+  module's own connection). Verified against the exact real `_test`/`camera` pair that
+  surfaced the bug: `_test` (stopped) now correctly returns `{"module_running": false}`
+  without a false "connected" claim, while `camera` (running) still shows its real live
+  session.
+
 ## Motivation
 
 `pyobs-web-admin` usually runs on the same host as the `ejabberd` server pyobs-core's comm
