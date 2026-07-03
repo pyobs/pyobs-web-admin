@@ -39,6 +39,15 @@ is fine, that's what the Design section of the eventual doc is for.
   of `pyobs`'s own file-based logging (`services.get_logs`, `PYOBS_LOG_DIR`) would have their
   logs in the journal instead — support reading from there as an alternative source, not just
   files.
+- **XMPP user management (register/unregister/change password) from pyobs-web-admin.**
+  `EJABBERD_INTEGRATION.md` deliberately scoped itself to read-only visibility and called
+  write actions out of scope ("much higher blast radius than a read-only status view —
+  accidentally locking out a production XMPP account mid-observation," see that doc's
+  Motivation) — this idea is that deferred follow-up, not started. `modules/ejabberd.py`
+  already has the HTTP-vs-`ejabberdctl` plumbing this would reuse, but `register`/
+  `unregister`/`change_password` are explicitly excluded from the `api_permissions`
+  whitelist that doc configured, so this needs a deliberate ACL-widening decision plus a real
+  answer for confirmation/undo given the stated lockout risk, not just new UI.
 
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
