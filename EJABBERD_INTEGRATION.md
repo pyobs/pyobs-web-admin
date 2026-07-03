@@ -24,6 +24,16 @@ authoritative state, this log just narrates it.
   `python manage.py test modules` both pass unchanged (settings-only change, no behavior
   yet). Not yet consumed by any code — the next items (`modules/ejabberd.py`, `get_comm_user`)
   are what actually read these.
+- **Done — Work Plan item 2.** No new writing needed — the "ejabberd-side configuration
+  (verified working)" block in Data layer already *is* this item, written and tested against
+  a real instance back in v0.3–v0.5, before any Work Plan item was checked off. Deliberately
+  **not** promoting it into `README.md`'s Configuration/production-setup sections yet, even
+  though that's the more natural place an operator would look for a real deployment step —
+  `README.md` documents what the running app actually does today, and right now these
+  settings aren't consumed by any code, so a reader following README instructions would
+  configure ejabberd for a feature that doesn't do anything yet. Promoting this into README
+  is bundled into the final "Dashboard + module page" Work Plan item instead, once the
+  feature is actually end-to-end functional.
 
 ## Motivation
 
@@ -373,7 +383,7 @@ static; this is live server state):
 ## Work Plan
 
 - [x] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERD_API_URL` / `EJABBERDCTL` settings. → `pyobs_web_admin/settings.py`.
-- [ ] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting.
+- [x] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting. → "ejabberd-side configuration (verified working)" in Data layer, already written and verified against a live instance during v0.3–v0.5. Not yet promoted into README.md's operator-facing Configuration/production-setup sections — see Progress log for why.
 - [ ] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths.
 - [ ] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config.
 - [ ] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`).
