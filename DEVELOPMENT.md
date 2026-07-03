@@ -1,8 +1,8 @@
-# pyobs-web-admin: ACL matrix page — v0.1 (2026-07-03, 11:00)
+# pyobs-web-admin: ACL matrix page — v0.2 (2026-07-03, 12:28)
 
 ## Status
 
-Design only, nothing implemented yet. First entry in this file.
+Design only, nothing implemented yet. First entry in this file. v0.2 adds the groups/profiles concept below.
 
 ## Motivation
 
@@ -52,6 +52,18 @@ A cell edit has to land in the file the rule actually came from, which is not al
 - If the target's `acl:` block is **not** behind an `{include}`, edit and save directly via the existing `save_config` path — this is the common case and needs no new semantics.
 - If the target's `acl:` block **is** pulled in from a shared fragment, editing it in place would silently change every other module that includes the same fragment. The matrix must show this ("this rule comes from `acl.shared.yaml`, included by 4 modules") and either open the shared fragment's own editor (existing `shared_detail` view) for the edit, or require an explicit "detach into this module's own config" action before allowing an inline edit — not silently write through to a file whose blast radius is bigger than the one row being edited.
 
+### Groups (a.k.a. profiles)
+
+`acl:` entries are just caller-name strings, and the same clusters of callers tend to recur across many modules' `allow`/`deny` lists (e.g. "the set of ops scripts," "the GUI's identities"). Editing each occurrence by hand doesn't scale past a handful of modules, but this abstraction has to live entirely in `pyobs-web-admin` — `pyobs-core` and the config file format have no concept of a group and never should, since that would reintroduce the fleet-wide state the underlying ACL design deliberately avoids.
+
+**Definition and storage.** A group is a name mapped to a list of caller identities, defined and stored only in `pyobs-web-admin` — not in `PYOBS_CONFIG_DIR`, not in any `*.yaml` or `*.shared.yaml` file. This repo has no database today; a group store is new persisted state, likely the smallest thing that works (a JSON/YAML file under app-local storage) rather than pulling in a full DB for this alone. Exact storage mechanism is deferred to implementation.
+
+**Expansion is one-shot, not a live binding.** Assigning a group to a target's `allow`/`deny` entry expands it into a literal caller list at save time, written into the module's own config (or shared fragment, per the existing editing rules above). The file on disk always contains plain caller strings — no group reference — so it stays legible to `pyobs-core` and to anyone reading it by hand, matching the doc's existing principle that the config file is the source of truth. Consequently, editing a group's membership later does **not** retroactively rewrite files that already used it. `pyobs-web-admin` should record, per expanded rule, which group and which membership snapshot produced it, and offer an explicit **"re-apply group"** action on affected rules — the same shape as the shared-fragment "detach" action already described above, not automatic propagation.
+
+**Drift detection, not recovery.** Since ACL edits are assumed to happen only through `pyobs-web-admin`, it can record a hash of each `acl:` block's content at the time it last wrote it. If a later load finds the live file's hash doesn't match, warn the admin that the block changed outside `pyobs-web-admin` (so any tracked group-provenance for that rule may be stale) — no attempt to auto-reconcile. Reconstructing "which parts of a hand-edited flat list came from which group" isn't well-defined, so the right move is to surface the drift and let the admin decide whether to keep the manual edit or re-apply a group, not to guess a resolution.
+
+**Recovering candidate groups from existing configs.** Since real fleets will already have `acl:` blocks with no group concept behind them, offer a one-time (or on-demand) "suggest groups" pass over the matrix data: for each target, bucket its callers by identical permission value (same method list, or both granted `"*"`), then across all targets look for caller-sets that recur identically in two or more targets. Each recurring set is shown as an unnamed candidate ("these 3 callers grant identical permissions in 4 targets — name this group?") for the admin to confirm and name; nothing is created or rewritten automatically. Start with exact-set matching only, not subset/fuzzy matching — real groups will have one-off exceptions (an extra method granted to one member, a module that additionally denies one) that exact matching will miss, but loosening the match risks suggesting bogus groups on fleets with few targets, which is the worse failure mode for a tool whose only job is to propose candidates a human still has to confirm.
+
 ### Hub mode interaction
 
 Hub mode already proxies dashboard/config/log actions to remote hosts transparently. The matrix should do the same — aggregate across every configured host, not just the local one — since ACL policy for a real multi-host fleet is exactly the kind of thing that's easy to get wrong on one host and forget on another. This falls out of reusing the existing hub-proxying mechanism rather than needing new cross-host plumbing, but is worth calling out explicitly as a requirement, not an incidental nice-to-have.
@@ -60,6 +72,8 @@ Hub mode already proxies dashboard/config/log actions to remote hosts transparen
 
 - Exact UI treatment for "open" targets and `mode: log` rules (color/badge choice) — a UI/visual-design decision, not an architectural one, deferred to implementation.
 - Whether to offer the "detach from shared fragment into this module's own config" action as a one-click automatic rewrite, or just point the admin at the shared fragment's editor and let them decide by hand. Leaning toward the latter for a first version — automatically rewriting a shared `{include}` into a module-local override is a bigger, riskier piece of config surgery than this feature needs to solve on day one.
+- Exact storage mechanism for the group store (JSON/YAML file vs. a small DB table) — deferred, not architecturally significant either way as long as it stays local to `pyobs-web-admin`.
+- Whether "suggest groups" is a one-time first-run action or something re-run on demand as configs evolve — leaning toward on-demand, since new recurring caller-sets can appear at any point as modules are added.
 
 ## Work Plan
 
@@ -70,3 +84,7 @@ Hub mode already proxies dashboard/config/log actions to remote hosts transparen
 - [ ] New view + template + URL entry (`modules/urls.py`) for the matrix page, following the existing dashboard/module_detail pattern.
 - [ ] Editing: direct save for module-local `acl:` blocks; shared-fragment case routes to (or at minimum clearly links to) the existing `shared_detail` editor rather than writing through silently.
 - [ ] Hub mode: confirm the matrix aggregates across configured remote hosts using the existing proxying mechanism.
+- [ ] Groups: local store for name → caller-list definitions.
+- [ ] Groups: expand-on-save into literal `allow`/`deny` entries; record per-rule group + membership snapshot for later re-apply.
+- [ ] Groups: per-`acl:`-block content hash, checked on load; surface a warning (no auto-recovery) when it doesn't match the last write.
+- [ ] Groups: "suggest groups" pass — bucket callers by identical permission value per target, find exact-match recurring sets across targets, present as unnamed candidates for the admin to confirm/name.
