@@ -35,7 +35,10 @@ is fine, that's what the Design section of the eventual doc is for.
 
 ## Ideas (not yet designed)
 
-_Nothing queued yet — add a one-line bullet here when one comes up._
+- **systemd/journald logs as an alternative to file logs.** Modules run under systemd instead
+  of `pyobs`'s own file-based logging (`services.get_logs`, `PYOBS_LOG_DIR`) would have their
+  logs in the journal instead — support reading from there as an alternative source, not just
+  files.
 
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 

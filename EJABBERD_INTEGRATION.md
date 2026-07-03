@@ -1,19 +1,21 @@
-# pyobs-web-admin: ejabberd integration — v0.4 (2026-07-03, 18:05)
+# pyobs-web-admin: ejabberd integration — v0.5 (2026-07-03, 20:15)
 
 ## Status
 
 Design sketch only — no implementation yet. v0.2 verified `ejabberdctl` output formats
 against a real instance; v0.3 changed the primary data-layer mechanism from `ejabberdctl`
 subprocess calls to `mod_http_api` (HTTP+JSON), after actually configuring it on the same
-live instance and measuring a ~50–60x latency drop (see Data layer) — since the premise "we
-always have full control over the ejabberd server" removes the earlier hesitation about
-depending on a not-guaranteed-to-be-enabled module; **v0.4 verifies the resulting access
-control model against a real non-loopback request** (see "Security model" in Data layer)
-rather than trusting the ACL's behavior on paper, and states plainly what it does and
-doesn't protect against. `ejabberdctl` is kept as a documented fallback, not deleted from
-the plan. See ACL_MATRIX.md for the ACL matrix feature this one is related to but separate
-from (both surface "who can talk to what," but this one reads live XMPP server state rather
-than static config).
+live instance and measuring a ~50–60x latency drop (see Data layer); v0.4 verified the
+resulting IP-based access control against a real non-loopback request rather than trusting
+it on paper. **v0.5 closes the credential-layer question decisively: after real attempts at
+both OAuth and HTTP Basic Auth on the live instance hit genuine blockers (see "Credential
+layer investigation" in Security model), the decision is IP-only (`acl: loopback`) for v1** —
+not because credentials weren't tried, but because they were tried and didn't work on this
+ejabberd build within reasonable effort, and the IP-only model is already fully verified and
+sufficient for the stated threat model (network-remote access). `ejabberdctl` is kept as a
+documented fallback, not deleted from the plan. See ACL_MATRIX.md for the ACL matrix feature
+this one is related to but separate from (both surface "who can talk to what," but this one
+reads live XMPP server state rather than static config).
 
 ## Motivation
 
@@ -224,10 +226,45 @@ left implicit:
   feature is premised on, that's a small and likely acceptable residual risk — but it's a
   conscious tradeoff, not an oversight, and worth documenting as one rather than glossing
   over it because the loopback case works.
-- **Open, not yet decided**: whether to add a credential layer (HTTP Basic Auth against an
-  ejabberd account, or an OAuth bearer token) on top of the IP restriction, tightening
-  "any local process" down to "only a process that also holds this specific secret" — see
-  Open questions.
+- **Decided: not adding a credential layer, after actually trying.** See "Credential layer
+  investigation" below — this residual risk (any other local process on the same machine)
+  is accepted for v1, not because it wasn't considered, but because both credential options
+  were attempted for real on the live instance and neither panned out within reasonable
+  effort, while IP-only is already fully verified and covers the actual threat model this
+  feature cares about (network-remote access).
+
+#### Credential layer investigation — tried, not adopted
+
+Two options were tried live, not just discussed on paper:
+
+- **OAuth bearer token** (`oauth_issue_token`): failed outright with an ejabberd-internal
+  error — `undefined function oauth2:authorize_password/3` — a missing dependency/module in
+  this build, not a config mistake. Dead end without digging into ejabberd's own OAuth setup
+  further, which wasn't judged worth it for this feature.
+- **HTTP Basic Auth** against a dedicated new account (`webadmin@localhost`, registered
+  specifically for this test and unregistered again afterward — no dangling account left
+  behind): the credential itself was confirmed valid (`ejabberdctl check_password` succeeded)
+  and the `Authorization` header was confirmed correctly formed (base64-decoded and checked
+  by hand), yet every request still came back `401` with `{"code":10,"message":"You are not
+  authorized to call this command."}` — a different, less specific error than the plain
+  `403 AccessRules` seen with no grant at all. Checked, in order: whether `acl:` and `user:`
+  compose inside one `access.allow:` entry the way ejabberd's own docs show for `ip:` +
+  `user:` (switched to the documented `ip: 127.0.0.1/8` form exactly — no change); whether a
+  vhost mismatch was the cause (`mod_http_api` resolves its vhost from the HTTP `Host` header,
+  not the JSON body's `"host"` field — a real, separate gotcha discovered along the way: a
+  request to `127.0.0.1:5281` logged `Using module mod_http_api for host 127.0.0.1, but it
+  isn't configured` since only `localhost` is a registered vhost; switching to
+  `http://localhost:5281/...` fixed *that* warning but not the 401). ejabberd's own log
+  (`[info]`-level `mod_http_api:log/3` line) recorded the call happened but gave no further
+  detail on why authorization failed. Likely explanation, unconfirmed: the `user:` condition
+  inside `api_permissions`'s `access.allow` may be designed around OAuth-authenticated
+  identity (which is broken on this build anyway, see above) rather than HTTP Basic Auth,
+  despite ejabberd's own documentation example reading as if it were auth-method-agnostic.
+
+Stopping here rather than continuing to iterate against a live server for a security layer
+whose absence is an accepted, documented tradeoff — not a blocker. Revisit if: this ejabberd
+instance's OAuth support gets fixed/enabled properly, or a future need changes the threat
+model (e.g. this machine stops being single-purpose).
 
 New `services.get_comm_user(name) -> str | None`, resolving a module's config the same way
 `get_resolved_acl` does and pulling out `comm.user` (or `None` if the module has no `comm:`
@@ -315,15 +352,15 @@ static; this is live server state):
   `comm.user` can itself arrive via a shared fragment/anchor the same way `acl:` can (if so,
   `get_comm_user` likely wants the same resolution approach as `get_resolved_acl`, minus the
   provenance tracking since there's no editing use case here).
-- **Credential layer on top of the loopback ACL — not yet decided.** See "Security model" in
-  Data layer above: current config is IP-based only (`acl: loopback`), verified to correctly
-  reject a non-loopback source, but it can't distinguish `pyobs-web-admin` from any other
-  local process on the same machine. Adding HTTP Basic Auth (an ejabberd account's own
-  credentials) or an OAuth bearer token (`oauth_issue_token`, revocable, more in keeping with
-  how `HUB_TOKEN` already works in this app) would close that gap at the cost of one more
-  secret to provision and store (a new `local_settings.py` entry, same pattern as
-  `ADMIN_PASSWORD_HASH`/`HUB_TOKEN`). Whether that's worth it depends on how trusted the rest
-  of the machine's local processes are — genuinely open, not leaning either way yet.
+- ~~Credential layer on top of the loopback ACL~~ — **resolved: not adding one, for v1.**
+  Both OAuth and HTTP Basic Auth were actually attempted against the live instance, not just
+  discussed — see "Credential layer investigation" in Security model for the full trail
+  (OAuth: missing dependency, hard failure; Basic Auth: valid credentials still rejected for
+  reasons that resisted diagnosis within reasonable effort, even after matching ejabberd's
+  own documented config pattern and ruling out a vhost-mismatch red herring along the way).
+  IP-only (`acl: loopback`) is the v1 security model — already fully verified, and sufficient
+  for the network-remote-access threat model this feature actually cares about. The residual
+  gap (any other local process on the same machine) is accepted, not overlooked.
 
 ## Work Plan
 
