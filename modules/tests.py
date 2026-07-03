@@ -246,6 +246,62 @@ class ResolveAndValidateAclTests(unittest.TestCase):
         self.assertIsNotNone(error)
 
 
+# ── services.get_comm_user ────────────────────────────────────────────────────
+
+class GetCommUserTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def test_missing_module_returns_none(self):
+        self.assertIsNone(services.get_comm_user("nope"))
+
+    def test_no_comm_block_returns_none(self):
+        """Confirmed real example: HttpFileCache has no comm: block at all -- this is the
+        signal EJABBERD_INTEGRATION.md uses to skip modules that were never expected to
+        have an XMPP identity, not an error."""
+        self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
+        self.assertIsNone(services.get_comm_user("filecache"))
+
+    def test_comm_block_without_user_key_returns_none(self):
+        self._write("cam1", "comm:\n  password: pyobs\n")
+        self.assertIsNone(services.get_comm_user("cam1"))
+
+    def test_comm_user_defined_locally(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: pyobs\n")
+        self.assertEqual(services.get_comm_user("cam1"), "camera")
+
+    def test_comm_user_via_anchor_merge_key(self):
+        """Matches a real config's shape: comm: {<<: *comm, user: camera, password: pyobs}."""
+        self._write(
+            "cam1",
+            "_comm_defaults: &comm\n  class: pyobs.comm.xmpp.XmppComm\n"
+            "  jid: pyobs\n"
+            "class: pyobs.modules.camera.BaseCamera\n"
+            "comm:\n  <<: *comm\n  user: camera\n  password: pyobs\n",
+        )
+        self.assertEqual(services.get_comm_user("cam1"), "camera")
+
+    def test_comm_user_via_include(self):
+        """comm: pulled in from a shared fragment via {include} -- get_comm_user reuses
+        get_resolved_acl's exact resolution pipeline, so this works the same way."""
+        self._write("comm.shared", "comm:\n  user: camera\n  password: pyobs\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n",
+        )
+        self.assertEqual(services.get_comm_user("cam1"), "camera")
+
+
 # ── services.build_acl_matrix ──────────────────────────────────────────────────
 
 class BuildAclMatrixTests(unittest.TestCase):

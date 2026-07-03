@@ -435,6 +435,31 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     return acl, _acl_source_file(config_file.read_text())
 
 
+def get_comm_user(name: str) -> str | None:
+    """Resolves a module's own XMPP identity -- its comm.user, e.g. "camera" in
+    comm: {user: camera, ...} -- the same way get_resolved_acl resolves acl:, via
+    pre_process_yaml + yaml.safe_load, since comm: can equally arrive via {include} or a
+    YAML anchor/merge key (a real config uses `comm: {<<: *comm, user: camera, ...}`).
+
+    Returns None if the module has no comm: block at all (confirmed real example:
+    HttpFileCache) -- not an error, just "this module was never expected to have an XMPP
+    identity" (see EJABBERD_INTEGRATION.md, "Where it surfaces": that's the signal used to
+    skip showing ejabberd status for modules that were never going to connect). No
+    provenance tracking (unlike get_resolved_acl's source) -- there's no editing use case
+    for comm.user, only display.
+    """
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if not config_file.exists():
+        return None
+    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    comm = resolved.get("comm")
+    if not isinstance(comm, dict):
+        return None
+    user = comm.get("user")
+    return user if isinstance(user, str) else None
+
+
 def _dump_acl_block(acl: dict) -> list[str]:
     """Serializes {"acl": acl} via ruamel.yaml into the lines spliced into a module's raw
     config text by _replace_local_acl_block. This only ever generates a *fresh* acl: block

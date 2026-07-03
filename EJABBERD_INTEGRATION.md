@@ -58,6 +58,20 @@ authoritative state, this log just narrates it.
   and `EJABBERDCTL` pointed at a small `sudo -n ejabberdctl "$@"` wrapper script (ctl path,
   since this dev box needs `sudo` for `ejabberdctl`) — both produced identical, correct
   results matching the mocked tests exactly.
+- **Done — Work Plan item 4.** `services.get_comm_user(name)`: reuses `get_resolved_acl`'s
+  exact resolution pipeline (`pre_process_yaml` + `yaml.safe_load`) rather than a fresh
+  implementation, pulling `comm.user` out of the resolved dict instead of `acl`. No
+  provenance tracking (unlike `get_resolved_acl`'s `source`) — there's no editing use case
+  for `comm.user`, only display, so there's nothing to route an edit to. Closes the one
+  open question left in this doc (`comm.user` via a shared fragment or YAML anchor/merge
+  key): `GetCommUserTests` in `modules/tests.py` covers a locally-defined `comm.user`, one
+  arriving via `{include}`, and one via a real config's actual shape (`comm: {<<: *comm,
+  user: camera, ...}`, an anchor merge key) — all three resolve correctly, for free, simply
+  by reusing `get_resolved_acl`'s pipeline rather than writing new resolution logic.
+  `python manage.py test modules` — 63/63 passing. Verified against the real
+  `PYOBS_CONFIG_DIR` too, not just synthetic fixtures: `camera`/`telescope` resolve to their
+  real `comm.user` values, `filecache` (`HttpFileCache`, no `comm:` block) correctly
+  resolves to `None`.
 
 ## Motivation
 
@@ -385,15 +399,16 @@ static; this is live server state):
   still just lazy-load once per tab-open like Config/Logs/ACL, but no longer *needs* to for
   cost reasons — it's a design choice for consistency with those tabs, not a latency
   workaround.
-- ~~Comm-user resolution edge cases~~ — **resolved for the no-`comm:` case**: confirmed real
+- ~~Comm-user resolution edge cases~~ — **fully resolved.** No-`comm:` case: confirmed real
   modules exist with no `comm:` block at all (`HttpFileCache`), and since this app already
   has each module's full resolved config on hand, "does this module even have a `comm.user`"
   is a static, known-in-advance fact, not something that needs runtime probing to guess at —
   `get_comm_user(name) is None` *is* "this module was never expected to connect," full stop,
-  and gates the UI accordingly (see "Where it surfaces" above). Still open: whether
-  `comm.user` can itself arrive via a shared fragment/anchor the same way `acl:` can (if so,
-  `get_comm_user` likely wants the same resolution approach as `get_resolved_acl`, minus the
-  provenance tracking since there's no editing use case here).
+  and gates the UI accordingly (see "Where it surfaces" above). Shared-fragment/anchor case:
+  resolved for free by reusing `get_resolved_acl`'s exact pipeline instead of writing new
+  resolution logic — verified against `{include}` and a real config's actual anchor-merge-key
+  shape (`comm: {<<: *comm, user: camera, ...}`), both resolve correctly (see Progress log,
+  Work Plan item 4).
 - ~~Credential layer on top of the loopback ACL~~ — **resolved: not adding one, for v1.**
   Both OAuth and HTTP Basic Auth were actually attempted against the live instance, not just
   discussed — see "Credential layer investigation" in Security model for the full trail
@@ -409,7 +424,7 @@ static; this is live server state):
 - [x] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERD_API_URL` / `EJABBERDCTL` settings. → `pyobs_web_admin/settings.py`.
 - [x] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting. → "ejabberd-side configuration (verified working)" in Data layer, already written and verified against a live instance during v0.3–v0.5. Not yet promoted into README.md's operator-facing Configuration/production-setup sections — see Progress log for why.
 - [x] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths. → `modules/ejabberd.py`, tests in `modules/tests.py`.
-- [ ] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config.
+- [x] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config. → `modules/services.py`, tests in `modules/tests.py`.
 - [ ] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`).
 - [ ] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation).
 - [ ] Dashboard: summary tile + per-module "XMPP connected" indicator, on the existing 10s status-poll cadence (no longer needs its own slower schedule, see Open questions).
