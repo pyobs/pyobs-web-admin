@@ -619,3 +619,25 @@ def build_acl_matrix() -> dict:
     ]
 
     return {"targets": rows, "callers": caller_names}
+
+
+def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
+    """Combines each host's build_acl_matrix()-shaped result into one fleet-wide matrix --
+    see DEVELOPMENT.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
+    pairs, e.g. [("localhost", build_acl_matrix()), ("MONETS", <that host's own matrix,
+    fetched via the hub proxy>), ...].
+
+    Each host only knows about the callers its own modules' acl: blocks reference, so a
+    row fetched from one host is missing cells for callers that only appear on some other
+    host. Cells are therefore recomputed here against the union of every host's callers,
+    reusing _acl_cell (a pure function of a target's acl: dict + a caller name -- safe to
+    call again outside the host that originally resolved that acl:) rather than trusting
+    each host's own host-local cells.
+    """
+    caller_names = sorted({c for _, matrix in per_host for c in matrix["callers"]})
+    rows = [
+        {**row, "host": host_name, "cells": {c: _acl_cell(row["acl"], c) for c in caller_names}}
+        for host_name, matrix in per_host
+        for row in matrix["targets"]
+    ]
+    return {"targets": rows, "callers": caller_names}

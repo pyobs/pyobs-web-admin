@@ -21,19 +21,23 @@
   <h4 class="mb-0">ACL Matrix</h4>
 </div>
 
-{% if hub_unsupported %}
-<div class="alert alert-info">
-  The ACL matrix isn't available yet for remote hub hosts — switch to <strong>localhost</strong> to view it.
+{% if unreachable_hosts %}
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>Could not reach
+  {% for h in unreachable_hosts %}<strong>{{ h.name }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}
+  — its modules aren't shown below, so the matrix may be missing part of the fleet's ACL policy.
 </div>
-{% elif not targets %}
+{% endif %}
+{% if not targets %}
 <div class="alert alert-warning">
   No modules found. Make sure <code>PYOBS_CONFIG_DIR</code> points to your config directory
   and contains <code>.yaml</code> files.
 </div>
 {% else %}
 <p class="text-muted small">
-  Rows are modules this installation manages; columns are every caller name referenced in any
-  module's <code>acl:</code> block, whether or not that caller is itself a managed module.
+  Rows are modules across every configured host (this installation plus any hub hosts); columns
+  are every caller name referenced in any module's <code>acl:</code> block, whether or not that
+  caller is itself a managed module.
   <span class="badge bg-danger-subtle text-danger-emphasis">open</span> rows have no
   <code>acl:</code> key at all — any caller may reach them.
   The <i class="bi bi-pencil" style="font-size:0.7rem"></i> next to a module name opens a form
@@ -47,12 +51,12 @@
   <thead>
     <tr>
       <th class="col-target">Target</th>
-      {% for caller in callers %}
+      {% for caller in caller_headers %}
       <th class="text-center small">
-        {% if caller in module_names %}
-        <a href="{% url 'module_detail' caller %}" class="text-decoration-none text-reset">{{ caller }}</a>
+        {% if caller.url %}
+        <a href="{{ caller.url }}" class="text-decoration-none text-reset">{{ caller.name }}</a>
         {% else %}
-        {{ caller }}
+        {{ caller.name }}
         {% endif %}
       </th>
       {% endfor %}
@@ -62,23 +66,28 @@
   {% for row in targets %}
   <tr>
     <td class="col-target fw-semibold">
-      <a href="{% url 'module_detail' row.name %}" class="text-decoration-none text-reset">{{ row.name }}</a>
+      <a href="{{ row.module_url }}" class="text-decoration-none text-reset">{{ row.name }}</a>
+      {% if show_host_badges %}
+      <span class="badge bg-dark-subtle text-body-secondary ms-1" title="managed by host {{ row.host }}">
+        <i class="bi bi-hdd-network"></i> {{ row.host }}
+      </span>
+      {% endif %}
       {% if row.mode == 'log' %}
       <span class="badge bg-warning text-dark ms-1" title="acl: mode: log — not yet enforced">log</span>
       {% endif %}
       {% if row.source %}
-      <a href="{% url 'shared_detail' row.source %}" class="badge bg-secondary text-decoration-none ms-1"
+      <a href="{{ row.shared_url }}" class="badge bg-secondary text-decoration-none ms-1"
          title="acl: block comes from shared fragment {{ row.source }}, included by {{ row.source_count }} module{{ row.source_count|pluralize }} — edit it there so the change applies consistently, not just to this row.">
         <i class="bi bi-file-earmark-text"></i> {{ row.source }} · {{ row.source_count }} module{{ row.source_count|pluralize }}
       </a>
       {% elif row.error %}
-      <a href="{% url 'module_detail' row.name %}#tab-config" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
+      <a href="{{ row.module_config_url }}" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
          title="This module's acl: block failed to parse — fix the raw YAML directly">
         <i class="bi bi-pencil" style="font-size:0.7rem"></i>
       </a>
       {% else %}
       <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
-              title="Edit this module's acl: block" onclick="openAclEditor('{{ row.name }}')">
+              title="Edit this module's acl: block" onclick="openAclEditor('{{ row.name }}', '{{ row.host }}')">
         <i class="bi bi-pencil" style="font-size:0.7rem"></i>
       </button>
       {{ row.acl|json_script:row.acl_data_id }}
@@ -183,6 +192,7 @@
 <script>
 let aclModal = null;
 let currentAclModule = null;
+let currentAclHost = null;
 
 function getAclModal() {
   if (!aclModal) aclModal = new bootstrap.Modal(document.getElementById('acl-edit-modal'));
@@ -237,14 +247,15 @@ function togglePolicy() {
 }
 document.querySelectorAll('input[name="acl-policy"]').forEach(el => el.addEventListener('change', togglePolicy));
 
-function openAclEditor(name) {
+function openAclEditor(name, host) {
   currentAclModule = name;
-  document.getElementById('acl-modal-name').textContent = name;
+  currentAclHost = host;
+  document.getElementById('acl-modal-name').textContent = host === 'localhost' ? name : `${name} (${host})`;
   document.getElementById('acl-modal-error').classList.add('d-none');
   document.getElementById('acl-allow-rows').innerHTML = '';
   document.getElementById('acl-deny-rows').innerHTML = '';
 
-  const dataEl = document.getElementById(`acl-data-${name}`);
+  const dataEl = document.getElementById(`acl-data-${host}-${name}`);
   const acl = dataEl ? JSON.parse(dataEl.textContent) : null;
 
   const mode = (acl && acl.mode) || 'enforce';
@@ -302,7 +313,7 @@ async function submitAcl(acl) {
     const resp = await fetch(`/api/modules/${currentAclModule}/acl/`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
-      body: JSON.stringify({acl}),
+      body: JSON.stringify({acl, host: currentAclHost}),
     });
     const data = await resp.json();
     if (!data.success) {

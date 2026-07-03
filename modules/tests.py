@@ -383,3 +383,45 @@ class SaveLocalAclTests(unittest.TestCase):
         acl, source = services.get_resolved_acl("cam1")
         self.assertEqual(acl, {"allow": {"scheduler": "*"}})
         self.assertEqual(source, "acl.shared")
+
+
+# ── services.merge_acl_matrices ─────────────────────────────────────────────────
+
+class MergeAclMatricesTests(unittest.TestCase):
+    def _row(self, matrix: dict, host: str, name: str) -> dict:
+        return next(r for r in matrix["targets"] if r["host"] == host and r["name"] == name)
+
+    def test_tags_rows_with_their_host(self):
+        local = {"targets": [{"name": "cam1", "acl": None, "source": None, "open": True, "error": None, "cells": {}}], "callers": []}
+        remote = {"targets": [{"name": "telescope", "acl": None, "source": None, "open": True, "error": None, "cells": {}}], "callers": []}
+        merged = services.merge_acl_matrices([("localhost", local), ("MONETS", remote)])
+        self.assertEqual(self._row(merged, "localhost", "cam1")["host"], "localhost")
+        self.assertEqual(self._row(merged, "MONETS", "telescope")["host"], "MONETS")
+
+    def test_caller_union_spans_hosts(self):
+        local = {
+            "targets": [{"name": "cam1", "acl": {"allow": {"scheduler": "*"}}, "source": None, "open": False, "error": None, "cells": {}}],
+            "callers": ["scheduler"],
+        }
+        remote = {
+            "targets": [{"name": "telescope", "acl": {"deny": ["rogue-client"]}, "source": None, "open": False, "error": None, "cells": {}}],
+            "callers": ["rogue-client"],
+        }
+        merged = services.merge_acl_matrices([("localhost", local), ("MONETS", remote)])
+        self.assertEqual(set(merged["callers"]), {"scheduler", "rogue-client"})
+
+    def test_cells_recomputed_against_global_caller_union(self):
+        """A row from one host must still get a cell for a caller that only appears on a
+        different host -- the host that resolved this row's acl: never saw that caller."""
+        local = {
+            "targets": [{"name": "cam1", "acl": {"allow": {"scheduler": "*"}}, "source": None, "open": False, "error": None, "cells": {}}],
+            "callers": ["scheduler"],
+        }
+        remote = {
+            "targets": [{"name": "telescope", "acl": {"deny": ["rogue-client"]}, "source": None, "open": False, "error": None, "cells": {}}],
+            "callers": ["rogue-client"],
+        }
+        merged = services.merge_acl_matrices([("localhost", local), ("MONETS", remote)])
+        cam1_cells = self._row(merged, "localhost", "cam1")["cells"]
+        self.assertEqual(cam1_cells["scheduler"]["kind"], "all")
+        self.assertEqual(cam1_cells["rogue-client"]["kind"], "denied")  # allow-listed, not mentioned -> denied
