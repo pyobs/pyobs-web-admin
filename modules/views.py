@@ -7,7 +7,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
-from modules import proxy, services
+from modules import ejabberd, proxy, services
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -439,3 +439,37 @@ def api_acl(request, name: str):
         return JsonResponse({"success": False, "error": str(e)}, status=409)
     except FileNotFoundError as e:
         return JsonResponse({"success": False, "error": str(e)}, status=404)
+
+
+# ── ejabberd API ──────────────────────────────────────────────────────────────
+
+@require_GET
+def api_ejabberd_status(request):
+    """This instance's own local ejabberd snapshot -- queried directly when EJABBERD_HOST
+    == "localhost" for whichever instance is rendering the dashboard, or by another
+    pyobs-web-admin instance acting as a hub when its own EJABBERD_HOST names this host
+    (see EJABBERD_INTEGRATION.md, Hub-mode delegation). Always answers using this
+    instance's own ejabberd.py calls -- like api_acl_matrix, it has no host-awareness of
+    its own; the caller decides, via EJABBERD_HOST, that this is the right instance to ask.
+    """
+    return JsonResponse({
+        "node_status": ejabberd.status(),
+        "registered_count": ejabberd.stats("registeredusers"),
+        "online_count": ejabberd.stats("onlineusers"),
+        "connected": ejabberd.connected_users_info(),
+    })
+
+
+@require_GET
+def api_ejabberd_user(request, user: str):
+    """Live ejabberd state for one JID local-part -- the delegation target for whichever
+    instance actually hosts a module's config once it has resolved that module's
+    comm.user (see EJABBERD_INTEGRATION.md, Hub-mode delegation: the module's own host and
+    EJABBERD_HOST can be two different hosts entirely). No host-awareness here either, same
+    reasoning as api_ejabberd_status."""
+    return JsonResponse({
+        "comm_user": user,
+        "registered": ejabberd.check_account(user),
+        "sessions": ejabberd.user_sessions_info(user),
+        "last": ejabberd.get_last(user),
+    })

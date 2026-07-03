@@ -72,6 +72,25 @@ authoritative state, this log just narrates it.
   `PYOBS_CONFIG_DIR` too, not just synthetic fixtures: `camera`/`telescope` resolve to their
   real `comm.user` values, `filecache` (`HttpFileCache`, no `comm:` block) correctly
   resolves to `None`.
+- **Done — Work Plan item 5.** Two new endpoints, both deliberately "dumb" — no
+  host-awareness of their own, exactly like `api_acl_matrix` — since hub-delegation is item
+  6's concern, not this one's: `GET /api/ejabberd/status/` (`views.api_ejabberd_status`)
+  returns this instance's own node status/registered count/online count/full connected-user
+  list in one shot, for the dashboard's summary tile; `GET /api/ejabberd/user/<user>/`
+  (`views.api_ejabberd_user`) returns one JID local-part's registered/session/last-seen
+  state, for the module page's per-module block. Deliberately **not** a single combined
+  `/api/modules/<name>/ejabberd/` endpoint doing both `get_comm_user` resolution and the
+  ejabberd query together — those two steps can legitimately need *different* hosts (a
+  module's own config lives wherever that module runs; the actual ejabberd query goes
+  wherever `EJABBERD_HOST` points, which the design doc's Hub-mode delegation section
+  already established can be a third host entirely) — item 6/7 is where that two-step
+  orchestration gets stitched together, not this item. No permanent unit tests added for
+  these two views, matching this repo's existing convention (only `services.py`/data-layer
+  functions get permanent tests; thin views get manual verification) — verified instead via
+  the Django test client directly against the live instance. That verification surfaced one
+  more real discovery worth documenting: `get_last` for a user that was **never**
+  registered returns `{"status": "NOT FOUND", "timestamp": <current time>}` — a third case
+  beyond "ONLINE" and a real disconnect reason, now folded into the Data layer table.
 
 ## Motivation
 
@@ -169,7 +188,7 @@ ejabberd-side setup yet, not removed from the plan — see Work Plan.
 | `connected_users_info` (`{}`) | `[{"jid", "connection", "ip", "port", "priority", "node", "uptime", "status", "resource", "statustext"}, ...]` | Cross-reference against modules for the "connected" indicator |
 | `registered_users` (`{"host": ...}`) | `["admin", "camera", ...]` | Later: typo/staleness detection against `acl:` callers |
 | `user_sessions_info` (`{"user": ..., "host": ...}`) | Same shape as one `connected_users_info` entry, minus `jid` | Module page: is *this* module's identity connected, since when, from where |
-| `get_last` (`{"user": ..., "host": ...}`) | `{"timestamp": "...", "status": "ONLINE"}` while connected, otherwise a **freeform last-disconnect reason** in `status` (e.g. `"Stream reset by peer"`) — not a fixed enum | Module page: "last connected 3h ago (stream reset by peer)" for a module that looks stuck |
+| `get_last` (`{"user": ..., "host": ...}`) | `{"timestamp": "...", "status": "ONLINE"}` while connected; a **freeform last-disconnect reason** in `status` otherwise (e.g. `"Stream reset by peer"`) for a real, previously-seen account; `{"status": "NOT FOUND", "timestamp": <current time>}` for a user that was **never** registered/connected — three cases, not two, and `status` is never a fixed enum | Module page: "last connected 3h ago (stream reset by peer)" for a module that looks stuck; `NOT FOUND`'s timestamp is just "now," not a meaningful last-seen time, so a caller should check `registered` first rather than trust this timestamp for an unregistered account |
 | `check_account` (`{"user": ..., "host": ...}`) | HTTP `200` either way, body is a bare integer: `0` = registered, `1` = not (confirmed against both a real and a nonexistent account) | Module page: flag a `comm.user` that isn't a real XMPP account at all |
 
 Confirmed live, end to end: `registered_users` → exactly
@@ -425,7 +444,7 @@ static; this is live server state):
 - [x] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting. → "ejabberd-side configuration (verified working)" in Data layer, already written and verified against a live instance during v0.3–v0.5. Not yet promoted into README.md's operator-facing Configuration/production-setup sections — see Progress log for why.
 - [x] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths. → `modules/ejabberd.py`, tests in `modules/tests.py`.
 - [x] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config. → `modules/services.py`, tests in `modules/tests.py`.
-- [ ] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`).
+- [x] Local API endpoint(s) exposing ejabberd data, for both direct browser use and hub-proxying (mirrors `/api/acl-matrix/`). → `GET /api/ejabberd/status/`, `GET /api/ejabberd/user/<user>/` in `views.py`/`urls.py`.
 - [ ] Hub-mode delegation: `EJABBERD_HOST == "localhost"` calls `EJABBERD_API_URL` directly, otherwise `proxy.call()` to that host's own endpoint (never point `EJABBERD_API_URL` at a remote host directly — see Hub-mode delegation).
 - [ ] Dashboard: summary tile + per-module "XMPP connected" indicator, on the existing 10s status-poll cadence (no longer needs its own slower schedule, see Open questions).
 - [ ] Module detail page: session / last-seen / registered-check block in the Overview tab.

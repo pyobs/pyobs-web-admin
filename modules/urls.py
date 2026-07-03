@@ -23,4 +23,6 @@ urlpatterns = [
     path("api/shared/<str:name>/config/", views.api_shared_config, name="api_shared_config"),
     path("api/modules/<str:name>/acl/", views.api_acl, name="api_acl"),
     path("api/acl-matrix/", views.api_acl_matrix, name="api_acl_matrix"),
+    path("api/ejabberd/status/", views.api_ejabberd_status, name="api_ejabberd_status"),
+    path("api/ejabberd/user/<str:user>/", views.api_ejabberd_user, name="api_ejabberd_user"),
 ]
