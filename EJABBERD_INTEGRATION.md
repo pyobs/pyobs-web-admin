@@ -1,21 +1,29 @@
-# pyobs-web-admin: ejabberd integration — v0.5 (2026-07-03, 20:15)
+# pyobs-web-admin: ejabberd integration — v0.6 (2026-07-03, 20:30)
 
 ## Status
 
-Design sketch only — no implementation yet. v0.2 verified `ejabberdctl` output formats
-against a real instance; v0.3 changed the primary data-layer mechanism from `ejabberdctl`
-subprocess calls to `mod_http_api` (HTTP+JSON), after actually configuring it on the same
-live instance and measuring a ~50–60x latency drop (see Data layer); v0.4 verified the
-resulting IP-based access control against a real non-loopback request rather than trusting
-it on paper. **v0.5 closes the credential-layer question decisively: after real attempts at
-both OAuth and HTTP Basic Auth on the live instance hit genuine blockers (see "Credential
-layer investigation" in Security model), the decision is IP-only (`acl: loopback`) for v1** —
-not because credentials weren't tried, but because they were tried and didn't work on this
-ejabberd build within reasonable effort, and the IP-only model is already fully verified and
-sufficient for the stated threat model (network-remote access). `ejabberdctl` is kept as a
-documented fallback, not deleted from the plan. See ACL_MATRIX.md for the ACL matrix feature
-this one is related to but separate from (both surface "who can talk to what," but this one
-reads live XMPP server state rather than static config).
+Design settled (v0.2–v0.5, see version history in git blame if needed), implementation
+starting now — see **Progress log** below for exactly what's done and what's next, kept
+current the same way ACL_MATRIX.md's is. `ejabberdctl` is kept as a documented fallback to
+`mod_http_api`, not deleted from the plan. IP-only (`acl: loopback`) is the settled v1
+security model — see "Credential layer investigation" in Security model for why. See
+ACL_MATRIX.md for the ACL matrix feature this one is related to but separate from (both
+surface "who can talk to what," but this one reads live XMPP server state rather than
+static config).
+
+## Progress log
+
+Work Plan items are implemented top-to-bottom; check the item list at the bottom for the
+authoritative state, this log just narrates it.
+
+- **Done — Work Plan item 1.** `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` /
+  `EJABBERD_API_URL` / `EJABBERDCTL` added to `pyobs_web_admin/settings.py`, defaults matching
+  this doc's Settings section exactly (`EJABBERD_ENABLED = False`, `EJABBERD_API_URL =
+  "http://127.0.0.1:5281/api"`, etc.), grouped with the existing `PYOBS_*` settings and
+  overridable the same way via `local_settings.py`. `python manage.py check` and
+  `python manage.py test modules` both pass unchanged (settings-only change, no behavior
+  yet). Not yet consumed by any code — the next items (`modules/ejabberd.py`, `get_comm_user`)
+  are what actually read these.
 
 ## Motivation
 
@@ -364,7 +372,7 @@ static; this is live server state):
 
 ## Work Plan
 
-- [ ] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERD_API_URL` / `EJABBERDCTL` settings.
+- [x] Add `EJABBERD_ENABLED` / `EJABBERD_HOST` / `EJABBERD_DOMAIN` / `EJABBERD_API_URL` / `EJABBERDCTL` settings. → `pyobs_web_admin/settings.py`.
 - [ ] Document the ejabberd-side config (listener `request_handlers` + `modules` + `api_permissions`, see Data layer) — this is a real deployment step on the ejabberd side, not just an app setting.
 - [ ] `modules/ejabberd.py`: `requests`-based calls to `EJABBERD_API_URL` for the command set above (JSON in, JSON out — no custom text parsing needed, unlike the `ejabberdctl` path); `ejabberdctl` subprocess fallback for hosts without the HTTP API configured. Unit tests against captured real responses from both paths.
 - [ ] `services.get_comm_user(name)`: resolve a module's `comm.user` from its config.
