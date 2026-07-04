@@ -1,5 +1,6 @@
 import json
 import re
+import secrets
 from typing import Any
 
 from django.conf import settings
@@ -587,7 +588,58 @@ def _ejabberd_user(user: str) -> dict:
         "registered": ejabberd.check_account(user),
         "sessions": ejabberd.user_sessions_info(user),
         "last": ejabberd.get_last(user),
+        "ban_details": ejabberd.get_ban_details(user),
     }
+
+
+# ── ejabberd write delegation (EJABBERD_USER_MANAGEMENT.md) ─────────────────────
+#
+# Same one-hop delegation shape as _ejabberd_status/_ejabberd_user above: call
+# modules.ejabberd directly if EJABBERD_HOST is "localhost", otherwise proxy.call() to that
+# host's own dumb hub-facing endpoint below. Every one of these raises (propagating
+# modules.ejabberd's ValueError, or a proxy.call HTTPError if the remote hop's response was
+# an error) rather than returning a success flag -- callers (the module-scoped browser-facing
+# views further below) catch broadly and turn whichever exception into a clean JSON error,
+# the same pattern api_module_ejabberd already uses around _ejabberd_user.
+
+def _ejabberd_register(user: str, password: str) -> None:
+    host = _ejabberd_host_config()
+    if host:
+        proxy.call(host, "POST", f"/api/ejabberd/user/{user}/register/", json={"password": password})
+        return
+    ejabberd.register(user, password)
+
+
+def _ejabberd_change_password(user: str, new_password: str) -> None:
+    host = _ejabberd_host_config()
+    if host:
+        proxy.call(host, "POST", f"/api/ejabberd/user/{user}/change-password/", json={"password": new_password})
+        return
+    ejabberd.change_password(user, new_password)
+
+
+def _ejabberd_ban(user: str, reason: str) -> None:
+    host = _ejabberd_host_config()
+    if host:
+        proxy.call(host, "POST", f"/api/ejabberd/user/{user}/ban/", json={"reason": reason})
+        return
+    ejabberd.ban_account(user, reason)
+
+
+def _ejabberd_unban(user: str) -> None:
+    host = _ejabberd_host_config()
+    if host:
+        proxy.call(host, "POST", f"/api/ejabberd/user/{user}/unban/")
+        return
+    ejabberd.unban_account(user)
+
+
+def _ejabberd_unregister(user: str) -> None:
+    host = _ejabberd_host_config()
+    if host:
+        proxy.call(host, "POST", f"/api/ejabberd/user/{user}/unregister/")
+        return
+    ejabberd.unregister(user)
 
 
 # ── ejabberd API ──────────────────────────────────────────────────────────────
@@ -621,7 +673,76 @@ def api_ejabberd_user(request, user: str):
         "registered": ejabberd.check_account(user),
         "sessions": ejabberd.user_sessions_info(user),
         "last": ejabberd.get_last(user),
+        "ban_details": ejabberd.get_ban_details(user),
     })
+
+
+# ── ejabberd write API -- hub-facing, "dumb" (EJABBERD_USER_MANAGEMENT.md) ──────
+#
+# Delegation targets for _ejabberd_register/_ejabberd_change_password/_ejabberd_ban/
+# _ejabberd_unban/_ejabberd_unregister above, exactly parallel to api_ejabberd_user -- no
+# host-awareness of their own, operate on a bare XMPP username, and always call
+# modules.ejabberd directly against this instance's own configured EJABBERD_API_URL/
+# EJABBERDCTL. modules.ejabberd's write functions raise ValueError on failure (see that
+# module and EJABBERD_USER_MANAGEMENT.md's "Verified live"); caught here and turned into a
+# 400 with ejabberd's own message, which a delegating instance's proxy.call surfaces as an
+# HTTPError for _ejabberd_* above to catch alongside any local ValueError.
+
+@require_POST
+def api_ejabberd_user_register(request, user: str):
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    try:
+        ejabberd.register(user, data.get("password", ""))
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@require_POST
+def api_ejabberd_user_change_password(request, user: str):
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    try:
+        ejabberd.change_password(user, data.get("password", ""))
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@require_POST
+def api_ejabberd_user_ban(request, user: str):
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    try:
+        ejabberd.ban_account(user, data.get("reason", ""))
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@require_POST
+def api_ejabberd_user_unban(request, user: str):
+    try:
+        ejabberd.unban_account(user)
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@require_POST
+def api_ejabberd_user_unregister(request, user: str):
+    try:
+        ejabberd.unregister(user)
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
 
 
 # ── ejabberd browser-facing API ─────────────────────────────────────────────────
@@ -656,9 +777,18 @@ def api_module_ejabberd(request, name: str):
 
     Also reports module_running (this module's own process, via get_module_status) -- two
     modules can share the same comm.user (e.g. a "_test" copy reusing a real module's
-    identity), so a live ejabberd session for that JID doesn't necessarily belong to *this*
-    module; the caller must not present it as "connected" unless this module is actually the
-    one running."""
+    identity), so a live *session* for that JID doesn't necessarily belong to *this* module;
+    the caller must not present sessions/last as "this module's connection" unless this
+    module is actually the one running. registered/ban_details are account-level facts, not
+    session state, so unlike sessions/last they're queried and returned regardless of
+    module_running -- registering/resetting/banning an account for a module that isn't
+    running yet (or anymore) is a real, intended use case (EJABBERD_USER_MANAGEMENT.md), not
+    something that should require starting the module first.
+
+    shared_with (EJABBERD_USER_MANAGEMENT.md) lists every *other* local module resolving to
+    the same comm.user -- a config fact, independent of ejabberd/running state, so it's
+    always included once comm_user resolves. Feeds the write actions' confirmation UI, which
+    must show this before a ban/unregister goes through (see that doc's Design)."""
     host = _active_host(request)
     if host:
         return _proxy(host, "GET", f"/api/modules/{name}/ejabberd/")
@@ -666,10 +796,145 @@ def api_module_ejabberd(request, name: str):
     comm_user = services.get_comm_user(name)
     if comm_user is None:
         return JsonResponse({"comm_user": None})
+    shared_with = [n for n in services.find_modules_sharing_comm_user(comm_user) if n != name]
     running = services.get_module_status(name) == "running"
-    if not running:
-        return JsonResponse({"comm_user": comm_user, "module_running": False})
     try:
-        return JsonResponse({"module_running": True, **_ejabberd_user(comm_user)})
+        state = _ejabberd_user(comm_user)
     except Exception as e:
-        return JsonResponse({"comm_user": comm_user, "module_running": True, "error": str(e)}, status=502)
+        return JsonResponse(
+            {"comm_user": comm_user, "module_running": running, "shared_with": shared_with, "error": str(e)},
+            status=502,
+        )
+    result = {
+        "comm_user": comm_user,
+        "module_running": running,
+        "shared_with": shared_with,
+        "registered": state["registered"],
+        "ban_details": state["ban_details"],
+    }
+    if running:
+        result["sessions"] = state["sessions"]
+        result["last"] = state["last"]
+    return JsonResponse(result)
+
+
+# ── ejabberd write API -- module-scoped, browser-facing ─────────────────────────
+#
+# Resolve comm_user from the module name first (local config, always this instance's own
+# services.get_comm_user regardless of where ejabberd lives), then delegate the actual
+# ejabberd command via _ejabberd_register/_ejabberd_change_password/_ejabberd_ban/
+# _ejabberd_unban/_ejabberd_unregister, which handle the *separate* EJABBERD_HOST hop --
+# same two-layer shape api_module_ejabberd already uses for reads.
+
+@require_POST
+def api_module_ejabberd_register(request, name: str):
+    """Registers module name's comm.user as a new XMPP account, using the password its own
+    config already declares -- no password is read from the request body at all. The point
+    is making an existing comm.user/comm.password config actually work, not choosing a fresh
+    credential (see EJABBERD_USER_MANAGEMENT.md, Design)."""
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/register/")
+    _get_module_or_404(name)
+    comm_user, comm_password, _ = services.get_resolved_comm(name)
+    if comm_user is None:
+        return JsonResponse({"success": False, "error": "Module has no comm.user"}, status=400)
+    if not comm_password:
+        return JsonResponse(
+            {"success": False, "error": "Module's comm: has no password: to register with"}, status=400
+        )
+    try:
+        _ejabberd_register(comm_user, comm_password)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_module_ejabberd_change_password(request, name: str):
+    """Resets module name's comm.user's XMPP password to a freshly generated random value,
+    then writes it into comm.password: for every *local* module sharing that identity
+    (services.save_comm_password) -- cross-host shared identities aren't handled, matching
+    this app's usual "hub mode aggregates only when a feature explicitly needs it" model
+    (see DEVELOPMENT.md's Wide conventions)."""
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/change-password/")
+    _get_module_or_404(name)
+    comm_user = services.get_comm_user(name)
+    if comm_user is None:
+        return JsonResponse({"success": False, "error": "Module has no comm.user"}, status=400)
+    new_password = secrets.token_urlsafe(18)
+    try:
+        _ejabberd_change_password(comm_user, new_password)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+    try:
+        updated = services.save_comm_password(comm_user, new_password)
+    except Exception as e:
+        # The ejabberd-side password *was* already changed at this point -- say so distinctly
+        # rather than let the operator assume nothing happened, since config is now out of
+        # sync with the real account until fixed manually.
+        return JsonResponse({
+            "success": False,
+            "error": (
+                f"ejabberd account password was changed, but writing it back into config "
+                f"failed: {e}. The module's config is now out of sync with the real "
+                f"account -- fix manually."
+            ),
+        }, status=500)
+    return JsonResponse({"success": True, "updated_modules": updated})
+
+
+@require_POST
+def api_module_ejabberd_ban(request, name: str):
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    reason = data.get("reason") or f"Banned via pyobs-web-admin ({name})"
+
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/ban/", json={"reason": reason})
+    _get_module_or_404(name)
+    comm_user = services.get_comm_user(name)
+    if comm_user is None:
+        return JsonResponse({"success": False, "error": "Module has no comm.user"}, status=400)
+    try:
+        _ejabberd_ban(comm_user, reason)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_module_ejabberd_unban(request, name: str):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/unban/")
+    _get_module_or_404(name)
+    comm_user = services.get_comm_user(name)
+    if comm_user is None:
+        return JsonResponse({"success": False, "error": "Module has no comm.user"}, status=400)
+    try:
+        _ejabberd_unban(comm_user)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_module_ejabberd_unregister(request, name: str):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/unregister/")
+    _get_module_or_404(name)
+    comm_user = services.get_comm_user(name)
+    if comm_user is None:
+        return JsonResponse({"success": False, "error": "Module has no comm.user"}, status=400)
+    try:
+        _ejabberd_unregister(comm_user)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)

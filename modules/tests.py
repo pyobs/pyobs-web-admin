@@ -304,6 +304,43 @@ class GetCommUserTests(unittest.TestCase):
         )
         self.assertEqual(services.get_comm_user("cam1"), "camera")
 
+    def test_resolved_missing_module_returns_none_triple(self):
+        self.assertEqual(services.get_resolved_comm("nope"), (None, None, None))
+
+    def test_resolved_comm_defined_locally_has_no_source(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: pyobs\n")
+        user, password, source = services.get_resolved_comm("cam1")
+        self.assertEqual(user, "camera")
+        self.assertEqual(password, "pyobs")
+        self.assertIsNone(source)
+
+    def test_resolved_comm_via_bare_top_level_include_has_source(self):
+        """comm: key itself doesn't appear in the module's own file -- the whole block, key
+        included, comes from a bare top-level {include} -- EJABBERD_USER_MANAGEMENT.md's
+        config write-back must refuse to edit comm.password: in this case, the same way
+        save_local_acl already refuses for acl:."""
+        self._write("comm.shared", "comm:\n  user: camera\n  password: pyobs\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n",
+        )
+        user, password, source = services.get_resolved_comm("cam1")
+        self.assertEqual(user, "camera")
+        self.assertEqual(password, "pyobs")
+        self.assertEqual(source, "comm.shared")
+
+    def test_resolved_comm_via_inline_include_value_has_source(self):
+        """comm: key present in the module's own file, but its value is {include}'d."""
+        self._write("comm.shared", "user: camera\npassword: pyobs\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\ncomm:\n  {include comm.shared.yaml}\n",
+        )
+        user, password, source = services.get_resolved_comm("cam1")
+        self.assertEqual(user, "camera")
+        self.assertEqual(password, "pyobs")
+        self.assertEqual(source, "comm.shared")
+
 
 # ── services.build_acl_matrix ──────────────────────────────────────────────────
 
@@ -481,6 +518,96 @@ class SaveLocalAclTests(unittest.TestCase):
         acl, source = services.get_resolved_acl("cam1")
         self.assertEqual(acl, {"allow": {"scheduler": "*"}})
         self.assertEqual(source, "acl.shared")
+
+
+# ── services.save_comm_password / find_modules_sharing_comm_user ────────────────
+
+class SaveCommPasswordTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def _read(self, name: str) -> str:
+        return (self.tmp_path / f"{name}.yaml").read_text()
+
+    def test_replaces_password_preserving_anchor_merge_key(self):
+        # Matches this box's own real telescope.yaml shape exactly.
+        self._write(
+            "telescope",
+            "_comm_defaults: &comm\n  class: pyobs.comm.xmpp.XmppComm\n  domain: localhost\n"
+            "class: pyobs.modules.telescope.BaseTelescope\n"
+            "comm:\n  <<: *comm\n  user: telescope\n  password: pyobs\n",
+        )
+        updated = services.save_comm_password("telescope", "newpass123")
+        self.assertEqual(updated, ["telescope"])
+        raw = self._read("telescope")
+        self.assertIn("password: newpass123", raw)
+        self.assertIn("<<: *comm", raw)  # anchor merge key survives, not flattened
+        self.assertIn("user: telescope", raw)
+
+    def test_updates_every_module_sharing_the_same_comm_user(self):
+        """EJABBERD_INTEGRATION.md's own real-world case: a _test copy reusing a real
+        module's identity. A password change must not leave one of them stale."""
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        updated = services.save_comm_password("shared_id", "newpass")
+        self.assertEqual(sorted(updated), ["_test", "camera"])
+        self.assertIn("password: newpass", self._read("camera"))
+        self.assertIn("password: newpass", self._read("_test"))
+
+    def test_unrelated_lines_and_other_modules_untouched(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: old\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\ncomm:\n  user: telescope\n  password: untouched\n")
+        services.save_comm_password("camera", "newpass")
+        self.assertIn("class: pyobs.modules.camera.BaseCamera", self._read("camera"))
+        self.assertIn("password: untouched", self._read("telescope"))
+
+    def test_password_value_is_yaml_quoted_safely(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: old\n")
+        services.save_comm_password("camera", "a: weird, value")
+        _, password, _ = services.get_resolved_comm("camera")
+        self.assertEqual(password, "a: weird, value")
+
+    def test_no_module_has_this_comm_user_raises(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: old\n")
+        with self.assertRaises(ValueError):
+            services.save_comm_password("nonexistent_identity", "newpass")
+
+    def test_refuses_when_comm_comes_from_shared_fragment(self):
+        self._write("comm.shared", "comm:\n  user: camera\n  password: old\n")
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n")
+        with self.assertRaises(ValueError):
+            services.save_comm_password("camera", "newpass")
+        # nothing written -- shared fragment untouched
+        self.assertIn("password: old", self._read("comm.shared"))
+
+    def test_all_or_nothing_across_shared_identity_when_one_source_is_shared(self):
+        """One of two modules sharing an identity has comm: from a shared fragment -- must
+        refuse before writing to *either* module, not just the one that's actually shared."""
+        self._write("comm.shared", "comm:\n  user: shared_id\n  password: old\n")
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n")
+        with self.assertRaises(ValueError):
+            services.save_comm_password("shared_id", "newpass")
+        self.assertIn("password: old", self._read("camera"))
+        self.assertIn("password: old", self._read("comm.shared"))
+
+    def test_find_modules_sharing_comm_user(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\ncomm:\n  user: telescope\n  password: old\n")
+        self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
+        self.assertEqual(sorted(services.find_modules_sharing_comm_user("shared_id")), ["_test", "camera"])
+        self.assertEqual(services.find_modules_sharing_comm_user("nonexistent_identity"), [])
 
 
 # ── services.merge_acl_matrices ─────────────────────────────────────────────────
@@ -700,6 +827,109 @@ class EjabberdCtlFallbackTests(unittest.TestCase):
     def test_check_account_false(self, mock_run):
         mock_run.return_value = self._mock_result(stdout="Error: false\n", returncode=1)
         self.assertFalse(ejabberd.check_account("nonexistent-user-xyz"))
+
+
+# ── ejabberd.py write commands ────────────────────────────────────────────────
+#
+# Fixtures are the exact stdout/returncode captured live against a real ejabberd 24.12-4
+# instance, using a disposable test account created and fully removed afterward -- see
+# EJABBERD_USER_MANAGEMENT.md's "Verified live" table. Not mod_http_api -- these commands
+# are ejabberdctl-only by design (see that doc's Transport decision), so EJABBERD_API_URL is
+# irrelevant here; still set to "" to make that explicit rather than rely on the default.
+
+class EjabberdWriteCommandTests(unittest.TestCase):
+    def setUp(self):
+        self._settings = override_settings(EJABBERD_API_URL="", EJABBERDCTL="ejabberdctl", EJABBERD_DOMAIN="localhost")
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+
+    def _mock_result(self, stdout="", returncode=0):
+        result = MagicMock()
+        result.stdout = stdout
+        result.returncode = returncode
+        return result
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_register_success(self, mock_run):
+        mock_run.return_value = self._mock_result("User newuser@localhost successfully registered\n", 0)
+        ejabberd.register("newuser", "somepassword")
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "register", "newuser", "localhost", "somepassword"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_register_conflict_raises_with_ejabberds_own_message(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "Error: conflict: User newuser@localhost already registered\n", 1
+        )
+        with self.assertRaises(ValueError) as ctx:
+            ejabberd.register("newuser", "somepassword")
+        self.assertIn("already registered", str(ctx.exception))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_change_password_success_has_empty_stdout(self, mock_run):
+        # Verified live: unlike ejabberdctl help's own example (which shows a printed 'ok'),
+        # this ejabberd version prints nothing on success -- empty stdout is the success case,
+        # not a sign the call didn't go through.
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.change_password("newuser", "newpassword")
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_change_password_nonexistent_user_raises_with_erlang_tuple_message(self, mock_run):
+        mock_run.return_value = self._mock_result('{not_found,"unknown_user"}\n', 1)
+        with self.assertRaises(ValueError) as ctx:
+            ejabberd.change_password("nonexistent-user-xyz", "newpassword")
+        self.assertIn("not_found", str(ctx.exception))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_ban_account_success(self, mock_run):
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.ban_account("newuser", "policy violation")
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "ban_account", "newuser", "localhost", "policy violation"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_unban_account_success(self, mock_run):
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.unban_account("newuser")
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_unregister_success(self, mock_run):
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.unregister("newuser")
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_unregister_nonexistent_user_is_silently_idempotent_not_an_error(self, mock_run):
+        """Verified live: ejabberd itself doesn't distinguish "removed" from "was never
+        there" -- exit 0, empty output either way. Callers needing that distinction must
+        check_account first; unregister's own result can't tell them."""
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.unregister("never-existed-xyz")  # must not raise
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_ban_details_when_banned_parses_tab_separated_fields(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "reason\tsecond verification ban\n"
+            "bandate\t2026-07-04T09:27:15.202186Z\n"
+            "lastdate\t2026-07-04T09:24:35Z\n"
+            "lastreason\tRegistered but didn't login\n"
+        )
+        self.assertEqual(ejabberd.get_ban_details("newuser"), {
+            "reason": "second verification ban",
+            "bandate": "2026-07-04T09:27:15.202186Z",
+            "lastdate": "2026-07-04T09:24:35Z",
+            "lastreason": "Registered but didn't login",
+        })
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_ban_details_when_not_banned_returns_none(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        self.assertIsNone(ejabberd.get_ban_details("newuser"))
 
 
 class EjabberdPathSelectionTests(unittest.TestCase):

@@ -113,3 +113,101 @@ def check_account(user: str) -> bool:
     if _use_http():
         return _http_call("check_account", {"user": user, "host": domain}) == 0
     return _ctl_returncode("check_account", user, domain) == 0
+
+
+# ── Write commands -- ejabberdctl only, never mod_http_api ───────────────────
+#
+# See EJABBERD_USER_MANAGEMENT.md, Design "Transport": a write's cost is dominated by a
+# human clicking a confirmation dialog, not command latency, so there's no reason to widen
+# the loopback mod_http_api ACL just for these -- every one of them stays on the ejabberdctl
+# subprocess path unconditionally, no _use_http() branch.
+#
+# Every one of these commands writes only to stdout on both success and failure --
+# ejabberdctl never uses stderr for them (verified live, see that doc's "Verified live"
+# table; an earlier pass at that table wrongly attributed failure messages to stderr, an
+# artifact of testing with merged streams). The exit code is the only reliable
+# success/failure signal, unlike the read commands above, none of which needed one.
+
+def _ctl_write(command: str, *args: str) -> tuple[bool, str]:
+    result = subprocess.run(
+        [settings.EJABBERDCTL, command, *args],
+        capture_output=True, text=True, timeout=10,
+    )
+    return result.returncode == 0, result.stdout.strip()
+
+
+def register(user: str, password: str) -> None:
+    """Registers a new XMPP account for user on EJABBERD_DOMAIN. Raises ValueError on
+    failure (e.g. the account already exists -- verified live: exit 1, stdout "Error:
+    conflict: User <user>@<host> already registered")."""
+    domain = settings.EJABBERD_DOMAIN
+    ok, message = _ctl_write("register", user, domain, password)
+    if not ok:
+        raise ValueError(message or f"Failed to register {user}@{domain}")
+
+
+def change_password(user: str, new_password: str) -> None:
+    """Changes user's XMPP password on EJABBERD_DOMAIN. Prints nothing on success (verified
+    live -- contradicts ejabberdctl's own help text example, which shows a printed 'ok'; this
+    ejabberd version prints nothing), so an empty message alongside a zero exit code is the
+    expected success case, not a sign anything went wrong. Raises ValueError on failure (e.g.
+    the account doesn't exist -- verified live: exit 1, stdout a raw Erlang tuple literal
+    `{not_found,"unknown_user"}`)."""
+    domain = settings.EJABBERD_DOMAIN
+    ok, message = _ctl_write("change_password", user, domain, new_password)
+    if not ok:
+        raise ValueError(message or f"Failed to change password for {user}@{domain}")
+
+
+def ban_account(user: str, reason: str) -> None:
+    """Puts user into ejabberd's account-disabled state on EJABBERD_DOMAIN, recording reason
+    -- reversible via unban_account, which restores the account's original password (verified
+    live; not a "swap in a random password" as ejabberd's own docs might suggest -- see
+    EJABBERD_USER_MANAGEMENT.md's Current state). Note check_password must never be used to
+    detect this state (it throws an unhandled exception against a banned account) -- use
+    get_ban_details instead."""
+    domain = settings.EJABBERD_DOMAIN
+    ok, message = _ctl_write("ban_account", user, domain, reason)
+    if not ok:
+        raise ValueError(message or f"Failed to ban {user}@{domain}")
+
+
+def unban_account(user: str) -> None:
+    """Lifts a ban placed by ban_account, restoring the account's original password
+    (verified live)."""
+    domain = settings.EJABBERD_DOMAIN
+    ok, message = _ctl_write("unban_account", user, domain)
+    if not ok:
+        raise ValueError(message or f"Failed to unban {user}@{domain}")
+
+
+def unregister(user: str) -> None:
+    """Permanently deletes user's account -- auth, roster, and vcard data -- on
+    EJABBERD_DOMAIN. Not reversible. Verified live: silently succeeds (exit 0, empty output)
+    even if the account was never registered in the first place -- ejabberd itself doesn't
+    distinguish "removed" from "was never there," so a caller that needs to know which
+    happened must call check_account first, not infer it from this function's result."""
+    domain = settings.EJABBERD_DOMAIN
+    ok, message = _ctl_write("unregister", user, domain)
+    if not ok:
+        raise ValueError(message or f"Failed to unregister {user}@{domain}")
+
+
+def get_ban_details(user: str) -> dict | None:
+    """Returns a dict of ban details (reason/bandate/lastdate/lastreason) if user is
+    currently banned on EJABBERD_DOMAIN, or None if not. The safe way to check ban status --
+    check_password throws an unhandled exception against a banned account instead of
+    returning a clean answer (verified live, see EJABBERD_USER_MANAGEMENT.md's "Verified
+    live"). Read-only, but ejabberdctl-only like the write commands above rather than
+    mod_http_api, since it exists purely to support them and isn't in the existing
+    mod_http_api whitelist either."""
+    domain = settings.EJABBERD_DOMAIN
+    raw = _ctl_call("get_ban_details", user, domain)
+    lines = [line for line in raw.splitlines() if line]
+    if not lines:
+        return None
+    details = {}
+    for line in lines:
+        key, _, value = line.partition("\t")
+        details[key] = value
+    return details

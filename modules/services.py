@@ -499,22 +499,26 @@ def _shared_name(filename: str) -> str:
     return filename[: -len(".yaml")] if filename.endswith(".yaml") else filename
 
 
-def _acl_source_file(raw: str) -> str | None:
-    """Given a module's raw (unprocessed) config text, determines whether its "acl:" key's
+def _block_source_file(raw: str, key: str) -> str | None:
+    """Given a module's raw (unprocessed) config text, determines whether its `<key>:` key's
     value is defined directly in the module's own file or pulled in from a shared fragment
     via {include}. Returns the shared fragment's name (as used by list_shared_configs()),
-    or None if the acl block (if any) is defined locally.
+    or None if the block (if any) is defined locally. Generalized from what used to be
+    acl:-only (`_acl_source_file`) so `get_resolved_comm` can reuse the exact same
+    detection for `comm:` -- see EJABBERD_USER_MANAGEMENT.md's config write-back, which needs
+    the same "is this locally editable or does it live in a shared fragment" answer for
+    comm.password that get_resolved_acl already gives for acl:.
 
     Only recognizes the two patterns pyobs-web-admin's own editor can produce (see
     ACL_MATRIX.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
-    whose target's own top-level content defines "acl:", or an "acl:" key whose entire
+    whose target's own top-level content defines `<key>:`, or a `<key>:` key whose entire
     value is a single `{include x.shared.yaml}`. A more deeply nested include structure
     (e.g. an include reaching into a dotted sub-key of a larger fragment) falls back to
     being reported as "own file" -- a conservative default: such a rule just isn't routed
     to a shared-fragment edit yet, and is edited in the module's own file instead.
     """
     lines = raw.splitlines()
-    acl_block: list[str] | None = None
+    key_block: list[str] | None = None
     bare_includes: list[str] = []
 
     i = 0
@@ -522,28 +526,28 @@ def _acl_source_file(raw: str) -> str | None:
         line = lines[i]
         if line and not line[0].isspace():
             m = _TOP_LEVEL_KEY_RE.match(line)
-            if m and m.group(1) == "acl":
+            if m and m.group(1) == key:
                 block = [line]
                 i += 1
                 while i < len(lines) and (lines[i] == "" or lines[i][0].isspace()):
                     block.append(lines[i])
                     i += 1
-                acl_block = block
+                key_block = block
                 continue
             inc = _INCLUDE_RE.fullmatch(line.strip())
             if inc:
                 bare_includes.append(inc.group(1))
         i += 1
 
-    if acl_block is not None:
-        inline_value = acl_block[0].split(":", 1)[1].strip()
-        body = "\n".join(acl_block[1:]).strip() or inline_value
+    if key_block is not None:
+        inline_value = key_block[0].split(":", 1)[1].strip()
+        body = "\n".join(key_block[1:]).strip() or inline_value
         inc = _INCLUDE_RE.fullmatch(body)
         return _shared_name(inc.group(1)) if inc else None
 
     for filename in bare_includes:
         included = _config_dir() / filename
-        if included.exists() and re.search(r"(?m)^acl:", included.read_text()):
+        if included.exists() and re.search(rf"(?m)^{key}:", included.read_text()):
             return _shared_name(filename)
     return None
 
@@ -565,32 +569,172 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     acl = resolved.get("acl")
     if acl is None:
         return None, None
-    return acl, _acl_source_file(config_file.read_text())
+    return acl, _block_source_file(config_file.read_text(), "acl")
 
 
-def get_comm_user(name: str) -> str | None:
-    """Resolves a module's own XMPP identity -- its comm.user, e.g. "camera" in
-    comm: {user: camera, ...} -- the same way get_resolved_acl resolves acl:, via
-    pre_process_yaml + yaml.safe_load, since comm: can equally arrive via {include} or a
-    YAML anchor/merge key (a real config uses `comm: {<<: *comm, user: camera, ...}`).
+def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
+    """Returns (comm_user, comm_password, source) for a module's *effective* comm: block --
+    the same resolution get_resolved_acl uses for acl:, via pre_process_yaml +
+    yaml.safe_load, since comm: can equally arrive via {include} or a YAML anchor/merge key
+    (a real config uses `comm: {<<: *comm, user: camera, password: pyobs}`).
 
-    Returns None if the module has no comm: block at all (confirmed real example:
-    HttpFileCache) -- not an error, just "this module was never expected to have an XMPP
-    identity" (see EJABBERD_INTEGRATION.md, "Where it surfaces": that's the signal used to
-    skip showing ejabberd status for modules that were never going to connect). No
-    provenance tracking (unlike get_resolved_acl's source) -- there's no editing use case
-    for comm.user, only display.
+    comm_user/comm_password are None if the module has no comm: block at all (confirmed real
+    example: HttpFileCache) or the respective sub-key is missing -- not an error, just "this
+    module was never expected to have an XMPP identity" (see EJABBERD_INTEGRATION.md, "Where
+    it surfaces"). source is None if comm: is defined directly in the module's own file, or
+    the shared fragment's name if pulled in via {include}.
+
+    The password is needed (not just user) for EJABBERD_USER_MANAGEMENT.md's register
+    action: it registers a new XMPP account using whatever password the module's config
+    *already* declares, rather than prompting for a new one -- the whole point is making an
+    existing comm.user/comm.password config actually work, not choosing a fresh credential.
+    source is needed for that same doc's config write-back (change_password), which must
+    refuse to edit comm.password: when it resolves to a shared fragment, exactly the guard
+    save_local_acl already applies to acl:.
     """
     validate_name(name)
     config_file = _config_dir() / f"{name}.yaml"
     if not config_file.exists():
-        return None
+        return None, None, None
     resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
     comm = resolved.get("comm")
     if not isinstance(comm, dict):
-        return None
+        return None, None, None
     user = comm.get("user")
-    return user if isinstance(user, str) else None
+    password = comm.get("password")
+    return (
+        user if isinstance(user, str) else None,
+        password if isinstance(password, str) else None,
+        _block_source_file(config_file.read_text(), "comm"),
+    )
+
+
+def get_comm_user(name: str) -> str | None:
+    """Resolves a module's own XMPP identity -- its comm.user, e.g. "camera" in
+    comm: {user: camera, ...}. Display-only convenience wrapper around get_resolved_comm,
+    dropping the password/source -- most callers (dashboard, module page) only ever show
+    this value, they don't edit it or need its credential. See get_resolved_comm for the
+    fuller resolution EJABBERD_USER_MANAGEMENT.md's write actions need.
+    """
+    return get_resolved_comm(name)[0]
+
+
+def find_modules_sharing_comm_user(user: str) -> list[str]:
+    """Every locally-configured module whose resolved comm.user equals user.
+
+    Needed because EJABBERD_USER_MANAGEMENT.md's write actions (register/change_password/
+    ban_account/unban_account/unregister) affect *every* module sharing an XMPP identity,
+    not just whichever module's page an action was triggered from -- EJABBERD_INTEGRATION.md's
+    own "third bug" documents _test and camera sharing one comm.user for real, in this exact
+    fleet, not a hypothetical edge case.
+    """
+    return [name for name in list_modules() if get_comm_user(name) == user]
+
+
+def _yaml_scalar(value: str) -> str:
+    """Renders value as a single-line YAML scalar suitable for splicing directly after
+    "key: " in raw config text -- reuses PyYAML's own quoting rules (handles colons, quotes,
+    leading/trailing whitespace, etc. correctly) via a throwaway single-key dict dump,
+    rather than hand-rolling escaping logic for a config value as sensitive as a password."""
+    dumped = yaml.safe_dump({"_": value}, default_flow_style=False).strip()
+    return dumped.split(": ", 1)[1]
+
+
+def _replace_comm_password(raw: str, new_password: str) -> str:
+    """Replaces just the password: sub-value inside a module's top-level comm: block,
+    leaving every other line in that block -- including a `<<: *comm` anchor merge key,
+    `user:`, or anything else -- byte-for-byte untouched.
+
+    Unlike _replace_local_acl_block, which re-serializes its whole block fresh, comm: can't
+    be treated that way without destroying an anchor-merge reference: a real config's actual
+    shape is `comm: {<<: *comm, user: telescope, password: pyobs}` in block style (confirmed
+    against this box's own telescope.yaml) -- re-dumping the resolved dict from scratch would
+    expand `<<: *comm` into a flat copy of every merged-in key instead of preserving the
+    merge-key shorthand, a much more destructive change than acl:'s "comments are lost"
+    tradeoff.
+
+    Only valid to call when comm: is known to be defined directly in this file (source is
+    None, see get_resolved_comm) and already has its own password: sub-key. Raises
+    ValueError if no top-level comm: block or no password: sub-key is found -- this doesn't
+    handle adding a password: key that doesn't exist yet, matching this feature's scope of
+    managing an *existing* comm.user (see EJABBERD_USER_MANAGEMENT.md, "Modules with no
+    comm: block").
+    """
+    lines = raw.splitlines()
+    block_start = block_end = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "comm":
+                block_start = i
+                i += 1
+                while i < len(lines) and lines[i] != "" and lines[i][0].isspace():
+                    i += 1
+                block_end = i
+                break
+        i += 1
+
+    if block_start is None:
+        raise ValueError("no top-level comm: block found")
+
+    password_re = re.compile(r"^(\s*)password\s*:\s*.*$")
+    for j in range(block_start, block_end):
+        m = password_re.match(lines[j])
+        if m:
+            lines[j] = f"{m.group(1)}password: {_yaml_scalar(new_password)}"
+            return "\n".join(lines) + "\n"
+
+    raise ValueError("comm: block has no password: sub-key to replace")
+
+
+def save_comm_password(user: str, new_password: str) -> list[str]:
+    """Writes new_password into comm.password: for every local module whose comm.user
+    resolves to user, splicing just that sub-key (_replace_comm_password). Returns the list
+    of module names updated.
+
+    All-or-nothing: if *any* matching module's comm: resolves to a shared fragment, raises
+    before writing to *any* of them -- a partial write (some modules updated, others left
+    with a now-stale password) would be a worse outcome than not writing at all, exactly the
+    risk EJABBERD_USER_MANAGEMENT.md's Design section calls out for a shared comm.user. If
+    verification fails partway through (some files written, a later one doesn't check out),
+    rolls back every file this call itself wrote, mirroring save_local_acl's safety net but
+    extended across the whole matching set.
+    """
+    names = find_modules_sharing_comm_user(user)
+    if not names:
+        raise ValueError(f'no local module has comm.user "{user}"')
+
+    originals: dict[str, str] = {}
+    for name in names:
+        _, _, source = get_resolved_comm(name)
+        if source is not None:
+            raise ValueError(
+                f'comm: for "{name}" (comm.user "{user}") comes from shared fragment '
+                f'"{source}" -- edit it there instead'
+            )
+        original = get_config(name)
+        if original is None:
+            raise FileNotFoundError(f"Config file not found for module: {name}")
+        originals[name] = original
+
+    written: list[str] = []
+    try:
+        for name in names:
+            save_config(name, _replace_comm_password(originals[name], new_password))
+            written.append(name)
+
+        for name in names:
+            resolved_user, resolved_password, _ = get_resolved_comm(name)
+            if resolved_user != user or resolved_password != new_password:
+                raise ValueError(f'could not verify the comm.password: edit for "{name}" after writing')
+    except Exception:
+        for name in written:
+            save_config(name, originals[name])
+        raise
+
+    return names
 
 
 def _dump_acl_block(acl: dict) -> list[str]:
@@ -612,7 +756,7 @@ def _replace_local_acl_block(raw: str, acl: dict | None) -> str:
     get_resolved_acl's source is None first -- see ACL_MATRIX.md, "Editing from the
     matrix", for why writing through a shared fragment must never happen silently).
 
-    Locates the block the same way _acl_source_file does (walk top-level keys, a "acl:"
+    Locates the block the same way _block_source_file does (walk top-level keys, a "acl:"
     line plus every following blank-or-indented line is the block), except a blank line
     ends the block here rather than being absorbed into it -- a simplifying assumption
     (an acl: block with an intentional blank line in the middle of it, e.g. between "mode:"

@@ -40,21 +40,33 @@ is fine, that's what the Design section of the eventual doc is for.
   permission grant), see that doc's Status.
 - [EJABBERD_USER_MANAGEMENT.md](EJABBERD_USER_MANAGEMENT.md) — register/reset-password/ban/
   unregister XMPP accounts for a module's `comm.user` from pyobs-web-admin, closing the
-  write-side gap `EJABBERD_INTEGRATION.md` deliberately left open. **Design settled, write
-  commands verified live against a disposable test account (no application code yet).** Full
-  command scope, `ejabberdctl`-only transport (no ejabberd-side ACL change needed), tiered
-  confirmation, and automatic config write-back (including the shared-`comm.user`-across-
-  modules case) are all decided; live verification also caught real surprises worth knowing
-  before implementing (`check_password` crashes on a banned account, `unregister` is silently
-  idempotent on a nonexistent user) — see that doc's Current state.
+  write-side gap `EJABBERD_INTEGRATION.md` deliberately left open. **Implemented and
+  verified live end-to-end** (full register → reset-password → ban → unban → unregister
+  round trip against a real ejabberd instance, using a disposable test account and a scratch
+  module config, never a real one). `ejabberdctl`-only transport needed no ejabberd-side ACL
+  change; config write-back handles a `comm.user` shared across modules (confirmed against a
+  copy of this box's real config). Hub-mode delegation is code-complete but not yet driven
+  against a real two-instance pair the way the read path was. Only `README.md` is left.
 
 ## Ideas (not yet designed)
 
-- Make the Dashboard fleet-wide (aggregate modules across all hub hosts, like `ACL_MATRIX.md`
-  and the "All Logs" view do) instead of only showing whichever host is currently active. Sidebar
-  nav already treats Dashboard as a global entry (listed above the Hosts section), but the view
-  itself (`modules/views.py:dashboard`) still switches to the single active host — that mismatch
-  is the motivation.
+- Two dashboards rather than making the existing one fleet-wide: keep today's Dashboard as a
+  per-host operational control surface (Start All/Stop All and per-module quick actions make
+  more sense scoped to one host at a time — a fleet-wide "Stop All" from one button is a real
+  footgun), and add a *separate*, lighter fleet-wide overview page (which hosts are up,
+  aggregate counts, no bulk actions) closer in spirit to `ACL_MATRIX.md`/"All Logs". Sidebar
+  nav already treats Dashboard as a global entry (listed above the Hosts section) even though
+  the view itself (`modules/views.py:dashboard`) still switches to the single active host --
+  that mismatch was the original motivation, before landing on two-pages-not-one instead of
+  converting the existing page. Note this would be a third nav pattern in this app (today:
+  "always per-host" like module pages, or "always fleet-wide" like ACL Matrix -- this adds
+  "both, separately").
+- A separate "Users" page listing every XMPP account (registered/banned/connected, across all
+  modules — and possibly accounts with no matching `comm.user` at all, like `admin`) in one
+  table, parallel to `ACL_MATRIX.md`'s and "All Logs"'s fleet-wide pages. `EJABBERD_USER_MANAGEMENT.md`
+  deliberately scoped its write actions to one module's page at a time (Overview tab's XMPP
+  row) — this would be the fleet-wide view on top of that, the same relationship "All Logs"
+  has to the per-module Logs tab.
 
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 

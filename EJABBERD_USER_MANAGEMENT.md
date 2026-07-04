@@ -1,15 +1,20 @@
-# pyobs-web-admin: ejabberd user management — v0.3 (2026-07-04)
+# pyobs-web-admin: ejabberd user management — v1.0 (2026-07-04)
 
 ## Status
 
-**Not started — design settled, response shapes verified live, no application code yet.** All
-six original Open Questions were decided in v0.2 (see Design below), and the one new safety
-requirement that surfaced while working through config-write-back (shared `comm.user` across
-modules) is settled too. This version adds the first Work Plan item's result: every write
-command (`register`/`change_password`/`ban_account`/`unban_account`/`unregister`) was exercised
-live via `ejabberdctl`, against a disposable test account created and fully removed for the
-purpose — never a real module identity — see Current state's new "Verified live" block. What's
-left is entirely application code (`modules/ejabberd.py`, `services.py`, views/templates).
+**Implemented and verified live end-to-end.** All Work Plan items are done: `get_comm_user`
+source-tracking, the five `modules/ejabberd.py` write functions plus `get_ban_details`,
+`services.py`'s shared-`comm.user` handling and config write-back, the module page's tiered
+confirmation UI, and hub-mode delegation. Verified against a real ejabberd 24.12-4 instance
+using a disposable test account and a scratch module config (never a real module or account)
+— register → check → reset password (config write-back confirmed byte-for-byte against the
+live account) → ban → unban → unregister, plus the shared-identity warning with a second
+module sharing the same identity, plus an error-path probe (register with no `comm.password:`
+configured). Only remaining Work Plan item is `README.md`, deliberately deferred until now
+that everything above is actually true. Not yet exercised live: a genuine two-instance
+hub/spoke pair for the write actions specifically (the delegation code mirrors the read
+path's already-verified shape, but hasn't itself been driven end-to-end across two real
+instances the way `EJABBERD_INTEGRATION.md`'s reads were).
 
 ## Motivation
 
@@ -64,10 +69,19 @@ investigation" did the same register-test-unregister dance for the same reason) 
 warning against trusting a command's help text or docs over its actual behavior (the
 trailing-tab bug).
 
+**A first pass at this table wrongly attributed the error messages below to stderr** — an
+artifact of testing with `2>&1` (merged streams), which can't actually distinguish which
+stream produced what. Redone with `stdout`/`stderr` captured to separate files: **every
+message below, success or failure, is on stdout — `ejabberdctl` never writes to stderr for any
+of these commands.** The exit code is the only reliable success/failure signal;
+`modules/ejabberd.py`'s existing `_ctl_call` already reflects this by only ever capturing
+`stdout`, but the new write functions must check `returncode` too, which `_ctl_call` currently
+discards.
+
 | Command | Success | Failure |
 |---|---|---|
-| `register user host pw` | Exit `0`, stdout `"User <user>@<host> successfully registered"` | Exit `1`, stderr `"Error: conflict: User <user>@<host> already registered"` (registering an existing user) |
-| `change_password user host newpass` | Exit `0`, **stdout and stderr both empty** — contradicts `ejabberdctl help change_password`'s own example, which shows a printed `'ok'` on success; this ejabberd version (24.12-4) prints nothing | Exit `1`, stdout `{not_found,"unknown_user"}` — a raw Erlang tuple literal, not a sentence (nonexistent user) |
+| `register user host pw` | Exit `0`, stdout `"User <user>@<host> successfully registered"` | Exit `1`, stdout `"Error: conflict: User <user>@<host> already registered"` (registering an existing user) |
+| `change_password user host newpass` | Exit `0`, **stdout empty** — contradicts `ejabberdctl help change_password`'s own example, which shows a printed `'ok'` on success; this ejabberd version (24.12-4) prints nothing | Exit `1`, stdout `{not_found,"unknown_user"}` — a raw Erlang tuple literal, not a sentence (nonexistent user) |
 | `ban_account user host reason` | Exit `0`, empty output | (not tried — a second `ban_account` on an already-banned account wasn't exercised) |
 | `unban_account user host` | Exit `0`, empty output | (not tried) |
 | `unregister user host` | Exit `0`, empty output | **Exit `0`, empty output even for a user that was never registered** — `unregister` is silently idempotent, not an error, on a nonexistent user. A caller can't distinguish "removed" from "was never there" from this alone. |
@@ -203,6 +217,59 @@ None currently — all six original questions are settled above, and the one new
 doc's own research surfaced (shared `comm.user` across modules) is settled too, not left open.
 Revisit this section if implementation surfaces something the design didn't anticipate.
 
+## Progress log
+
+- **Done.** Live-verified every write command's response shape via `ejabberdctl` against a
+  disposable test account — see Current state's "Verified live" table for the full findings
+  (empty-stdout-on-success, `unregister`'s idempotency, `check_password`'s crash on a banned
+  account, and the stdout-vs-stderr correction).
+- **Done.** `get_resolved_comm(name) -> (comm_user, comm_password, source)` replaces the
+  earlier no-provenance `get_comm_user` internals — `get_comm_user` is now a thin wrapper
+  around it. Returning the password too (not just user/source) turned out to matter: it's
+  what `register` uses to create the account with the password the module's config *already*
+  declares, rather than prompting for a new one (see Design, "Command scope" — an addition to
+  the original plan, decided during implementation, not before). Tests:
+  new methods added to the existing `GetCommUserTests` in `modules/tests.py`.
+- **Done.** `modules/ejabberd.py`: `register`/`change_password`/`ban_account`/
+  `unban_account`/`unregister`/`get_ban_details`, all `ejabberdctl`-only, matching the
+  verified shapes exactly (raising `ValueError` with ejabberd's own message on failure).
+  Tests: `EjabberdWriteCommandTests`, fixtures are the real captured stdout/returncode pairs.
+- **Done.** `services.find_modules_sharing_comm_user` + `services.save_comm_password`: the
+  all-or-nothing, splice-not-round-trip, refuse-on-shared-fragment, rollback-on-partial-
+  failure config write-back described in Design. `_replace_local_acl_block`'s block-locator
+  was generalized into `_block_source_file(raw, key)` (was `_acl_source_file`, `acl`-only) so
+  `comm:` could reuse the exact same `{include}`-detection logic acl: already had. Tests:
+  `SaveCommPasswordTests`. Verified beyond unit tests, against an isolated **copy** of this
+  box's real `/opt/pyobs/config` (never the live files): confirmed the `<<: *comm` anchor
+  merge key survives the splice, only the two modules actually sharing an identity
+  (`camera`/`_test`) get updated, and `telescope` is untouched.
+- **Done.** Module-scoped write endpoints (`register`/`change-password`/`ban`/`unban`/
+  `unregister` under `/api/modules/<name>/ejabberd/`) plus hub-facing "dumb" delegation
+  targets (`/api/ejabberd/user/<user>/...`), mirroring `api_module_ejabberd`/
+  `api_ejabberd_user`'s existing two-layer shape exactly. `api_module_ejabberd` itself
+  changed: `registered`/`ban_details` are now queried and returned regardless of
+  `module_running` (only `sessions`/`last` stay gated on it) — registering/resetting/banning
+  an account for a module that isn't running yet is a real, intended use case, not something
+  that should require starting the module first. Also gained `shared_with` (every *other*
+  local module resolving to the same `comm.user`), feeding the confirmation UI's warning.
+- **Done.** Tiered confirmation modal in the module detail page's ejabberd block: simple
+  confirm dialog for register/change-password/ban/unban, retype-the-username for
+  `unregister`. A `shared_with` warning banner appears in the modal for ban/unregister
+  whenever another module shares the identity. `node --check` against the actual served
+  script confirmed clean syntax.
+- **Verified live, full round trip** — a scratch module config (never `/opt/pyobs/config`)
+  pointed at a disposable test account, against the real ejabberd instance: register (using
+  the config's own password) → `GET .../ejabberd/` showed `registered: true` → change-password
+  (confirmed the new config password byte-for-byte matches what's now registered, via
+  `check_password`, without ever printing the credential) → ban (`ban_details` populated with
+  the default reason) → unban (`ban_details` back to `null`) → added a second module sharing
+  the identity and confirmed `shared_with` reflected it → unregister → confirmed both the API
+  response and `ejabberdctl registered_users` show it fully gone. Also probed the error path:
+  registering a module with no `comm.password:` configured returns a clean 400, and — checked
+  directly — never even reaches ejabberd (no phantom account created). All scratch fixtures
+  (config dir, settings module, `sudo -n ejabberdctl` wrapper, cookies) removed afterward;
+  `ejabberdctl registered_users` confirmed back to exactly the original six real accounts.
+
 ## Work Plan
 
 - [x] Verify live, against the real instance, the actual **text** shapes `register`/
@@ -212,21 +279,25 @@ Revisit this section if implementation surfaces something the design didn't anti
   is silently idempotent on a nonexistent user (no error to catch), `change_password` prints
   nothing on success despite its own help text's example, and `check_password` must never be
   used to detect a ban (unhandled exception) — `get_ban_details` is the safe alternative.
-- [ ] `get_comm_user`: add `source` tracking (mirroring `get_resolved_acl`), since this doc's
-  config write-back is the first editing use case for `comm.user`/`comm.password`.
-- [ ] `modules/ejabberd.py`: new write functions (`register`/`change_password`/`ban_account`/
+- [x] `get_comm_user`: add `source` tracking (mirroring `get_resolved_acl`), since this doc's
+  config write-back is the first editing use case for `comm.user`/`comm.password`. →
+  `get_resolved_comm`, see Progress log.
+- [x] `modules/ejabberd.py`: new write functions (`register`/`change_password`/`ban_account`/
   `unban_account`/`unregister`/`get_ban_details`), `ejabberdctl`-only, matching the verified
   shapes above — in particular, `register`'s and `change_password`'s failure paths need to
   raise on nonexistent-user/conflict rather than assume success from a zero-content stdout, and
   `unregister`'s success path can't assume "did this actually exist beforehand" without a
   `check_account` call first, since ejabberd itself won't tell you.
-- [ ] `services.py`: shared-`comm.user` lookup (which other modules resolve to the same
+- [x] `services.py`: shared-`comm.user` lookup (which other modules resolve to the same
   username) and the config write-back (mirroring `save_local_acl`'s splice-refuse-verify
   shape), covering the multi-module case above.
-- [ ] New view(s)/endpoint(s) plus the tiered confirmation UI in the module detail page's
+- [x] New view(s)/endpoint(s) plus the tiered confirmation UI in the module detail page's
   ejabberd block.
-- [ ] Hub-mode delegation for the write actions, mirroring the existing read delegation
-  (`_ejabberd_host_config`/proxy pattern).
+- [x] Hub-mode delegation for the write actions, mirroring the existing read delegation
+  (`_ejabberd_host_config`/proxy pattern) — code-complete and structurally identical to the
+  already-verified read path, but not itself driven end-to-end against a real two-instance
+  hub/spoke pair the way the read path was in `EJABBERD_INTEGRATION.md`. Worth doing before
+  fully trusting this in a real multi-host fleet.
 - [ ] `README.md`: document once implemented and verified live, not before — matches this
   repo's existing practice of not documenting a setting/feature before it's actually consumed
   (see `EJABBERD_INTEGRATION.md`'s Progress log, and `JOURNALD_LOGS.md`'s Work Plan, for the
