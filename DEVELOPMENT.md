@@ -38,18 +38,20 @@ is fine, that's what the Design section of the eventual doc is for.
   viewer. **Implemented and verified live end-to-end.** Only one deploy-time question left
   open (whether a genuinely group-less service account needs an explicit `journalctl`
   permission grant), see that doc's Status.
+- [EJABBERD_USER_MANAGEMENT.md](EJABBERD_USER_MANAGEMENT.md) — register/reset-password/ban/
+  unregister XMPP accounts for a module's `comm.user` from pyobs-web-admin, closing the
+  write-side gap `EJABBERD_INTEGRATION.md` deliberately left open. **Design settled, write
+  commands verified live against a disposable test account (no application code yet).** Full
+  command scope, `ejabberdctl`-only transport (no ejabberd-side ACL change needed), tiered
+  confirmation, and automatic config write-back (including the shared-`comm.user`-across-
+  modules case) are all decided; live verification also caught real surprises worth knowing
+  before implementing (`check_password` crashes on a banned account, `unregister` is silently
+  idempotent on a nonexistent user) — see that doc's Current state.
 
 ## Ideas (not yet designed)
 
-- **XMPP user management (register/unregister/change password) from pyobs-web-admin.**
-  `EJABBERD_INTEGRATION.md` deliberately scoped itself to read-only visibility and called
-  write actions out of scope ("much higher blast radius than a read-only status view —
-  accidentally locking out a production XMPP account mid-observation," see that doc's
-  Motivation) — this idea is that deferred follow-up, not started. `modules/ejabberd.py`
-  already has the HTTP-vs-`ejabberdctl` plumbing this would reuse, but `register`/
-  `unregister`/`change_password` are explicitly excluded from the `api_permissions`
-  whitelist that doc configured, so this needs a deliberate ACL-widening decision plus a real
-  answer for confirmation/undo given the stated lockout risk, not just new UI.
+*(none currently — the last one, XMPP user management, was promoted to
+[EJABBERD_USER_MANAGEMENT.md](EJABBERD_USER_MANAGEMENT.md) above)*
 
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
