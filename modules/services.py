@@ -912,17 +912,20 @@ def resolve_and_validate_acl(name: str) -> tuple[dict | None, str | None, str | 
 def build_acl_matrix() -> dict:
     """Builds the fleet-wide (target x caller) ACL matrix.
 
-    Rows are every module list_modules() returns; columns are the union of every caller
-    name mentioned in any module's resolved acl: block ("allow" keys or "deny" entries) --
-    not the same set as the modules themselves, see ACL_MATRIX.md, "What the matrix
-    shows". A module whose config/acl can't be resolved (bad YAML, broken {include}, ...)
-    is still included as a row, with its "error" set, rather than aborting the whole scan.
+    Rows are every module list_modules() returns; columns are that same full module list
+    *plus* every caller name mentioned in any module's resolved acl: block ("allow" keys or
+    "deny" entries) that isn't itself a managed module (e.g. a human/external caller like
+    "scheduler" if it has no config of its own) -- every module is always a column, whether
+    or not it's ever actually referenced as a caller anywhere, so "could A reach B" is
+    answerable for any pair, not just pairs where B happens to already appear in some acl:
+    block. A module whose config/acl can't be resolved (bad YAML, broken {include}, ...) is
+    still included as a row, with its "error" set, rather than aborting the whole scan.
     """
     targets = list_modules()
     acls: dict[str, dict | None] = {}
     sources: dict[str, str | None] = {}
     errors: dict[str, str] = {}
-    callers: set[str] = set()
+    callers: set[str] = set(targets)
 
     for name in targets:
         acl, source, error = resolve_and_validate_acl(name)

@@ -239,6 +239,14 @@ def acl_matrix(request):
                 reverse("module_detail", args=[row["name"]]) + "#tab-config"
                 if row["host"] == "localhost" else _cross_host_url(row["host"], "module_detail", row["name"])
             ),
+            # Same #fragment-vs-remote-redirect tradeoff as module_config_url above -- the
+            # matrix row's own module-name link goes straight to that module's ACL tab
+            # rather than landing on Overview first, since that's what someone clicking a
+            # row in *this* page almost always actually wants next.
+            "module_acl_url": (
+                reverse("module_detail", args=[row["name"]]) + "#tab-acl"
+                if row["host"] == "localhost" else _cross_host_url(row["host"], "module_detail", row["name"])
+            ),
             "shared_url": _cross_host_url(row["host"], "shared_detail", row["source"]) if row["source"] else None,
             "cell_list": [{"caller": c, **row["cells"][c]} for c in callers],
         })

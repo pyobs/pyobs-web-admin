@@ -381,10 +381,26 @@ class BuildAclMatrixTests(unittest.TestCase):
         )
         matrix = services.build_acl_matrix()
         # "scheduler" and "external-script" aren't modules this installation manages, and
-        # "rogue-client" only ever appears in a deny list -- all three must still be columns.
+        # "rogue-client" only ever appears in a deny list -- all three must still be columns,
+        # alongside every actual module ("cam1", "telescope") which is always a column too.
         self.assertEqual(
-            set(matrix["callers"]), {"scheduler", "external-script", "rogue-client"}
+            set(matrix["callers"]),
+            {"scheduler", "external-script", "rogue-client", "cam1", "telescope"}
         )
+
+    def test_every_module_is_always_a_column_even_with_no_acl_at_all(self):
+        # "always show all modules in both headers" -- a module must appear as a column
+        # (and get a real cell computed against every other module's acl:) even if it's
+        # never referenced as a caller anywhere and has no acl: block of its own.
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\nacl:\n  allow:\n    scheduler: '*'\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\n")  # open, never a caller
+        matrix = services.build_acl_matrix()
+        self.assertEqual(set(matrix["callers"]), {"scheduler", "cam1", "telescope"})
+        # cam1's acl: only mentions "scheduler" -- but "telescope" and "cam1" (itself) must
+        # still each get a real, correctly-denied cell rather than being missing entirely.
+        cam1_cells = self._row(matrix, "cam1")["cells"]
+        self.assertEqual(cam1_cells["telescope"]["kind"], "denied")
+        self.assertEqual(cam1_cells["cam1"]["kind"], "denied")
 
     def test_allow_all_vs_allow_methods_vs_not_listed(self):
         self._write(
