@@ -117,7 +117,7 @@
     <div class="p-2 flex-grow-1 overflow-auto">
 
       <div class="px-2 py-2">
-        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs %}active{% endif %}">
+        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs and not active_xmpp_users %}active{% endif %}">
           <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
           Dashboard
         </a>
@@ -129,6 +129,12 @@
           <i class="bi bi-shield-lock" style="font-size:0.8rem"></i>
           ACL Matrix
         </a>
+        {% if ejabberd_enabled %}
+        <a href="{% url 'xmpp_users' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_xmpp_users %}active{% endif %}">
+          <i class="bi bi-people-fill" style="font-size:0.8rem"></i>
+          Users
+        </a>
+        {% endif %}
       </div>
 
       {% if hub_hosts|length > 1 %}

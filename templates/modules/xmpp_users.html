@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block title %}XMPP Users — pyobs Web Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">XMPP Users</h4>
+</div>
+
+{% for host in unreachable_hosts %}
+<div class="alert alert-warning py-2" title="{{ host.error }}">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  Host <strong>{{ host.name }}</strong> unreachable
+  <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" title="{{ host.error }}"></i>
+  — its modules aren't shown below, so the module-ownership column may be incomplete.
+</div>
+{% endfor %}
+
+<div id="xmpp-users-disabled" class="alert alert-warning d-none">
+  ejabberd integration is disabled (<code>EJABBERD_ENABLED = False</code>) — nothing to show.
+</div>
+<div id="xmpp-users-error" class="alert alert-danger d-none"></div>
+
+<p class="text-muted small">
+  Every registered ejabberd account, cross-referenced against every module's own
+  <code>comm.user</code> across the fleet (this installation plus any hub hosts) — including
+  accounts no module claims at all (e.g. a human admin account). Register/reset-password/ban/
+  unregister actions live on each identity's owning module page, linked below, not here.
+</p>
+
+<div class="table-responsive border rounded">
+<table class="table table-sm table-hover align-middle mb-0" id="xmpp-users-table">
+  <thead>
+    <tr>
+      <th>User</th>
+      <th>Status</th>
+      <th>Modules</th>
+      <th>Last seen</th>
+    </tr>
+  </thead>
+  <tbody id="xmpp-users-tbody">
+    <tr><td colspan="4" class="text-muted small">Loading…</td></tr>
+  </tbody>
+</table>
+</div>
+
+{{ modules_by_user|json_script:"modules-by-user-data" }}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+const MODULES_BY_USER = JSON.parse(document.getElementById('modules-by-user-data').textContent);
+
+function renderModulesCell(user) {
+  const mods = MODULES_BY_USER[user];
+  if (!mods || !mods.length) return '<span class="text-muted small">—</span>';
+  return mods.map(m => {
+    const label = escapeHtml(m.host === 'localhost' ? m.name : `${m.name} (${escapeHtml(m.host)})`);
+    // A shared identity's live session (if any) belongs to whichever of these modules is
+    // actually running -- the same ambiguity EJABBERD_INTEGRATION.md's "third bug" already
+    // had to resolve for the per-module page. Same status-dot styling as the sidebar's own
+    // module list (.status-dot in base.html), so "running" reads the same way everywhere.
+    const dot = `<span class="status-dot ${escapeHtml(m.status)}" style="margin-right:4px" title="${escapeHtml(m.status)}"></span>`;
+    const linkClass = m.status === 'running' ? 'text-decoration-none fw-semibold' : 'text-decoration-none text-muted';
+    return `<a href="${m.url}" class="${linkClass}">${dot}${label}</a>`;
+  }).join(', ');
+}
+
+function renderStatusCell(entry) {
+  if (!entry) {
+    return '<span class="badge bg-secondary-subtle text-secondary-emphasis">not registered</span>';
+  }
+  if (entry.ban_details) {
+    const reason = entry.ban_details.reason ? ` (${escapeHtml(entry.ban_details.reason)})` : '';
+    return `<span class="badge bg-danger">banned${reason}</span>`;
+  }
+  if (entry.connected) {
+    const s = entry.session;
+    return `<span class="badge bg-success">connected</span>
+      <span class="text-secondary small ms-1">${escapeHtml(s.ip)} · ${escapeHtml(s.connection)}</span>`;
+  }
+  return '<span class="badge bg-warning-subtle text-warning-emphasis">not connected</span>';
+}
+
+function renderLastSeenCell(entry) {
+  if (!entry || entry.connected || !entry.last) return '';
+  if (entry.last.status === 'NOT FOUND') return '<span class="text-muted small">never</span>';
+  return `<span class="text-secondary small">${escapeHtml(entry.last.timestamp)} (${escapeHtml(entry.last.status)})</span>`;
+}
+
+async function refreshXmppUsers() {
+  const tbody = document.getElementById('xmpp-users-tbody');
+  const disabledEl = document.getElementById('xmpp-users-disabled');
+  const errorEl = document.getElementById('xmpp-users-error');
+  try {
+    const resp = await fetch("{% url 'api_xmpp_users' %}");
+    const data = await resp.json();
+    if (!data.enabled) {
+      disabledEl.classList.remove('d-none');
+      tbody.innerHTML = '';
+      return;
+    }
+    if (data.error) {
+      errorEl.textContent = `ejabberd unreachable: ${data.error}`;
+      errorEl.classList.remove('d-none');
+      return;
+    }
+    errorEl.classList.add('d-none');
+
+    const byUser = {};
+    data.users.forEach(u => { byUser[u.user] = u; });
+    // Union of registered accounts and every module's own comm.user, sorted -- a module
+    // whose account isn't registered yet must still show up (linkable, actionable), and a
+    // registered account no module claims must still show up too.
+    const allUsers = new Set([...Object.keys(byUser), ...Object.keys(MODULES_BY_USER)]);
+    const sorted = [...allUsers].sort();
+
+    if (!sorted.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-muted small">No accounts or comm.user identities found.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = sorted.map(user => `
+      <tr>
+        <td class="font-monospace small">${escapeHtml(user)}</td>
+        <td>${renderStatusCell(byUser[user])}</td>
+        <td>${renderModulesCell(user)}</td>
+        <td>${renderLastSeenCell(byUser[user])}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    errorEl.textContent = `Request failed: ${e}`;
+    errorEl.classList.remove('d-none');
+  }
+}
+
+refreshXmppUsers();
+setInterval(refreshXmppUsers, 10000);
+</script>
+{% endblock %}

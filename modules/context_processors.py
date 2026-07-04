@@ -1,3 +1,5 @@
+from django.conf import settings
+
 from modules import proxy, services
 
 
@@ -32,4 +34,9 @@ def sidebar_modules(request):
         "sidebar_shared_configs": shared,
         "hub_hosts": proxy.all_hosts(),
         "active_host": active_host,
+        # Global so the sidebar's Users link (like the Hosts section already does for
+        # HUB_HOSTS) can gate on it from base.html regardless of which page is rendering --
+        # individual views (dashboard, module_detail) also set this in their own context,
+        # which takes precedence over this processor when both provide it.
+        "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
     }

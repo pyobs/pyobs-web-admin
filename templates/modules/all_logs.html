@@ -8,9 +8,10 @@
 </div>
 
 {% for host in unreachable_hosts %}
-<div class="alert alert-warning py-2">
+<div class="alert alert-warning py-2" title="{{ host.error }}">
   <i class="bi bi-exclamation-triangle me-1"></i>
-  Host <strong>{{ host.name }}</strong> unreachable: {{ host.error }}
+  Host <strong>{{ host.name }}</strong> unreachable
+  <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" title="{{ host.error }}"></i>
 </div>
 {% endfor %}
 

@@ -609,6 +609,16 @@ class SaveCommPasswordTests(unittest.TestCase):
         self.assertEqual(sorted(services.find_modules_sharing_comm_user("shared_id")), ["_test", "camera"])
         self.assertEqual(services.find_modules_sharing_comm_user("nonexistent_identity"), [])
 
+    def test_build_comm_user_map(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\ncomm:\n  user: telescope\n  password: old\n")
+        self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
+        mapping = services.build_comm_user_map()
+        self.assertEqual(sorted(mapping["shared_id"]), ["_test", "camera"])
+        self.assertEqual(mapping["telescope"], ["telescope"])
+        self.assertNotIn("filecache", mapping)  # no comm.user at all -- not a key, not a value
+
 
 # ── services.merge_acl_matrices ─────────────────────────────────────────────────
 

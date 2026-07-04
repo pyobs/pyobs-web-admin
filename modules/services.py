@@ -631,6 +631,24 @@ def find_modules_sharing_comm_user(user: str) -> list[str]:
     return [name for name in list_modules() if get_comm_user(name) == user]
 
 
+def build_comm_user_map() -> dict[str, list[str]]:
+    """Maps every local module's resolved comm.user to the list of module names using it --
+    the reverse direction of find_modules_sharing_comm_user, built once across all of
+    list_modules() rather than queried one identity at a time.
+
+    Feeds the fleet-wide Users page (DEVELOPMENT.md's Ideas -> promoted here): unlike the
+    module page's own XMPP row, that page needs "for every registered ejabberd account,
+    which module(s) if any use it" -- the reverse lookup, not "for this one identity, which
+    modules share it."
+    """
+    mapping: dict[str, list[str]] = {}
+    for name in list_modules():
+        user = get_comm_user(name)
+        if user:
+            mapping.setdefault(user, []).append(name)
+    return mapping
+
+
 def _yaml_scalar(value: str) -> str:
     """Renders value as a single-line YAML scalar suitable for splicing directly after
     "key: " in raw config text -- reuses PyYAML's own quoting rules (handles colons, quotes,

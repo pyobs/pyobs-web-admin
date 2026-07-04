@@ -592,6 +592,32 @@ def _ejabberd_user(user: str) -> dict:
     }
 
 
+def _ejabberd_all_users() -> dict:
+    """Every registered account's live/ban/last-seen state, for the fleet-wide Users page
+    (DEVELOPMENT.md's Ideas). Delegates like _ejabberd_status -- a separate helper rather
+    than folding this into _ejabberd_status itself, since this does one call per registered
+    account (ban_details, plus get_last for anyone not currently connected) on top of the
+    registered/connected lists; _ejabberd_status feeds the dashboard tile on a 10s poll and
+    has no reason to pay that per-account cost when it only ever needed counts."""
+    host = _ejabberd_host_config()
+    if host:
+        return proxy.call(host, "GET", "/api/ejabberd/users/")
+    users = ejabberd.registered_users()
+    connected_by_user = {s["jid"].split("@")[0]: s for s in ejabberd.connected_users_info()}
+    result = []
+    for user in users:
+        session = connected_by_user.get(user)
+        entry = {
+            "user": user,
+            "connected": session is not None,
+            "session": session,
+            "last": None if session else ejabberd.get_last(user),
+            "ban_details": ejabberd.get_ban_details(user),
+        }
+        result.append(entry)
+    return {"users": result}
+
+
 # ── ejabberd write delegation (EJABBERD_USER_MANAGEMENT.md) ─────────────────────
 #
 # Same one-hop delegation shape as _ejabberd_status/_ejabberd_user above: call
@@ -675,6 +701,26 @@ def api_ejabberd_user(request, user: str):
         "last": ejabberd.get_last(user),
         "ban_details": ejabberd.get_ban_details(user),
     })
+
+
+@require_GET
+def api_ejabberd_users(request):
+    """Every registered account's live/ban/last-seen state -- the delegation target for
+    _ejabberd_all_users, mirroring api_ejabberd_status's "no host-awareness of its own"
+    shape. Feeds the fleet-wide Users page."""
+    users = ejabberd.registered_users()
+    connected_by_user = {s["jid"].split("@")[0]: s for s in ejabberd.connected_users_info()}
+    result = []
+    for user in users:
+        session = connected_by_user.get(user)
+        result.append({
+            "user": user,
+            "connected": session is not None,
+            "session": session,
+            "last": None if session else ejabberd.get_last(user),
+            "ban_details": ejabberd.get_ban_details(user),
+        })
+    return JsonResponse({"users": result})
 
 
 # ── ejabberd write API -- hub-facing, "dumb" (EJABBERD_USER_MANAGEMENT.md) ──────
@@ -764,6 +810,84 @@ def api_ejabberd_summary(request):
         return JsonResponse({"enabled": True, **_ejabberd_status()})
     except Exception as e:
         return JsonResponse({"enabled": True, "error": str(e)}, status=502)
+
+
+@require_GET
+def api_xmpp_users(request):
+    """Every registered ejabberd account's live/ban/last-seen state, for the Users page.
+    Same "fleet-shared, not host-aware via _active_host" shape as api_ejabberd_summary --
+    delegates via _ejabberd_all_users (EJABBERD_HOST resolution), independent of which
+    host's Users page happened to be loaded."""
+    if not getattr(settings, "EJABBERD_ENABLED", False):
+        return JsonResponse({"enabled": False})
+    try:
+        return JsonResponse({"enabled": True, **_ejabberd_all_users()})
+    except Exception as e:
+        return JsonResponse({"enabled": True, "error": str(e)}, status=502)
+
+
+@require_GET
+def api_comm_user_map(request):
+    """This instance's own comm.user -> [{"name", "status"}] map -- queried by another
+    pyobs-web-admin instance acting as a hub to fold this installation's modules into its
+    own fleet-wide Users page, mirroring api_acl_matrix's role for the ACL matrix. Includes
+    each module's running status so the Users page can mark which of several modules
+    sharing one identity is actually the one running -- the exact same ambiguity
+    EJABBERD_INTEGRATION.md's "third bug" already had to resolve for the per-module page."""
+    mapping = services.build_comm_user_map()
+    result = {
+        user: [{"name": name, "status": services.get_module_status(name)} for name in names]
+        for user, names in mapping.items()
+    }
+    return JsonResponse({"map": result})
+
+
+def xmpp_users(request):
+    """Fleet-wide XMPP account listing: every module's comm.user, cross-referenced against
+    every registered ejabberd account (including ones no module claims, e.g. an "admin"
+    account used by a human, not pyobs) -- aggregates every configured hub host (like
+    acl_matrix/all_logs) for the module-ownership side, since a comm.user can be configured
+    on any host in the fleet, all normally pointing at the same one shared ejabberd instance
+    (see EJABBERD_INTEGRATION.md, Hub-mode delegation -- ejabberd itself is queried once via
+    api_xmpp_users, not per host).
+
+    Deliberately read-only: EJABBERD_USER_MANAGEMENT.md's write actions (register/reset
+    password/ban/unregister) stay on the module page that owns each identity -- this page
+    links there rather than duplicating those actions, since several of them (register's
+    "use the module's own configured password", the config write-back) are only meaningful
+    in a module's own context, and some registered accounts here have no owning module at
+    all to route a write to.
+    """
+    local_map = {
+        user: [{"name": name, "status": services.get_module_status(name)} for name in names]
+        for user, names in services.build_comm_user_map().items()
+    }
+    per_host = [("localhost", local_map)]
+    unreachable = []
+    for host_cfg in getattr(settings, "HUB_HOSTS", []):
+        try:
+            data = proxy.call(host_cfg, "GET", "/api/comm-user-map/")
+            per_host.append((host_cfg["name"], data["map"]))
+        except Exception as e:
+            unreachable.append({"name": host_cfg["name"], "error": str(e)})
+
+    modules_by_user: dict[str, list[dict]] = {}
+    for host_name, mapping in per_host:
+        for user, entries in mapping.items():
+            for entry in entries:
+                modules_by_user.setdefault(user, []).append({
+                    "host": host_name,
+                    "name": entry["name"],
+                    "status": entry["status"],
+                    "url": _cross_host_url(host_name, "module_detail", entry["name"]),
+                })
+
+    return render(request, "modules/xmpp_users.html", {
+        "modules_by_user": modules_by_user,
+        "unreachable_hosts": unreachable,
+        "show_host_badges": len(per_host) > 1,
+        "active_xmpp_users": True,
+    })
 
 
 @require_GET
