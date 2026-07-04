@@ -157,6 +157,47 @@ def new_module(request):
     return render(request, "modules/new_module.html", {"active_new_module": True})
 
 
+def groups_page(request):
+    """Standalone Groups management page -- ACL_MATRIX.md's Work Plan item 9's UI half.
+    Deliberately not yet wired into the ACL editor (item 10, not started) -- this is just
+    create/edit/delete for the name -> caller-list definitions themselves, nothing here
+    expands a group into a module's allow/deny yet.
+
+    Follows the session's active host like module_detail/api_config, not fleet-wide like
+    acl_matrix/xmpp_users/fleet_overview -- what "the fleet's groups" should mean across
+    multiple hosts is exactly the kind of question item 10's design should settle once groups
+    actually get assigned to ACL rules, not something to invent ahead of that.
+    """
+    host = _active_host(request)
+    if host:
+        try:
+            data = proxy.call(host, "GET", "/api/groups/")
+            groups = data.get("groups", {})
+        except Exception:
+            groups = {}
+        try:
+            matrix = proxy.call(host, "GET", "/api/acl-matrix/")
+            known_callers = matrix.get("callers", [])
+        except Exception:
+            known_callers = []
+    else:
+        groups = services.list_groups()
+        # Reuses build_acl_matrix's own callers set (every module name, plus every caller
+        # string already typed somewhere in an acl: block, e.g. "scheduler") as the "known
+        # possible members" list -- same identity space the ACL matrix and module_detail's
+        # ACL tab already use for their own known-caller checkboxes, not a new concept
+        # invented for Groups. See ACL_MATRIX.md's Design section ("Callers are not the same
+        # set as list_modules()") for why this deliberately isn't resolved comm.user/JID
+        # values -- this app already treats caller-name strings, not XMPP identities, as the
+        # ACL-relevant identity throughout.
+        known_callers = services.build_acl_matrix()["callers"]
+    return render(request, "modules/groups.html", {
+        "active_groups": True,
+        "groups": groups,
+        "known_callers": known_callers,
+    })
+
+
 def module_detail(request, name: str):
     host = _active_host(request)
     if host:
@@ -556,6 +597,50 @@ def api_create_module(request):
         return JsonResponse({"success": False, "error": str(e)}, status=400)
     except FileExistsError as e:
         return JsonResponse({"success": False, "error": str(e)}, status=409)
+
+
+def api_groups(request):
+    """GET lists every group; POST creates or overwrites one (name + callers). Follows the
+    session's active host like api_config -- see groups_page's docstring for why this isn't
+    fleet-wide aggregated like acl_matrix/xmpp_users."""
+    host = _active_host(request)
+    if host:
+        if request.method == "GET":
+            return _proxy(host, "GET", "/api/groups/")
+        if request.method == "POST":
+            try:
+                data = json.loads(request.body)
+            except json.JSONDecodeError as e:
+                return JsonResponse({"success": False, "error": str(e)}, status=400)
+            return _proxy(host, "POST", "/api/groups/", json=data)
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    if request.method == "GET":
+        return JsonResponse({"groups": services.list_groups()})
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+        name = (data.get("name") or "").strip()
+        callers = data.get("callers") or []
+        try:
+            services.save_group(name, callers)
+            return JsonResponse({"success": True, "name": name})
+        except ValueError as e:
+            return JsonResponse({"success": False, "error": str(e)}, status=400)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@require_POST
+def api_delete_group(request, name: str):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/groups/{name}/delete/")
+    try:
+        services.delete_group(name)
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=404)
 
 
 def api_shared_config(request, name: str):
