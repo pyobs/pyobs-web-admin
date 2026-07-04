@@ -70,6 +70,14 @@ is fine, that's what the Design section of the eventual doc is for.
 
 ## Ideas (not yet designed)
 
+- A "New module" button (dashboard, or the sidebar's Modules section) to create a brand-new
+  module config from the UI, rather than requiring someone to hand-create a `.yaml` file in
+  `PYOBS_CONFIG_DIR` first. Real gap, not just an omission: `services.save_config` explicitly
+  refuses to write a file that doesn't exist yet (`raise FileNotFoundError`) -- every existing
+  config-editing path in this app (module page's Config tab, ACL matrix edits) assumes the
+  file is already there. Needs at least a name input (validated the same way `validate_name`
+  already does) and some minimal starter YAML (bare `class:` key?), then presumably drops the
+  admin into that new module's own Config tab to fill in the rest.
 - Two dashboards rather than making the existing one fleet-wide: keep today's Dashboard as a
   per-host operational control surface (Start All/Stop All and per-module quick actions make
   more sense scoped to one host at a time — a fleet-wide "Stop All" from one button is a real
