@@ -32,13 +32,15 @@ is fine, that's what the Design section of the eventual doc is for.
   module pages, closing the "process running ≠ XMPP connected" and "config vs. reality" gaps.
   **Shipped, all 7 Work Plan items done and verified against a live instance** (including
   the `mod_http_api` config and its security model).
+- [JOURNALD_LOGS.md](JOURNALD_LOGS.md) — one switch (`PYOBS_LOG_BACKEND`) that both starts
+  pyobs modules logging into the systemd journal (`pyobs --syslog`, already supported
+  upstream) instead of a flat file, and reads them back from there for the existing log
+  viewer. **Design only, not started** — several facts already checked against real source
+  and one verified live (a `pyobs-core` priority-mapping quirk that silently mismarks
+  `CRITICAL` log lines), see that doc's Status.
 
 ## Ideas (not yet designed)
 
-- **systemd/journald logs as an alternative to file logs.** Modules run under systemd instead
-  of `pyobs`'s own file-based logging (`services.get_logs`, `PYOBS_LOG_DIR`) would have their
-  logs in the journal instead — support reading from there as an alternative source, not just
-  files.
 - **XMPP user management (register/unregister/change password) from pyobs-web-admin.**
   `EJABBERD_INTEGRATION.md` deliberately scoped itself to read-only visibility and called
   write actions out of scope ("much higher blast radius than a read-only status view —
