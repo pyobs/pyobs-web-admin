@@ -26,7 +26,8 @@ is fine, that's what the Design section of the eventual doc is for.
 - [ACL_MATRIX.md](ACL_MATRIX.md) — fleet-wide ACL matrix page: view every module's `acl:`
   policy in one table, edit it via a structured form (matrix modal or a per-module tab),
   aggregated across hub hosts. **Core (view/edit/hub-aggregation) shipped.** Groups/profiles
-  (named caller-list reuse) paused by deliberate choice, not started.
+  (named caller-list reuse) was fully designed and implemented, then reverted at explicit
+  request — see [ACL_GROUPS.md](ACL_GROUPS.md), moved out of this doc entirely.
 - [EJABBERD_INTEGRATION.md](EJABBERD_INTEGRATION.md) — read-only visibility into ejabberd's
   own state (registered/connected users, per-module session info) on the dashboard and
   module pages, closing the "process running ≠ XMPP connected" and "config vs. reality" gaps.
@@ -117,8 +118,8 @@ None currently.
 
 - No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).
   Any feature needing persisted app-local state (not `pyobs` config, not session data) needs
-  its own storage decision, documented in that feature's own doc (see `ACL_MATRIX.md`'s
-  Groups section for one such call already made: a flat JSON file, not a new DB dependency).
+  its own storage decision, documented in that feature's own doc (see `ACL_GROUPS.md` for one
+  such call already made: a flat JSON file, not a new DB dependency).
 - Hub mode (`HUB_HOSTS` in settings, `modules/proxy.py`) is normally "one active host at a
   time" (dashboard/config/logs switch to whichever host the sidebar has selected) — a feature
   that instead needs to aggregate *every* host on one page (like the ACL matrix) is the
