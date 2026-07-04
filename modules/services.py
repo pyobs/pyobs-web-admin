@@ -1041,18 +1041,20 @@ def get_group(name: str) -> list[str] | None:
     return list_groups().get(name)
 
 
-def _write_groups(groups: dict[str, list[str]]) -> None:
-    """Writes the whole groups file atomically (temp file + os.replace), unlike every other
-    write in this module, which only ever touches one module's own config -- a crash
-    mid-write there risks that one file; groups.json holds every group in one blob, so the
-    same risk here would mean losing all of them, not just the one being edited."""
-    d = _storage_dir()
+def _write_json_atomic(path: Path, data) -> None:
+    """Writes a whole JSON file atomically (temp file in the same directory + os.replace),
+    unlike every per-module config write in this module, which only ever touches one
+    module's own file -- a crash mid-write there risks that one file; a single file under
+    PYOBS_STORAGE_DIR (groups.json, acl_group_applications.json) holds *every* entry of its
+    kind in one blob, so the same risk here would mean losing all of them, not just the one
+    being edited."""
+    d = path.parent
     d.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=d, prefix=".groups-", suffix=".json.tmp")
+    fd, tmp_path = tempfile.mkstemp(dir=d, prefix=f".{path.stem}-", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(groups, f, indent=2, sort_keys=True)
-        os.replace(tmp_path, _groups_file())
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
     except BaseException:
         os.unlink(tmp_path)
         raise
@@ -1069,7 +1071,7 @@ def save_group(name: str, callers: list[str]) -> None:
         raise ValueError("A group must have at least one caller")
     groups = list_groups()
     groups[name] = unique
-    _write_groups(groups)
+    _write_json_atomic(_groups_file(), groups)
 
 
 def delete_group(name: str) -> None:
@@ -1077,4 +1079,41 @@ def delete_group(name: str) -> None:
     if name not in groups:
         raise ValueError(f"Group {name!r} does not exist")
     del groups[name]
-    _write_groups(groups)
+    _write_json_atomic(_groups_file(), groups)
+
+
+# ── ACL group applications (Work Plan item 10: expand-on-save) ──────────────────
+# Records which group (and what its membership was at the time) was expanded into a
+# module's allow/deny list, so a future "re-apply" action (not built yet -- that's the rest
+# of item 10, deliberately deferred to its own pass) can tell whether a group has drifted
+# from what was actually written into that module's config. The config file itself never
+# mentions the group -- expansion is one-shot, see ACL_MATRIX.md's Design section -- this is
+# purely pyobs-web-admin's own bookkeeping, same category of file as groups.json itself.
+
+_GROUP_APPLICATIONS_FILE_NAME = "acl_group_applications.json"
+
+
+def _group_applications_file() -> Path:
+    return _storage_dir() / _GROUP_APPLICATIONS_FILE_NAME
+
+
+def _list_group_applications() -> dict[str, dict[str, list[str]]]:
+    f = _group_applications_file()
+    if not f.exists():
+        return {}
+    return json.loads(f.read_text())
+
+
+def get_group_applications(module_name: str) -> dict[str, list[str]]:
+    """Returns {group_name: snapshot} for every group ever expanded into module_name's
+    allow/deny list on this host -- {} if none."""
+    return _list_group_applications().get(module_name, {})
+
+
+def record_group_application(module_name: str, group_name: str, snapshot: list[str]) -> None:
+    """Records that group_name (with the given member snapshot) was just expanded into
+    module_name's allow/deny list. Called once per group added during an ACL edit, right
+    after that edit's save_local_acl call succeeds -- see views.api_acl."""
+    all_apps = _list_group_applications()
+    all_apps.setdefault(module_name, {})[group_name] = sorted(set(snapshot))
+    _write_json_atomic(_group_applications_file(), all_apps)

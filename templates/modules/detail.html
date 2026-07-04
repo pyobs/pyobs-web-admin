@@ -177,6 +177,16 @@ Loading…</pre>
         </div>
       </div>
 
+      <div class="mb-3">
+        <label class="form-label small text-muted mb-1 d-block">Add a group <span class="text-muted">(expands into the callers below — a one-time copy, not a live link; see <a href="{% url 'groups_page' %}" class="text-reset">Groups</a>)</span></label>
+        <div class="d-flex gap-2 align-items-center">
+          <select id="acl-tab-group-select" class="form-select form-select-sm" style="max-width:220px"></select>
+          <button type="button" class="btn btn-sm btn-outline-success" onclick="aclTabAddGroup()">
+            <i class="bi bi-plus-lg me-1"></i>Add group
+          </button>
+        </div>
+      </div>
+
       <div id="acl-tab-allow-section">
         <label class="form-label small text-muted mb-1 d-block">Callers (click to allow)</label>
         <div id="acl-tab-allow-known"></div>
@@ -767,6 +777,60 @@ if (location.hash === '#tab-logs') fetchLogs();
 const ACTIVE_HOST = "{{ active_host|default:'localhost' }}";
 const OTHER_MODULES = JSON.parse(document.getElementById('acl-tab-other-modules-data').textContent);
 let aclTabLoaded = false;
+let ACL_TAB_GROUPS = {};             // name -> [callers], fetched once per tab load
+let aclTabSessionAppliedGroups = []; // {name, callers} for groups added during this editing
+                                     // session -- sent alongside the next save so the server
+                                     // can record provenance (Work Plan item 10); cleared on
+                                     // every fresh populateAclTab (a reload/reopen shouldn't
+                                     // resend stale entries from a previous edit).
+
+async function loadAclTabGroups() {
+  try {
+    const resp = await fetch('/api/groups/');
+    const data = await resp.json();
+    ACL_TAB_GROUPS = data.groups || {};
+  } catch (e) {
+    ACL_TAB_GROUPS = {};
+  }
+  const select = document.getElementById('acl-tab-group-select');
+  const names = Object.keys(ACL_TAB_GROUPS).sort();
+  select.innerHTML = names.length
+    ? names.map(n => `<option value="${aclTabEscapeAttr(n)}">${n} (${ACL_TAB_GROUPS[n].length})</option>`).join('')
+    : '<option value="">No groups defined</option>';
+}
+
+function aclTabAddGroup() {
+  const groupName = document.getElementById('acl-tab-group-select').value;
+  const members = ACL_TAB_GROUPS[groupName];
+  if (!groupName || !members) return;
+
+  const isAllow = document.getElementById('acl-tab-policy-allow').checked;
+  const knownSet = new Set(OTHER_MODULES);
+
+  members.forEach(caller => {
+    if (isAllow) {
+      const knownRow = knownSet.has(caller) ? document.querySelector(`.acl-known-allow-row[data-caller="${caller}"]`) : null;
+      if (knownRow) {
+        knownRow.querySelector('.acl-known-check').checked = true;
+        knownRow.querySelector('.acl-known-kind').value = 'all';
+        aclTabToggleKnownAllow(knownRow.querySelector('.acl-known-check'));
+      } else {
+        const already = [...document.querySelectorAll('#acl-tab-allow-extra-rows .acl-caller')].some(i => i.value.trim() === caller);
+        if (!already) document.getElementById('acl-tab-allow-extra-rows').insertAdjacentHTML('beforeend', aclTabAllowRowHtml(caller, '*'));
+      }
+    } else {
+      const knownRow = knownSet.has(caller) ? document.querySelector(`.acl-known-deny-row[data-caller="${caller}"]`) : null;
+      if (knownRow) {
+        knownRow.querySelector('.acl-known-check').checked = true;
+      } else {
+        const already = [...document.querySelectorAll('#acl-tab-deny-extra-rows .acl-caller')].some(i => i.value.trim() === caller);
+        if (!already) document.getElementById('acl-tab-deny-extra-rows').insertAdjacentHTML('beforeend', aclTabDenyRowHtml(caller));
+      }
+    }
+  });
+
+  aclTabSessionAppliedGroups.push({name: groupName, callers: members});
+}
 
 function aclTabEscapeAttr(s) {
   return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -865,6 +929,7 @@ document.getElementById('acl-tab-allow-known').innerHTML = OTHER_MODULES.map(acl
 document.getElementById('acl-tab-deny-known').innerHTML = OTHER_MODULES.map(aclTabKnownDenyRowHtml).join('');
 
 function populateAclTab(data) {
+  aclTabSessionAppliedGroups = [];
   document.getElementById('acl-tab-loading').classList.add('d-none');
   document.getElementById('acl-tab-error').classList.add('d-none');
   document.getElementById('acl-tab-source').classList.add('d-none');
@@ -943,6 +1008,7 @@ async function fetchAclTab() {
     const resp = await fetch(`/api/modules/${MODULE}/acl/`);
     const data = await resp.json();
     populateAclTab(data);
+    loadAclTabGroups();
   } catch (e) {
     document.getElementById('acl-tab-loading').classList.add('d-none');
     const box = document.getElementById('acl-tab-error');
@@ -996,7 +1062,7 @@ async function submitAclTab(acl) {
     const resp = await fetch(`/api/modules/${MODULE}/acl/`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
-      body: JSON.stringify({acl, host: ACTIVE_HOST}),
+      body: JSON.stringify({acl, host: ACTIVE_HOST, applied_groups: aclTabSessionAppliedGroups}),
     });
     const data = await resp.json();
     if (!data.success) {
@@ -1004,6 +1070,7 @@ async function submitAclTab(acl) {
       errBox.classList.remove('d-none');
       return;
     }
+    aclTabSessionAppliedGroups = [];
     status.textContent = 'Saved!';
     status.className = 'small text-success';
     setTimeout(() => { status.textContent = ''; }, 4000);

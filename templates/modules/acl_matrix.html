@@ -193,6 +193,16 @@
           </div>
         </div>
 
+        <div class="mb-3">
+          <label class="form-label small text-muted mb-1 d-block">Add a group <span class="text-muted">(expands into the callers below — a one-time copy, not a live link)</span></label>
+          <div class="d-flex gap-2 align-items-center">
+            <select id="acl-modal-group-select" class="form-select form-select-sm" style="max-width:220px"></select>
+            <button type="button" class="btn btn-sm btn-outline-success" onclick="addGroup()">
+              <i class="bi bi-plus-lg me-1"></i>Add group
+            </button>
+          </div>
+        </div>
+
         <div id="acl-allow-editor">
           <label class="form-label small text-muted mb-1 d-block">Callers</label>
           <div id="acl-allow-rows"></div>
@@ -229,6 +239,13 @@
 let aclModal = null;
 let currentAclModule = null;
 let currentAclHost = null;
+let MATRIX_MODAL_GROUPS = {};        // name -> [callers] for currentAclHost specifically --
+                                     // refetched every time the modal opens, since different
+                                     // rows on this page can be on different hosts, each with
+                                     // its own group definitions
+let matrixSessionAppliedGroups = []; // {name, callers} added during this modal's current
+                                     // open session -- sent alongside the next save so the
+                                     // server can record provenance (Work Plan item 10)
 
 function getAclModal() {
   if (!aclModal) aclModal = new bootstrap.Modal(document.getElementById('acl-edit-modal'));
@@ -283,13 +300,48 @@ function togglePolicy() {
 }
 document.querySelectorAll('input[name="acl-policy"]').forEach(el => el.addEventListener('change', togglePolicy));
 
+async function loadMatrixGroups(host) {
+  const select = document.getElementById('acl-modal-group-select');
+  select.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const resp = await fetch(`/api/groups/?host=${encodeURIComponent(host)}`);
+    const data = await resp.json();
+    MATRIX_MODAL_GROUPS = data.groups || {};
+  } catch (e) {
+    MATRIX_MODAL_GROUPS = {};
+  }
+  const names = Object.keys(MATRIX_MODAL_GROUPS).sort();
+  select.innerHTML = names.length
+    ? names.map(n => `<option value="${escapeAttr(n)}">${n} (${MATRIX_MODAL_GROUPS[n].length})</option>`).join('')
+    : '<option value="">No groups defined</option>';
+}
+
+function addGroup() {
+  const groupName = document.getElementById('acl-modal-group-select').value;
+  const members = MATRIX_MODAL_GROUPS[groupName];
+  if (!groupName || !members) return;
+
+  const isAllow = document.getElementById('acl-policy-allow').checked;
+  const rowsId = isAllow ? 'acl-allow-rows' : 'acl-deny-rows';
+  const existing = [...document.querySelectorAll(`#${rowsId} .acl-caller`)].map(i => i.value.trim());
+
+  members.forEach(caller => {
+    if (existing.includes(caller)) return;
+    if (isAllow) addAllowRow(caller, '*'); else addDenyRow(caller);
+  });
+
+  matrixSessionAppliedGroups.push({name: groupName, callers: members});
+}
+
 function openAclEditor(name, host) {
   currentAclModule = name;
   currentAclHost = host;
+  matrixSessionAppliedGroups = [];
   document.getElementById('acl-modal-name').textContent = host === 'localhost' ? name : `${name} (${host})`;
   document.getElementById('acl-modal-error').classList.add('d-none');
   document.getElementById('acl-allow-rows').innerHTML = '';
   document.getElementById('acl-deny-rows').innerHTML = '';
+  loadMatrixGroups(host);
 
   const dataEl = document.getElementById(`acl-data-${host}-${name}`);
   const acl = dataEl ? JSON.parse(dataEl.textContent) : null;
@@ -349,7 +401,7 @@ async function submitAcl(acl) {
     const resp = await fetch(`/api/modules/${currentAclModule}/acl/`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
-      body: JSON.stringify({acl, host: currentAclHost}),
+      body: JSON.stringify({acl, host: currentAclHost, applied_groups: matrixSessionAppliedGroups}),
     });
     const data = await resp.json();
     if (!data.success) {
