@@ -70,11 +70,6 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"
 PYOBS_LOG_LEVEL = "info"
 
-# Where pyobs-web-admin keeps its own state -- not a pyobs config artifact (unlike the three
-# paths above, which pyobs-core itself reads), just internal bookkeeping data that only this
-# app understands and would not exist without it (e.g. ACL groups, see ACL_MATRIX.md).
-PYOBS_STORAGE_DIR = "/opt/pyobs/storage"
-
 # Where module logs live -- see JOURNALD_LOGS.md. "file" (default): pyobs writes to
 # PYOBS_LOG_DIR, read back with tail. "journald": pyobs is started with --syslog instead of
 # --log-file, read back with journalctl. Fleet-wide switch, not per-module -- see that doc's

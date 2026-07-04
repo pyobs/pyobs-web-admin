@@ -4,7 +4,6 @@ import os
 import re
 import signal
 import subprocess
-import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,10 +38,6 @@ def _log_dir() -> Path:
 
 def _run_dir() -> Path:
     return Path(settings.PYOBS_RUN_DIR)
-
-
-def _storage_dir() -> Path:
-    return Path(settings.PYOBS_STORAGE_DIR)
 
 
 def _pyobs_exec() -> str:
@@ -1002,79 +997,3 @@ def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
         for row in matrix["targets"]
     ]
     return {"targets": rows, "callers": caller_names}
-
-
-# ── ACL groups ────────────────────────────────────────────────────────────────
-# Storage layer only, for a feature still paused per ACL_MATRIX.md's Work Plan -- reusable,
-# named caller-lists (e.g. "core-system" -> [telescope, camera, dome]) that will eventually
-# expand into literal allow/deny entries at save time, tracked here as a flat mapping. No
-# expansion/UI logic lives here; this module just persists the name -> caller-list mapping.
-#
-# Unlike PYOBS_CONFIG_DIR/PYOBS_LOG_DIR/PYOBS_RUN_DIR, PYOBS_STORAGE_DIR holds no pyobs
-# artifact -- pyobs-core never reads groups.json, has no idea groups exist, and this file
-# wouldn't exist at all if this feature weren't built. It's pyobs-web-admin's own state, not
-# a pyobs config file, which is why it gets its own directory instead of living in
-# PYOBS_CONFIG_DIR alongside module configs.
-
-_GROUPS_FILE_NAME = "groups.json"
-
-
-def _groups_file() -> Path:
-    return _storage_dir() / _GROUPS_FILE_NAME
-
-
-def validate_group_name(name: str) -> None:
-    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
-        raise ValueError(f"Invalid group name: {name!r}")
-
-
-def list_groups() -> dict[str, list[str]]:
-    """Returns every defined group, {} if the file doesn't exist yet -- a fleet that never
-    uses Groups shouldn't need one pre-created for it."""
-    f = _groups_file()
-    if not f.exists():
-        return {}
-    return json.loads(f.read_text())
-
-
-def get_group(name: str) -> list[str] | None:
-    return list_groups().get(name)
-
-
-def _write_groups(groups: dict[str, list[str]]) -> None:
-    """Writes the whole groups file atomically (temp file + os.replace), unlike every other
-    write in this module, which only ever touches one module's own config -- a crash
-    mid-write there risks that one file; groups.json holds every group in one blob, so the
-    same risk here would mean losing all of them, not just the one being edited."""
-    d = _storage_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=d, prefix=".groups-", suffix=".json.tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(groups, f, indent=2, sort_keys=True)
-        os.replace(tmp_path, _groups_file())
-    except BaseException:
-        os.unlink(tmp_path)
-        raise
-
-
-def save_group(name: str, callers: list[str]) -> None:
-    """Creates or overwrites a group. callers is deduplicated and sorted for a
-    deterministic, diff-friendly file; must contain at least one entry -- a group with zero
-    members isn't meaningful, mirroring save_local_acl's identical guard against an empty
-    allow/deny."""
-    validate_group_name(name)
-    unique = sorted(set(callers))
-    if not unique:
-        raise ValueError("A group must have at least one caller")
-    groups = list_groups()
-    groups[name] = unique
-    _write_groups(groups)
-
-
-def delete_group(name: str) -> None:
-    groups = list_groups()
-    if name not in groups:
-        raise ValueError(f"Group {name!r} does not exist")
-    del groups[name]
-    _write_groups(groups)

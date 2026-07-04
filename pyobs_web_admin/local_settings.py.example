@@ -22,9 +22,6 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"
 PYOBS_LOG_LEVEL = "info"
 
-# pyobs-web-admin's own state (not a pyobs config artifact) -- e.g. ACL groups
-PYOBS_STORAGE_DIR = "/opt/pyobs/storage"
-
 # Generate the password hash with:
 #   DJANGO_SETTINGS_MODULE=pyobs_web_admin.settings uv run python -c \
 #     "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"
