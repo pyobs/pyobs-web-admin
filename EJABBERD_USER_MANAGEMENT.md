@@ -157,6 +157,15 @@ command latency. This also means **no ejabberd-side `api_permissions` change is 
 (see Current state) — a real simplification over the original `mod_http_api` setup, and one
 fewer deploy-time step for this feature than `EJABBERD_INTEGRATION.md` needed.
 
+**A real deploy-time wrinkle, hit on this box:** running `ejabberdctl` directly as the account
+`pyobs-web-admin` runs under fails (`"can only be run by root or the user ejabberd"`), which
+only matters now that writes always go through it (the read path mostly uses `mod_http_api`
+instead). `ejabberdctl-sudo.sh` (repo root) is a small wrapper —
+`exec sudo -n ejabberdctl "$@"` — for hosts with a passwordless sudo rule scoped to
+`ejabberdctl` already in place; point `EJABBERDCTL` at it in `local_settings.py` rather than
+the bare `"ejabberdctl"` default. Not needed on a host where the app already runs as root or
+the `ejabberd` user.
+
 ### Config write-back — settled: yes, automatic — and it has to handle shared `comm.user`
 
 `change_password` writes the new password back into the module's own YAML (`comm.password:`)

@@ -13,7 +13,6 @@ wheels/
 db.sqlite3
 *.log
 local_settings.py
-ejabberdctl-sudo.sh
 staticfiles/
 
 # IDE
