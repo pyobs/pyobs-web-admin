@@ -7,7 +7,14 @@
   <h4 class="mb-0 me-auto">All Logs</h4>
 </div>
 
-{% if not modules %}
+{% for host in unreachable_hosts %}
+<div class="alert alert-warning py-2">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  Host <strong>{{ host.name }}</strong> unreachable: {{ host.error }}
+</div>
+{% endfor %}
+
+{% if not has_modules %}
 <div class="alert alert-warning">
   No modules found. Make sure <code>PYOBS_CONFIG_DIR</code> points to your config directory
   and contains <code>.yaml</code> files.
@@ -18,12 +25,23 @@
   <button class="btn btn-outline-secondary btn-sm" onclick="selectAllModules(true)">All</button>
   <button class="btn btn-outline-secondary btn-sm" onclick="selectAllModules(false)">None</button>
 </div>
-<div id="module-checkboxes" class="d-flex flex-wrap gap-3 mb-3">
-  {% for mod in modules %}
-  <div class="form-check">
-    <input class="form-check-input module-check" type="checkbox" value="{{ mod }}" id="modchk-{{ mod }}" checked>
-    <label class="form-check-label small" for="modchk-{{ mod }}">{{ mod }}</label>
+<div id="module-checkboxes" class="mb-3">
+  {% for host in hosts %}
+  {% if host.modules %}
+  <div class="mb-2">
+    {% if show_host_badges %}
+    <div class="text-uppercase text-muted fw-semibold mb-1" style="font-size:0.65rem;letter-spacing:.08em">{{ host.name }}</div>
+    {% endif %}
+    <div class="d-flex flex-wrap gap-3">
+      {% for mod in host.modules %}
+      <div class="form-check">
+        <input class="form-check-input module-check" type="checkbox" value="{{ host.name }}:{{ mod }}" id="modchk-{{ host.name }}-{{ mod }}" checked>
+        <label class="form-check-label small" for="modchk-{{ host.name }}-{{ mod }}">{{ mod }}</label>
+      </div>
+      {% endfor %}
+    </div>
   </div>
+  {% endif %}
   {% endfor %}
 </div>
 

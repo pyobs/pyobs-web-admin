@@ -9,6 +9,7 @@ import yaml
 from django.test import override_settings
 
 from modules import ejabberd, services
+from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
 
 
@@ -990,6 +991,31 @@ class GetAllLogsTests(unittest.TestCase):
                 "2026-07-04 08:00:02 [INFO] (camera) x.py:2 world camera",
             ])
 
+    def test_merge_log_lines_combines_and_trims_multiple_already_ordered_lists(self):
+        # Exercises the same helper views.api_all_logs uses to combine each hub host's own
+        # already-fetched result into one fleet-wide view -- one list per "host" here, though
+        # the function itself has no notion of hosts, just ordered line lists.
+        host_a = [
+            "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello",
+            "2026-07-04 08:00:03 [INFO] (camera) x.py:2 world",
+        ]
+        host_b = ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hi"]
+        merged = services.merge_log_lines([host_a, host_b], lines=300)
+        self.assertEqual(merged, [
+            "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello",
+            "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hi",
+            "2026-07-04 08:00:03 [INFO] (camera) x.py:2 world",
+        ])
+
+    def test_merge_log_lines_trims_to_overall_last_n(self):
+        merged = services.merge_log_lines([
+            [f"2026-07-04 08:00:{i:02d} [INFO] (a) x.py:1 line{i}" for i in range(5)],
+        ], lines=2)
+        self.assertEqual(merged, [
+            "2026-07-04 08:00:03 [INFO] (a) x.py:1 line3",
+            "2026-07-04 08:00:04 [INFO] (a) x.py:1 line4",
+        ])
+
     def test_file_backend_no_names_defaults_to_list_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "camera.yaml").write_text("class: pyobs.modules.Module\n")
@@ -1009,3 +1035,25 @@ class GetAllLogsTests(unittest.TestCase):
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_all_logs(names=["camera", "telescope"], lines=300, filter_str="telescope")
             self.assertEqual(lines, ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope"])
+
+
+# ── _tag_host (fleet-wide All Logs cross-host tagging) ────────────────────────
+
+class TagHostTests(unittest.TestCase):
+    def test_inserts_host_tag_right_after_leading_timestamp(self):
+        # Regression test for a real bug caught by live cross-host testing: an earlier
+        # version of api_all_logs forwarded bare module names ("dome2") to a remote host's
+        # own api_all_logs, which now expects "host:module" tokens -- the remote silently
+        # dropped anything without a colon, so a selected remote module's logs vanished
+        # entirely. That bug was in the *forwarding* params, not this tagging helper, but
+        # this test locks in the tag's own placement so a client-side timestamp parse
+        # (which requires the timestamp to lead the line) keeps working once lines from
+        # multiple hosts are merged into one view.
+        line = "2026-07-04 09:00:00 [INFO] (camera1) x.py:1 hello"
+        self.assertEqual(
+            _tag_host(line, "spoke1"),
+            "2026-07-04 09:00:00 [spoke1] [INFO] (camera1) x.py:1 hello",
+        )
+
+    def test_falls_back_to_prefix_when_no_leading_timestamp(self):
+        self.assertEqual(_tag_host("no timestamp here", "spoke1"), "[spoke1] no timestamp here")

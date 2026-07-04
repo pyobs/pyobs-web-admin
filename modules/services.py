@@ -351,6 +351,25 @@ def _get_all_logs_journald(names: list[str] | None, lines: int) -> list[str]:
     return [_journal_entry_to_line(e) for e in entries]
 
 
+def merge_log_lines(line_lists: list[list[str]], lines: int) -> list[str]:
+    """Merges several already-formatted, already-oldest-first-ordered log line lists into one
+    list ordered by each line's own leading timestamp, trimmed to the overall last `lines`.
+
+    Used both for the file backend's per-module tail merge (_get_all_logs_file) and, in
+    views.py, for combining each hub host's own already-merged fleet-wide result into one
+    cross-host view -- same "no shared time index, so merge-and-trim after the fact" shape
+    either way, just one level up in the second case.
+    """
+    entries: list[tuple[datetime, int, int, str]] = []
+    for list_index, line_list in enumerate(line_lists):
+        for order, line in enumerate(line_list):
+            m = _TS_RE.match(line)
+            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") if m else datetime.min
+            entries.append((ts, list_index, order, line))
+    entries.sort(key=lambda e: (e[0], e[1], e[2]))
+    return [line for _, _, _, line in entries[-lines:]]
+
+
 def _get_all_logs_file(names: list[str], lines: int) -> list[str]:
     # Each module's own file has no cross-module time index, so the merge tails `lines`
     # from every file independently, then sorts the union by each line's own leading
@@ -359,18 +378,14 @@ def _get_all_logs_file(names: list[str], lines: int) -> list[str]:
     # window) rather than a true global tail, but matches this app's existing "good enough,
     # not a from-scratch index" tolerance for the file backend (see get_log_stats's binary
     # search comment).
-    entries: list[tuple[datetime, int, str]] = []
-    for order, name in enumerate(names):
+    line_lists = []
+    for name in names:
         log_file = _log_dir() / f"{_active_name(name)}.log"
         if not log_file.exists():
             continue
         result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
-        for line in result.stdout.splitlines():
-            m = _TS_RE.match(line)
-            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") if m else datetime.min
-            entries.append((ts, order, line))
-    entries.sort(key=lambda e: (e[0], e[1]))
-    return [line for _, _, line in entries[-lines:]]
+        line_lists.append(result.stdout.splitlines())
+    return merge_log_lines(line_lists, lines)
 
 
 def get_all_logs(names: list[str] | None = None, lines: int = 300, filter_str: str = "") -> list[str]:

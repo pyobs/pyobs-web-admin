@@ -1,4 +1,6 @@
 import json
+import re
+from typing import Any
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
@@ -156,17 +158,23 @@ def _cross_host_url(host: str, url_name: str, arg: str) -> str:
 
 
 def all_logs(request):
-    host = _active_host(request)
-    if host:
+    # Aggregates across every configured hub host (see acl_matrix) regardless of which host
+    # is currently "active" in the session -- like ACL Matrix, this page's whole point is
+    # fleet-wide visibility, not one host at a time.
+    per_host = [("localhost", services.list_modules())]
+    unreachable = []
+    for host_cfg in getattr(settings, "HUB_HOSTS", []):
         try:
-            data = proxy.call(host, "GET", "/api/statuses/")
-            modules = [m["name"] for m in data.get("modules", [])]
-        except Exception:
-            modules = []
-    else:
-        modules = services.list_modules()
+            data = proxy.call(host_cfg, "GET", "/api/statuses/")
+            per_host.append((host_cfg["name"], [m["name"] for m in data.get("modules", [])]))
+        except Exception as e:
+            unreachable.append({"name": host_cfg["name"], "error": str(e)})
+
     return render(request, "modules/all_logs.html", {
-        "modules": modules,
+        "hosts": [{"name": name, "modules": modules} for name, modules in per_host],
+        "has_modules": any(modules for _, modules in per_host),
+        "unreachable_hosts": unreachable,
+        "show_host_badges": len(per_host) > 1,
         "active_all_logs": True,
     })
 
@@ -331,26 +339,77 @@ def api_log_stats(request, name: str):
     return JsonResponse({"stats": services.get_log_stats(name)})
 
 
+_LOG_TS_PREFIX_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+
+
+def _tag_host(line: str, host_name: str) -> str:
+    """Inserts a "[host]" tag right after the line's own leading timestamp, so a line stays
+    parseable by the same client-side "timestamp must lead the line" regex the single-host
+    page already relies on (see all_logs.html's parseLogTime) while still showing which host
+    it came from once more than one host is merged into one view."""
+    m = _LOG_TS_PREFIX_RE.match(line)
+    if not m:
+        return f"[{host_name}] {line}"
+    ts = m.group(1)
+    return f"{ts} [{host_name}]{line[len(ts):]}"
+
+
 @require_GET
 def api_all_logs(request):
-    host = _active_host(request)
+    # Fleet-wide, like acl_matrix -- queries every configured hub host (plus this instance
+    # itself), not just whichever host happens to be "active" in the session. Each token in
+    # `modules` is "<host>:<module>" so the same module name on two different hosts can be
+    # selected independently; a host with zero tokens present is skipped entirely, matching
+    # every one of its checkboxes being unchecked in the UI.
     lines = int(request.GET.get("lines", 300))
-    # Query key present but empty ("modules=") means "explicitly none selected" -- distinct
-    # from the key being absent entirely, which means "no restriction" (see
-    # services.get_all_logs). request.GET.get returns None only in the latter case.
-    modules_param = request.GET.get("modules")
-    names = [m for m in modules_param.split(",") if m] if modules_param is not None else None
-    if host:
-        params = {"lines": lines}
-        if modules_param is not None:
-            params["modules"] = modules_param
-        return _proxy(host, "GET", "/api/logs/", params=params)
-    if names is not None:
-        for name in names:
-            _get_module_or_404(name)
     filter_str = request.GET.get("filter", "")
-    log_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str)
-    return JsonResponse({"lines": log_lines})
+    modules_param = request.GET.get("modules")
+
+    all_host_names = ["localhost"] + [h["name"] for h in getattr(settings, "HUB_HOSTS", [])]
+    if modules_param is None:
+        # No restriction at all -- every configured host, every module on it.
+        host_selections: dict[str, list[str] | None] = {name: None for name in all_host_names}
+    else:
+        host_selections = {}
+        for token in modules_param.split(","):
+            if ":" not in token:
+                continue
+            host_name, _, module_name = token.partition(":")
+            if not module_name:
+                continue
+            host_selections.setdefault(host_name, []).append(module_name)
+
+    line_lists = []
+    unreachable = []
+    for host_name, names in host_selections.items():
+        if host_name == "localhost":
+            if names is not None:
+                for name in names:
+                    _get_module_or_404(name)
+            host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str)
+        else:
+            host_cfg = proxy.get_host_config(host_name)
+            if not host_cfg:
+                continue
+            try:
+                params: dict[str, Any] = {"lines": lines}
+                if names is not None:
+                    # The remote's own api_all_logs expects "host:module" tokens too, with
+                    # "localhost" naming *its* own modules -- not the bare names this
+                    # instance uses to key host_selections.
+                    params["modules"] = ",".join(f"localhost:{n}" for n in names)
+                if filter_str:
+                    params["filter"] = filter_str
+                data = proxy.call(host_cfg, "GET", "/api/logs/", params=params)
+                host_lines = data.get("lines", [])
+            except Exception as e:
+                unreachable.append({"name": host_name, "error": str(e)})
+                continue
+        multi_host = len(host_selections) > 1
+        line_lists.append([_tag_host(l, host_name) for l in host_lines] if multi_host else host_lines)
+
+    log_lines = services.merge_log_lines(line_lists, lines)
+    return JsonResponse({"lines": log_lines, "unreachable_hosts": unreachable})
 
 
 @require_GET
