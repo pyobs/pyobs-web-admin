@@ -89,17 +89,30 @@ is fine, that's what the Design section of the eventual doc is for.
   column coming into view). Also moved Dashboard's own sidebar link to sit below the Hosts
   section (previously listed above it as if global, despite the view itself always being
   per-host — the original mismatch that prompted this whole idea).
+- **New module button.** `services.create_module(name)` — the one path allowed to write a
+  `.yaml` file that doesn't exist yet (unlike `save_config`, which explicitly refuses to,
+  `raise FileNotFoundError`), writing a minimal starter (`# class: pyobs.modules.<package>.
+  <ClassName> -- ...` comment + a bare `class:` key). Surfaces as a small "+" icon next to the
+  sidebar's "Modules" header, linking to a dedicated page (`/modules/new/`, not a modal — this
+  app's established mobile-friendliness convention) with a single name input; on success,
+  navigates straight to the new module's own Config tab (`#tab-config`) to fill in the rest.
+  New endpoint `POST /api/modules/create/` follows the session's active host exactly like
+  `api_config` (proxies to a remote host's own identical endpoint if one is active, since
+  hub-token-authenticated requests execute locally there with no active-host session of their
+  own — same pattern, no special-casing needed). `_get_module_or_404`-style validation reuses
+  the existing `validate_name` regex; refuses (409) if the name already exists rather than
+  clobbering it. Unit tests in `modules/tests.py` (`CreateModuleTests`): starter content,
+  invalid-name rejection, already-exists rejection (confirms the existing file survives
+  untouched), and config-dir-auto-created-if-missing. Verified live end-to-end against a
+  scratch `PYOBS_CONFIG_DIR`: clicked the sidebar "+", typed a name, landed on the new module's
+  Config tab with the starter YAML on disk; separately confirmed both error paths (duplicate
+  name, invalid name) render inline, and checked the form page at a 390px mobile viewport
+  (clean, no overflow).
 
 ## Ideas (not yet designed)
 
-- A "New module" button (dashboard, or the sidebar's Modules section) to create a brand-new
-  module config from the UI, rather than requiring someone to hand-create a `.yaml` file in
-  `PYOBS_CONFIG_DIR` first. Real gap, not just an omission: `services.save_config` explicitly
-  refuses to write a file that doesn't exist yet (`raise FileNotFoundError`) -- every existing
-  config-editing path in this app (module page's Config tab, ACL matrix edits) assumes the
-  file is already there. Needs at least a name input (validated the same way `validate_name`
-  already does) and some minimal starter YAML (bare `class:` key?), then presumably drops the
-  admin into that new module's own Config tab to fill in the rest.
+None currently.
+
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
 - No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).

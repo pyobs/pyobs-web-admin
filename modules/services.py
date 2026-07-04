@@ -487,6 +487,26 @@ def save_config(name: str, content: str) -> None:
     config_file.write_text(content)
 
 
+_NEW_MODULE_TEMPLATE = (
+    "# class: pyobs.modules.<package>.<ClassName> -- see other modules' configs, or\n"
+    "# pyobs-core's own docs, for the class path\n"
+    "class: \n"
+)
+
+
+def create_module(name: str) -> None:
+    """Creates a brand-new module config with minimal starter YAML -- unlike save_config,
+    which refuses to write a file that doesn't exist yet, this is the one path that's
+    allowed to. Refuses if a config with this name already exists, same as it would if
+    someone tried to hand-create a file that's already there."""
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if config_file.exists():
+        raise FileExistsError(f"Module {name!r} already exists")
+    _config_dir().mkdir(parents=True, exist_ok=True)
+    config_file.write_text(_NEW_MODULE_TEMPLATE)
+
+
 # ── ACL resolution ────────────────────────────────────────────────────────────
 
 _TOP_LEVEL_KEY_RE = re.compile(r"^(\S+):(.*)$")

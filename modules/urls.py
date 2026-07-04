@@ -6,6 +6,9 @@ urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("overview/", views.fleet_overview, name="fleet_overview"),
     path("set-host/<str:name>/", views.set_host, name="set_host"),
+    # modules/new/ must come before modules/<str:name>/ -- the latter would otherwise
+    # greedily match "new" as a module name and route to module_detail instead.
+    path("modules/new/", views.new_module, name="new_module"),
     path("modules/<str:name>/", views.module_detail, name="module_detail"),
     path("shared/<str:name>/", views.shared_detail, name="shared_detail"),
     path("acl/", views.acl_matrix, name="acl_matrix"),
@@ -14,6 +17,7 @@ urlpatterns = [
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
     path("api/logs/", views.api_all_logs, name="api_all_logs"),
+    path("api/modules/create/", views.api_create_module, name="api_create_module"),
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),
     path("api/modules/<str:name>/start/", views.api_start, name="api_start"),
     path("api/modules/<str:name>/stop/", views.api_stop, name="api_stop"),

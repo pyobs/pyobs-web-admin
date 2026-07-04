@@ -536,6 +536,44 @@ class SaveLocalAclTests(unittest.TestCase):
         self.assertEqual(source, "acl.shared")
 
 
+# ── services.create_module ───────────────────────────────────────────────────────
+
+class CreateModuleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def test_creates_minimal_starter_yaml(self):
+        services.create_module("camera2")
+        self.assertIn("camera2", services.list_modules())
+        content = (self.tmp_path / "camera2.yaml").read_text()
+        self.assertIn("class:", content)
+
+    def test_refuses_invalid_name(self):
+        with self.assertRaises(ValueError):
+            services.create_module("bad name!")
+        self.assertEqual(services.list_modules(), [])
+
+    def test_refuses_if_already_exists(self):
+        (self.tmp_path / "camera2.yaml").write_text("class: pyobs.modules.camera.BaseCamera\n")
+        with self.assertRaises(FileExistsError):
+            services.create_module("camera2")
+        # the existing file must survive untouched, not get clobbered with the starter template
+        self.assertEqual((self.tmp_path / "camera2.yaml").read_text(), "class: pyobs.modules.camera.BaseCamera\n")
+
+    def test_creates_config_dir_if_missing(self):
+        missing_dir = self.tmp_path / "does-not-exist-yet"
+        with override_settings(PYOBS_CONFIG_DIR=str(missing_dir)):
+            services.create_module("camera2")
+            self.assertTrue((missing_dir / "camera2.yaml").exists())
+
+
 # ── services.save_comm_password / find_modules_sharing_comm_user ────────────────
 
 class SaveCommPasswordTests(unittest.TestCase):

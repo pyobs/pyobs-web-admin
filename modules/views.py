@@ -149,6 +149,14 @@ def fleet_overview(request):
     })
 
 
+def new_module(request):
+    """A dedicated page (not a modal -- this app's own established mobile-friendliness
+    convention, see EJABBERD_USER_MANAGEMENT.md's Users page) for the one-field "create a
+    brand-new module config" form. Follows the session's active host like module_detail
+    itself, since this always operates on one host at a time, not fleet-wide."""
+    return render(request, "modules/new_module.html", {"active_new_module": True})
+
+
 def module_detail(request, name: str):
     host = _active_host(request)
     if host:
@@ -524,6 +532,30 @@ def api_config(request, name: str):
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)}, status=500)
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@require_POST
+def api_create_module(request):
+    """Creates a brand-new module config -- follows the session's active host like
+    api_config, since this always operates on one host at a time (the new_module page
+    itself), not fleet-wide."""
+    host = _active_host(request)
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    name = (data.get("name") or "").strip()
+    if not name:
+        return JsonResponse({"success": False, "error": "Name is required"}, status=400)
+    if host:
+        return _proxy(host, "POST", "/api/modules/create/", json={"name": name})
+    try:
+        services.create_module(name)
+        return JsonResponse({"success": True, "name": name})
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    except FileExistsError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=409)
 
 
 def api_shared_config(request, name: str):
