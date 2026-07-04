@@ -716,6 +716,80 @@ class MergeAclMatricesTests(unittest.TestCase):
         self.assertEqual(cam1_cells["rogue-client"]["kind"], "denied")  # allow-listed, not mentioned -> denied
 
 
+# ── ACL groups storage ────────────────────────────────────────────────────────
+
+class GroupsStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_STORAGE_DIR=str(self.tmp_path / "storage"))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def test_list_groups_empty_when_file_missing(self):
+        self.assertEqual(services.list_groups(), {})
+
+    def test_save_and_list_group(self):
+        services.save_group("core-system", ["telescope", "camera", "dome"])
+        self.assertEqual(services.list_groups(), {"core-system": ["camera", "dome", "telescope"]})
+
+    def test_save_deduplicates_and_sorts_callers(self):
+        services.save_group("students", ["guest2", "guest1", "guest1", "guest2"])
+        self.assertEqual(services.get_group("students"), ["guest1", "guest2"])
+
+    def test_save_overwrites_existing_group(self):
+        services.save_group("admins", ["gui"])
+        services.save_group("admins", ["gui", "console"])
+        self.assertEqual(services.get_group("admins"), ["console", "gui"])
+
+    def test_save_refuses_empty_caller_list(self):
+        with self.assertRaises(ValueError):
+            services.save_group("empty", [])
+
+    def test_save_refuses_invalid_name(self):
+        with self.assertRaises(ValueError):
+            services.save_group("bad name!", ["telescope"])
+
+    def test_get_group_missing_returns_none(self):
+        self.assertIsNone(services.get_group("does-not-exist"))
+
+    def test_multiple_groups_coexist(self):
+        services.save_group("core-system", ["telescope", "camera"])
+        services.save_group("students", ["guest1"])
+        self.assertEqual(
+            services.list_groups(),
+            {"core-system": ["camera", "telescope"], "students": ["guest1"]},
+        )
+
+    def test_delete_group(self):
+        services.save_group("temp", ["scheduler"])
+        services.delete_group("temp")
+        self.assertEqual(services.list_groups(), {})
+
+    def test_delete_missing_group_raises(self):
+        with self.assertRaises(ValueError):
+            services.delete_group("does-not-exist")
+
+    def test_storage_dir_created_automatically(self):
+        storage_dir = self.tmp_path / "storage"
+        self.assertFalse(storage_dir.exists())
+        services.save_group("core-system", ["telescope"])
+        self.assertTrue(storage_dir.exists())
+
+    def test_file_is_valid_json_on_disk(self):
+        services.save_group("core-system", ["telescope"])
+        raw = (self.tmp_path / "storage" / "groups.json").read_text()
+        self.assertEqual(json.loads(raw), {"core-system": ["telescope"]})
+
+    def test_no_leftover_temp_file_after_save(self):
+        services.save_group("core-system", ["telescope"])
+        leftover = list((self.tmp_path / "storage").glob(".groups-*"))
+        self.assertEqual(leftover, [])
+
+
 # ── ejabberd ──────────────────────────────────────────────────────────────────
 #
 # Fixtures below are the exact responses captured against a real, running ejabberd 24.12-4

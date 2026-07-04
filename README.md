@@ -170,6 +170,8 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"            # directory containing *.log files
 PYOBS_RUN_DIR = "/opt/pyobs/run"            # directory for PID files
 PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 PYOBS_LOG_BACKEND = "file"                  # "file" (default) or "journald" -- see JOURNALD_LOGS.md
+PYOBS_STORAGE_DIR = "/opt/pyobs/storage"    # pyobs-web-admin's own state, not a pyobs config
+                                             # artifact -- e.g. ACL groups, see ACL_MATRIX.md
 
 # Hub (optional — see Hub mode section)
 HUB_TOKEN = ""                              # token to accept from a hub instance
