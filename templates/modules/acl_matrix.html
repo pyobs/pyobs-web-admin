@@ -5,6 +5,22 @@
 {% block extra_head %}
 <style>
   #acl-matrix th, #acl-matrix td { white-space: nowrap; }
+  /* Bootstrap's .table is width: 100% by default, stretching to fill table-responsive's
+     container regardless of actual content width. display: inline-table shrink-wraps to
+     content the same way inline-block does (width: auto alone isn't enough -- per the
+     table-layout spec, an auto-width table's used width is still
+     max(containing-block width, sum-of-column-widths)).
+     Important: don't give any column an explicit percentage width (e.g. width: 1%) to try
+     to further "minimize" it, even though that's the usual trick for shrinking one greedy
+     column -- a percentage width needs a definite table width to resolve against, so its
+     mere presence forces the whole table straight back to filling its container, undoing
+     inline-table's shrink-wrap entirely (verified by bisecting a standalone reproduction:
+     removing width: 1% from a single column was the only change needed to bring a
+     1598px-wide table back down to its actual ~134px content width). Every column here is
+     already naturally minimal without any width hint at all -- rotated headers and
+     icon-only cells have very little intrinsic content, so plain auto-layout already sizes
+     them tightly. */
+  #acl-matrix { display: inline-table; width: auto; }
   #acl-matrix .col-target {
     position: sticky;
     left: 0;
@@ -18,6 +34,12 @@
   #acl-matrix .col-caller {
     vertical-align: bottom;
     padding: 4px 2px;
+  }
+  /* Icon-only data cells don't need Bootstrap's default table-sm horizontal padding -- each
+     column only has to be as wide as one icon. */
+  #acl-matrix td.col-cell {
+    padding-left: 4px;
+    padding-right: 4px;
   }
   #acl-matrix .col-caller-label {
     writing-mode: vertical-rl;
@@ -123,7 +145,7 @@
     </td>
     {% else %}
     {% for cell in row.cell_list %}
-    <td class="text-center">
+    <td class="col-cell text-center">
       {% if cell.kind == 'denied' %}
       <i class="bi bi-dash-circle text-secondary acl-cell-icon" title="{{ cell.caller }}: no access"></i>
       {% elif cell.kind == 'all' %}
