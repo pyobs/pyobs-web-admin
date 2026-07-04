@@ -40,6 +40,15 @@
     .status-dot.stopped { background: #dc3545; }
     .status-dot.unknown { background: #495057; }
 
+    /* A flex item's default min-width is auto (its content's own min-content size), not 0 --
+       so without this, .main-content refuses to shrink below whatever its widest child
+       needs (e.g. a wide ACL matrix table) and grows past the viewport instead, defeating
+       table-responsive's own internal horizontal scroll and causing real page-level
+       horizontal overflow on mobile. Confirmed live: without this, a wide matrix pushed
+       body's scrollWidth to 523px on a 390px viewport; with it, table-responsive scrolls
+       internally as intended and body stays at 390px. */
+    .main-content { min-width: 0; }
+
     /* ── Desktop layout ──────────────────────────────────────────────────────── */
     @media (min-width: 992px) {
       body { overflow: hidden; }
