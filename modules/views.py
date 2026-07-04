@@ -101,6 +101,54 @@ def dashboard(request):
     })
 
 
+def _host_summary(name: str, modules: list[dict]) -> dict:
+    running = sum(1 for m in modules if m.get("status") == "running")
+    stopped = len(modules) - running
+    cpu = sum(m["stats"]["cpu_percent"] for m in modules if m.get("stats"))
+    mem = sum(m["stats"]["memory_mb"] for m in modules if m.get("stats"))
+    return {
+        "name": name,
+        "running": running,
+        "stopped": stopped,
+        "total": len(modules),
+        "cpu_percent": round(cpu, 1),
+        "memory_mb": round(mem, 1),
+        "dashboard_url": _cross_host_url(name, "dashboard"),
+    }
+
+
+def fleet_overview(request):
+    """Lightweight fleet-wide overview: one row per host (reachable or not, running/stopped/
+    total counts, aggregate CPU/RAM), each linking into that host's own per-host Dashboard.
+    Deliberately no per-module rows and no bulk (or even per-module) actions at all -- see
+    DEVELOPMENT.md's "Two dashboards" idea for why: Start All/Stop All and per-module quick
+    actions belong on the per-host Dashboard, since a fleet-wide "Stop All" from one button
+    is a real footgun. Aggregates every configured hub host regardless of which host is
+    currently "active" in the session, exactly like acl_matrix/all_logs/xmpp_users -- this
+    page's whole point is fleet-wide visibility, not one host at a time.
+    """
+    local_modules = []
+    for name in services.list_modules():
+        status = services.get_module_status(name)
+        stats = services.get_module_stats(name) if status == "running" else None
+        local_modules.append({"name": name, "status": status, "stats": stats})
+    hosts = [_host_summary("localhost", local_modules)]
+
+    unreachable = []
+    for host_cfg in getattr(settings, "HUB_HOSTS", []):
+        try:
+            data = proxy.call(host_cfg, "GET", "/api/statuses/")
+            hosts.append(_host_summary(host_cfg["name"], data.get("modules", [])))
+        except Exception as e:
+            unreachable.append({"name": host_cfg["name"], "error": str(e)})
+
+    return render(request, "modules/fleet_overview.html", {
+        "active_fleet_overview": True,
+        "hosts": hosts,
+        "unreachable_hosts": unreachable,
+    })
+
+
 def module_detail(request, name: str):
     host = _active_host(request)
     if host:
@@ -160,13 +208,14 @@ def _resolve_action_host(request, data: dict) -> dict | None:
     return _active_host(request)
 
 
-def _cross_host_url(host: str, url_name: str, arg: str) -> str:
+def _cross_host_url(host: str, url_name: str, arg: str | None = None) -> str:
     """A link to another page that's correct regardless of which host is currently
     "active" in the session -- for localhost it's just the plain URL, for a hub host it
     first switches the session's active host (existing set_host view) via its "next"
-    redirect, since module_detail/shared_detail always operate on the session's active
-    host rather than taking one as a URL argument."""
-    target = reverse(url_name, args=[arg])
+    redirect, since module_detail/shared_detail/dashboard always operate on the session's
+    active host rather than taking one as a URL argument. arg is omitted for URLs that take
+    none, e.g. dashboard."""
+    target = reverse(url_name, args=[arg] if arg is not None else None)
     if host == "localhost":
         return target
     return f"{reverse('set_host', args=[host])}?next={target}"

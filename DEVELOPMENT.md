@@ -67,6 +67,28 @@ is fine, that's what the Design section of the eventual doc is for.
   hardcoded message. UI: no modals anywhere on the page (inline expand-in-place confirms and
   an always-visible register form instead, for mobile-friendliness), collapsed accordion-style
   rows (any number open at once, plus an Expand-all toggle) rather than a wide table.
+- **Two dashboards** (no separate design doc — small enough to build directly from the idea
+  below plus a short back-and-forth on scope). Today's Dashboard (`/`) stays exactly as it
+  was, a per-host operational control surface (Start All/Stop All, per-module quick actions).
+  New: a fleet-wide **Overview** page (`/overview/`, sidebar entry above Logs/ACL Matrix/Users)
+  — one row per configured host (aggregated the same way as `acl_matrix`/`all_logs`/
+  `xmpp_users`: every `HUB_HOSTS` entry queried via the existing `/api/statuses/` endpoint,
+  unreachable hosts shown as a warning banner and excluded from the table rather than shown
+  with an error row), with running/stopped/total counts and aggregate CPU/RAM per host
+  (`views._host_summary`, summing each module's own `get_module_stats`), and the host's name
+  linking into *that host's own* per-host Dashboard (`_cross_host_url`, generalized to accept
+  no `arg` for URLs like `dashboard` that take none). Deliberately **no bulk or per-module
+  actions at all** on this page, not even individual ones — it's a pure summary, exactly the
+  footgun-avoidance the idea below was about; anyone wanting to act on a module goes to that
+  host's own Dashboard via the row's link. Verified live against the real fleet (one
+  unreachable `HUB_HOSTS` entry, `MONETS`, correctly banner'd and excluded; `localhost`'s real
+  counts confirmed correct) and at a 390px mobile viewport (needed one fix: `white-space:
+  nowrap` on the table cells, since without it a tight viewport wrapped cell text like
+  "511.7 MB" mid-word instead of properly triggering `table-responsive`'s horizontal scroll —
+  confirmed fixed by scrolling the container programmatically and screenshotting the RAM
+  column coming into view). Also moved Dashboard's own sidebar link to sit below the Hosts
+  section (previously listed above it as if global, despite the view itself always being
+  per-host — the original mismatch that prompted this whole idea).
 
 ## Ideas (not yet designed)
 
@@ -78,24 +100,6 @@ is fine, that's what the Design section of the eventual doc is for.
   file is already there. Needs at least a name input (validated the same way `validate_name`
   already does) and some minimal starter YAML (bare `class:` key?), then presumably drops the
   admin into that new module's own Config tab to fill in the rest.
-- Two dashboards rather than making the existing one fleet-wide: keep today's Dashboard as a
-  per-host operational control surface (Start All/Stop All and per-module quick actions make
-  more sense scoped to one host at a time — a fleet-wide "Stop All" from one button is a real
-  footgun), and add a *separate*, lighter fleet-wide overview page (one row per host: reachable
-  or not, running/stopped/total counts, aggregate CPU/RAM, a link into that host's own
-  Dashboard — no per-module rows, no bulk actions at all, not even per-module ones, since the
-  page is deliberately host-summary-only) closer in spirit to `ACL_MATRIX.md`/"All Logs". Note
-  this would be a third nav pattern in this app (today: "always per-host" like module pages, or
-  "always fleet-wide" like ACL Matrix -- this adds "both, separately"). Still not designed or
-  built — this bullet is the idea only.
-
-  The sidebar-position half of the original motivation is now fixed, separately from the idea
-  above: Dashboard used to be listed as a global entry above the Hosts section even though the
-  view itself (`modules/views.py:dashboard`) still switches to the single active host — that
-  mismatch is what originally prompted this idea. The sidebar link has since been moved to sit
-  below Hosts (right before the Modules section, in `templates/base.html`), correctly reflecting
-  that it's per-host — done independently of, and without waiting for, the fleet-wide overview
-  page above.
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
 - No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).
