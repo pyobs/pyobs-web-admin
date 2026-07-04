@@ -941,6 +941,27 @@ class EjabberdWriteCommandTests(unittest.TestCase):
         mock_run.return_value = self._mock_result("")
         self.assertIsNone(ejabberd.get_ban_details("newuser"))
 
+    @patch("modules.ejabberd.subprocess.run")
+    def test_kick_session_success_has_empty_stdout(self, mock_run):
+        # Verified live against a real connected session: empty stdout/stderr, exit 0 on
+        # success -- same silent-rescode pattern as change_password, despite ejabberdctl's
+        # own help text example showing a printed 'ok'.
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.kick_session("newuser", "pyobs", "Kicked via pyobs-web-admin")
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "kick_session", "newuser", "localhost", "pyobs", "Kicked via pyobs-web-admin"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_kick_session_failure_raises(self, mock_run):
+        # The failure path itself wasn't exercised live (only success was, against a real
+        # session) -- this just confirms the generic raise-on-nonzero-exit wiring works,
+        # not a specific verified error message shape.
+        mock_run.return_value = self._mock_result("error", 1)
+        with self.assertRaises(ValueError):
+            ejabberd.kick_session("never-connected-xyz", "pyobs", "test")
+
 
 class EjabberdPathSelectionTests(unittest.TestCase):
     """Which transport gets used is decided purely by whether EJABBERD_API_URL is set, not

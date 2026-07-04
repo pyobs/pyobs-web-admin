@@ -211,3 +211,24 @@ def get_ban_details(user: str) -> dict | None:
         key, _, value = line.partition("\t")
         details[key] = value
     return details
+
+
+def kick_session(user: str, resource: str, reason: str) -> None:
+    """Force-disconnects one specific session of user (identified by its XMPP resource,
+    always "pyobs" for a pyobs module -- confirmed live, see EJABBERD_INTEGRATION.md's Data
+    layer) on EJABBERD_DOMAIN, recording reason in the disconnect message. Doesn't touch the
+    account itself (still registered, same password), unlike ban/unregister.
+
+    Uses kick_session rather than kick_user deliberately: kick_user takes no reason at all
+    and reports a generic "policy-violation" cause, which the module side can't distinguish
+    from any other disconnect. Verified live against a real connected session: exit 0, empty
+    stdout on success (same silent-rescode pattern as change_password, despite ejabberdctl's
+    own help text example showing a printed 'ok') -- and the reason text does appear
+    verbatim afterward in the module's own get_last ("Stream closed by local host: <reason>
+    (conflict)"), confirming the module side can actually key off of it. Raises ValueError
+    on failure.
+    """
+    domain = settings.EJABBERD_DOMAIN
+    ok, message = _ctl_write("kick_session", user, domain, resource, reason)
+    if not ok:
+        raise ValueError(message or f"Failed to kick {user}@{domain}/{resource}")

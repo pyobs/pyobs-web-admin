@@ -146,6 +146,20 @@ def shared_detail(request, name: str):
     })
 
 
+def _resolve_action_host(request, data: dict) -> dict | None:
+    """Resolves which host a module-scoped write action should run on. An explicit "host"
+    field in the request body takes priority -- used by the Users page, which shows modules
+    across every hub host at once and can't rely on "the" session's active host the way a
+    single module's own page can (same precedent as api_acl's POST, which trusts an explicit
+    "host" field for exactly this reason). Falls back to the session's active host when
+    absent, which is what the module page's own calls do -- they never send a "host" field.
+    """
+    host_name = data.get("host")
+    if host_name is not None:
+        return proxy.get_host_config(host_name) if host_name != "localhost" else None
+    return _active_host(request)
+
+
 def _cross_host_url(host: str, url_name: str, arg: str) -> str:
     """A link to another page that's correct regardless of which host is currently
     "active" in the session -- for localhost it's just the plain URL, for a hub host it
@@ -668,6 +682,14 @@ def _ejabberd_unregister(user: str) -> None:
     ejabberd.unregister(user)
 
 
+def _ejabberd_kick(user: str, resource: str, reason: str) -> None:
+    host = _ejabberd_host_config()
+    if host:
+        proxy.call(host, "POST", f"/api/ejabberd/user/{user}/kick/", json={"resource": resource, "reason": reason})
+        return
+    ejabberd.kick_session(user, resource, reason)
+
+
 # ── ejabberd API ──────────────────────────────────────────────────────────────
 
 @require_GET
@@ -786,6 +808,23 @@ def api_ejabberd_user_unban(request, user: str):
 def api_ejabberd_user_unregister(request, user: str):
     try:
         ejabberd.unregister(user)
+        return JsonResponse({"success": True})
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@require_POST
+def api_ejabberd_user_kick(request, user: str):
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    resource = data.get("resource") or ""
+    if not resource:
+        return JsonResponse({"error": "resource is required"}, status=400)
+    reason = data.get("reason") or "Kicked via pyobs-web-admin"
+    try:
+        ejabberd.kick_session(user, resource, reason)
         return JsonResponse({"success": True})
     except ValueError as e:
         return JsonResponse({"error": str(e)}, status=400)
@@ -955,8 +994,16 @@ def api_module_ejabberd_register(request, name: str):
     """Registers module name's comm.user as a new XMPP account, using the password its own
     config already declares -- no password is read from the request body at all. The point
     is making an existing comm.user/comm.password config actually work, not choosing a fresh
-    credential (see EJABBERD_USER_MANAGEMENT.md, Design)."""
-    host = _active_host(request)
+    credential (see EJABBERD_USER_MANAGEMENT.md, Design).
+
+    Accepts an explicit "host" in the body (see _resolve_action_host) so the Users page can
+    target a specific module regardless of the session's active host; the module page's own
+    call omits it and falls back to session state as before."""
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    host = _resolve_action_host(request, data)
     if host:
         return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/register/")
     _get_module_or_404(name)
@@ -980,8 +1027,15 @@ def api_module_ejabberd_change_password(request, name: str):
     then writes it into comm.password: for every *local* module sharing that identity
     (services.save_comm_password) -- cross-host shared identities aren't handled, matching
     this app's usual "hub mode aggregates only when a feature explicitly needs it" model
-    (see DEVELOPMENT.md's Wide conventions)."""
-    host = _active_host(request)
+    (see DEVELOPMENT.md's Wide conventions).
+
+    Accepts an explicit "host" in the body, same as api_module_ejabberd_register -- see
+    _resolve_action_host."""
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    host = _resolve_action_host(request, data)
     if host:
         return _proxy(host, "POST", f"/api/modules/{name}/ejabberd/change-password/")
     _get_module_or_404(name)
@@ -1059,6 +1113,91 @@ def api_module_ejabberd_unregister(request, name: str):
         return JsonResponse({"success": False, "error": "Module has no comm.user"}, status=400)
     try:
         _ejabberd_unregister(comm_user)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+# ── ejabberd write API -- bare-user-scoped, browser-facing (Users page) ─────────
+#
+# Unlike the module-scoped write actions above, these operate on a bare XMPP username with
+# no module context at all -- needed because the Users page shows accounts no module owns
+# (e.g. "admin"), and ban/unban/unregister don't need one: they only care about which host
+# actually runs ejabberd (EJABBERD_HOST, already handled by _ejabberd_ban/_ejabberd_unban/
+# _ejabberd_unregister), not which host runs some particular module. The per-module register
+# button (above) reads its password from that module's own comm.password: -- this one is
+# for the case that can't cover at all: a module running somewhere entirely outside this
+# fleet (not in HUB_HOSTS, no config this app can see), whose account still needs to exist.
+# The operator types the password directly and is responsible for configuring the same
+# credential into that external module themselves -- there's no config here to write it
+# into, unlike change_password's fleet-wide write-back.
+
+@require_POST
+def api_ejabberd_users_register(request, user: str):
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    password = data.get("password") or ""
+    if not password:
+        return JsonResponse({"success": False, "error": "Password is required"}, status=400)
+    try:
+        _ejabberd_register(user, password)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_ejabberd_users_ban(request, user: str):
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    reason = data.get("reason") or "Banned via pyobs-web-admin (Users page)"
+    try:
+        _ejabberd_ban(user, reason)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_ejabberd_users_unban(request, user: str):
+    try:
+        _ejabberd_unban(user)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_ejabberd_users_unregister(request, user: str):
+    try:
+        _ejabberd_unregister(user)
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+@require_POST
+def api_ejabberd_users_kick(request, user: str):
+    """Force-disconnects one session of user (identified by its XMPP resource, supplied by
+    the caller -- the Users page already has it from the live session data it's already
+    displaying) without touching the account itself (still registered, same password) --
+    distinct from ban (which also blocks new logins) and unregister (which deletes the
+    account). Useful for a stuck/duplicate session. Uses kick_session with a fixed,
+    greppable reason rather than kick_user's reason-less generic disconnect, so the module
+    side can tell an intentional admin kick apart from any other disconnect cause."""
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    resource = data.get("resource") or ""
+    if not resource:
+        return JsonResponse({"success": False, "error": "resource is required"}, status=400)
+    try:
+        _ejabberd_kick(user, resource, "Kicked via pyobs-web-admin")
         return JsonResponse({"success": True})
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=502)

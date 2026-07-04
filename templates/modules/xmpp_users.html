@@ -5,43 +5,48 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4 class="mb-0">XMPP Users</h4>
+  <button type="button" class="btn btn-outline-secondary btn-sm" id="xmpp-expand-all-btn" onclick="toggleExpandAll()">
+    <i class="bi bi-arrows-expand me-1"></i>Expand all
+  </button>
 </div>
-
-{% for host in unreachable_hosts %}
-<div class="alert alert-warning py-2" title="{{ host.error }}">
-  <i class="bi bi-exclamation-triangle me-1"></i>
-  Host <strong>{{ host.name }}</strong> unreachable
-  <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" title="{{ host.error }}"></i>
-  — its modules aren't shown below, so the module-ownership column may be incomplete.
-</div>
-{% endfor %}
 
 <div id="xmpp-users-disabled" class="alert alert-warning d-none">
   ejabberd integration is disabled (<code>EJABBERD_ENABLED = False</code>) — nothing to show.
 </div>
 <div id="xmpp-users-error" class="alert alert-danger d-none"></div>
 
-<p class="text-muted small">
-  Every registered ejabberd account, cross-referenced against every module's own
-  <code>comm.user</code> across the fleet (this installation plus any hub hosts) — including
-  accounts no module claims at all (e.g. a human admin account). Register/reset-password/ban/
-  unregister actions live on each identity's owning module page, linked below, not here.
-</p>
+{% for host in unreachable_hosts %}
+<div class="alert alert-warning py-2" title="{{ host.error }}">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  Host <strong>{{ host.name }}</strong> unreachable
+  <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" title="{{ host.error }}"></i>
+  — its modules aren't shown below, so the module-ownership info may be incomplete.
+</div>
+{% endfor %}
 
-<div class="table-responsive border rounded">
-<table class="table table-sm table-hover align-middle mb-0" id="xmpp-users-table">
-  <thead>
-    <tr>
-      <th>User</th>
-      <th>Status</th>
-      <th>Modules</th>
-      <th>Last seen</th>
-    </tr>
-  </thead>
-  <tbody id="xmpp-users-tbody">
-    <tr><td colspan="4" class="text-muted small">Loading…</td></tr>
-  </tbody>
-</table>
+<!-- Manual registration for a module outside this fleet -- always visible, above the list so
+     the list loading/resizing underneath never shifts this section around. -->
+<div class="border rounded p-3 bg-body-tertiary mb-3" style="max-width: 900px">
+  <h6>Register account for a module outside this fleet</h6>
+  <div class="row g-2">
+    <div class="col-12 col-sm-5">
+      <input type="text" id="xmpp-manual-register-user" class="form-control" placeholder="Username" autocomplete="off">
+    </div>
+    <div class="col-12 col-sm-5">
+      <input type="text" id="xmpp-manual-register-password" class="form-control" placeholder="Password" autocomplete="off">
+    </div>
+    <div class="col-12 col-sm-2">
+      <button type="button" id="xmpp-manual-register-btn" class="btn btn-success w-100" onclick="submitManualRegister()">Register</button>
+    </div>
+  </div>
+  <div id="xmpp-manual-register-error" class="alert alert-danger d-none small mt-2 mb-0"></div>
+</div>
+
+<div id="xmpp-users-list" style="max-width: 900px">
+  <div class="d-flex align-items-center gap-2 text-muted">
+    <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
+    <span>Loading users…</span>
+  </div>
 </div>
 
 {{ modules_by_user|json_script:"modules-by-user-data" }}
@@ -55,10 +60,12 @@ function escapeHtml(s) {
 
 const MODULES_BY_USER = JSON.parse(document.getElementById('modules-by-user-data').textContent);
 
-function renderModulesCell(user) {
+// ── Row rendering ────────────────────────────────────────────────────────────
+
+function renderModulesLine(user, isRegistered) {
   const mods = MODULES_BY_USER[user];
-  if (!mods || !mods.length) return '<span class="text-muted small">—</span>';
-  return mods.map(m => {
+  if (!mods || !mods.length) return '<span class="text-muted small">no owning module</span>';
+  return mods.map((m, i) => {
     const label = escapeHtml(m.host === 'localhost' ? m.name : `${m.name} (${escapeHtml(m.host)})`);
     // A shared identity's live session (if any) belongs to whichever of these modules is
     // actually running -- the same ambiguity EJABBERD_INTEGRATION.md's "third bug" already
@@ -66,34 +73,127 @@ function renderModulesCell(user) {
     // module list (.status-dot in base.html), so "running" reads the same way everywhere.
     const dot = `<span class="status-dot ${escapeHtml(m.status)}" style="margin-right:4px" title="${escapeHtml(m.status)}"></span>`;
     const linkClass = m.status === 'running' ? 'text-decoration-none fw-semibold' : 'text-decoration-none text-muted';
-    return `<a href="${m.url}" class="${linkClass}">${dot}${label}</a>`;
-  }).join(', ');
+    const link = `<a href="${m.url}" class="${linkClass}">${dot}${label}</a>`;
+    if (isRegistered) return `<span class="d-inline-block me-2">${link}</span>`;
+    // Register is deliberately per-module, not row-level: it uses *that* module's own
+    // comm.password:, and two modules sharing an identity could have configured different
+    // passwords before either was ever registered -- there's no single "the" password to
+    // pick without asking which module's config should win.
+    const btn = `<button type="button" class="btn btn-sm btn-outline-success py-1 px-2 ms-2" data-action="register" data-user="${escapeHtml(user)}" data-module-index="${i}">register</button>`;
+    return `<span class="d-inline-flex align-items-center me-2 mb-1">${link}${btn}</span>`;
+  }).join('');
 }
 
-function renderStatusCell(entry) {
-  if (!entry) {
-    return '<span class="badge bg-secondary-subtle text-secondary-emphasis">not registered</span>';
-  }
+function renderStatusBadge(entry) {
+  if (!entry) return '<span class="badge bg-secondary-subtle text-secondary-emphasis">not registered</span>';
   if (entry.ban_details) {
     const reason = entry.ban_details.reason ? ` (${escapeHtml(entry.ban_details.reason)})` : '';
     return `<span class="badge bg-danger">banned${reason}</span>`;
   }
-  if (entry.connected) {
-    const s = entry.session;
-    return `<span class="badge bg-success">connected</span>
-      <span class="text-secondary small ms-1">${escapeHtml(s.ip)} · ${escapeHtml(s.connection)}</span>`;
-  }
+  if (entry.connected) return '<span class="badge bg-success">connected</span>';
   return '<span class="badge bg-warning-subtle text-warning-emphasis">not connected</span>';
 }
 
-function renderLastSeenCell(entry) {
+function renderLastSeenLine(entry) {
   if (!entry || entry.connected || !entry.last) return '';
-  if (entry.last.status === 'NOT FOUND') return '<span class="text-muted small">never</span>';
-  return `<span class="text-secondary small">${escapeHtml(entry.last.timestamp)} (${escapeHtml(entry.last.status)})</span>`;
+  if (entry.last.status === 'NOT FOUND') return '<span class="text-muted small">never seen</span>';
+  return `<span class="text-secondary small">last seen ${escapeHtml(entry.last.timestamp)} (${escapeHtml(entry.last.status)})</span>`;
 }
 
+function renderRowActionButtons(user, entry) {
+  // Plain btn (not btn-sm) -- these only appear inside an already-expanded row, where
+  // there's room to spare, so there's no reason to make them small/fiddly on a touchscreen.
+  const btn = (action, label, cls) =>
+    `<button type="button" class="btn ${cls}" data-action="${action}" data-user="${escapeHtml(user)}">${label}</button>`;
+  if (!entry) return '';  // not registered -- nothing row-level to do, register lives per-module above
+  if (entry.ban_details) return btn('unban', 'Unban', 'btn-outline-secondary');
+  const hasModule = (MODULES_BY_USER[user] || []).length > 0;
+  let html = '';
+  // Kick doesn't touch the account (still registered, same password) -- just terminates the
+  // live session, so it only makes sense while one actually exists.
+  if (entry.connected) html += btn('kick', 'Kick', 'btn-outline-secondary') + ' ';
+  if (hasModule) html += btn('change-password', 'Reset password', 'btn-outline-warning') + ' ';
+  html += btn('ban', 'Ban', 'btn-outline-danger') + ' ';
+  html += btn('unregister', 'Unregister', 'btn-outline-danger');
+  return html;
+}
+
+function renderUserRow(user, entry) {
+  const session = entry && entry.connected ? entry.session : null;
+  const sessionInfo = session
+    ? `<span class="text-secondary small">${escapeHtml(session.ip)} · ${escapeHtml(session.connection)}</span>`
+    : '';
+  // Collapsed by default: just name + status, so the list stays scannable and doesn't show
+  // a wall of buttons for every row at once. Clicking the header expands modules/last-seen/
+  // actions into the region below -- any number of rows can be open at once (see
+  // expandedUsers), each with room for its own buttons instead of competing with every
+  // other row's buttons on one line.
+  return `
+    <div class="border rounded mb-2 xmpp-user-row" data-user="${escapeHtml(user)}">
+      <div class="d-flex align-items-center gap-2 p-2 xmpp-row-header" style="cursor:pointer">
+        <i class="bi bi-chevron-right xmpp-row-chevron text-muted small"></i>
+        <span class="font-monospace fw-semibold">${escapeHtml(user)}</span>
+        ${renderStatusBadge(entry)}
+      </div>
+      <div class="xmpp-row-details d-none border-top p-2">
+        <div>${sessionInfo}</div>
+        <div class="mt-1">${renderModulesLine(user, !!entry)}</div>
+        <div>${renderLastSeenLine(entry)}</div>
+        <div class="d-flex flex-wrap gap-2 mt-2">${renderRowActionButtons(user, entry)}</div>
+        <div class="xmpp-inline-confirm d-none mt-2 p-2 bg-body-tertiary rounded border"></div>
+      </div>
+    </div>
+  `;
+}
+
+function setRowExpanded(row, expanded) {
+  row.querySelector('.xmpp-row-details').classList.toggle('d-none', !expanded);
+  row.querySelector('.xmpp-row-chevron').className =
+    `bi ${expanded ? 'bi-chevron-down' : 'bi-chevron-right'} xmpp-row-chevron text-muted small`;
+}
+
+function toggleRowExpand(row) {
+  const user = row.dataset.user;
+  const expand = !expandedUsers.has(user);  // independent per row -- more than one can be open
+  setRowExpanded(row, expand);
+  if (expand) expandedUsers.add(user);
+  else expandedUsers.delete(user);
+  updateExpandAllButton();
+}
+
+function updateExpandAllButton() {
+  const rows = document.querySelectorAll('.xmpp-user-row');
+  const allExpanded = rows.length > 0 && [...rows].every(r => expandedUsers.has(r.dataset.user));
+  document.getElementById('xmpp-expand-all-btn').innerHTML = allExpanded
+    ? '<i class="bi bi-arrows-collapse me-1"></i>Collapse all'
+    : '<i class="bi bi-arrows-expand me-1"></i>Expand all';
+}
+
+function toggleExpandAll() {
+  const rows = document.querySelectorAll('.xmpp-user-row');
+  const allExpanded = rows.length > 0 && [...rows].every(r => expandedUsers.has(r.dataset.user));
+  rows.forEach(row => {
+    setRowExpanded(row, !allExpanded);
+    if (allExpanded) expandedUsers.delete(row.dataset.user);
+    else expandedUsers.add(row.dataset.user);
+  });
+  updateExpandAllButton();
+}
+
+// ── Fetch + render ───────────────────────────────────────────────────────────
+
+let openConfirmUser = null;      // set while an inline confirm is open -- skips the auto-refresh
+                                 // below it so a periodic poll can't wipe out mid-confirmation state
+let expandedUsers = new Set();  // usernames whose details are open -- more than one at a time is
+                                // fine; re-applied after each refresh, since re-rendering the
+                                // list would otherwise silently re-collapse everything
+let latestByUser = {};         // last-fetched per-user state, so an action handler (e.g. kick,
+                               // which needs the current session's resource) can look up live
+                               // data without threading it through every button's data-* attrs
+
 async function refreshXmppUsers() {
-  const tbody = document.getElementById('xmpp-users-tbody');
+  if (openConfirmUser) return;
+  const listEl = document.getElementById('xmpp-users-list');
   const disabledEl = document.getElementById('xmpp-users-disabled');
   const errorEl = document.getElementById('xmpp-users-error');
   try {
@@ -101,7 +201,7 @@ async function refreshXmppUsers() {
     const data = await resp.json();
     if (!data.enabled) {
       disabledEl.classList.remove('d-none');
-      tbody.innerHTML = '';
+      listEl.innerHTML = '';
       return;
     }
     if (data.error) {
@@ -113,28 +213,229 @@ async function refreshXmppUsers() {
 
     const byUser = {};
     data.users.forEach(u => { byUser[u.user] = u; });
-    // Union of registered accounts and every module's own comm.user, sorted -- a module
-    // whose account isn't registered yet must still show up (linkable, actionable), and a
+    latestByUser = byUser;
+    // Union of registered accounts and every module's own comm.user -- a module whose
+    // account isn't registered yet must still show up (linkable, actionable), and a
     // registered account no module claims must still show up too.
     const allUsers = new Set([...Object.keys(byUser), ...Object.keys(MODULES_BY_USER)]);
     const sorted = [...allUsers].sort();
 
     if (!sorted.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-muted small">No accounts or comm.user identities found.</td></tr>';
+      listEl.innerHTML = '<p class="text-muted small">No accounts or comm.user identities found.</p>';
       return;
     }
-
-    tbody.innerHTML = sorted.map(user => `
-      <tr>
-        <td class="font-monospace small">${escapeHtml(user)}</td>
-        <td>${renderStatusCell(byUser[user])}</td>
-        <td>${renderModulesCell(user)}</td>
-        <td>${renderLastSeenCell(byUser[user])}</td>
-      </tr>
-    `).join('');
+    listEl.innerHTML = sorted.map(user => renderUserRow(user, byUser[user])).join('');
+    for (const user of [...expandedUsers]) {
+      const row = document.querySelector(`.xmpp-user-row[data-user="${CSS.escape(user)}"]`);
+      if (row) setRowExpanded(row, true);
+      else expandedUsers.delete(user);  // vanished (e.g. unregistered, no module left)
+    }
+    updateExpandAllButton();
   } catch (e) {
     errorEl.textContent = `Request failed: ${e}`;
     errorEl.classList.remove('d-none');
+  }
+}
+
+// ── Inline confirm (replaces a modal -- expands within the row itself) ──────────
+//
+// Same tiered shape as before: simple confirm for register/change-password/ban/unban,
+// retype-the-username for unregister (the one irreversible action). register/change-password
+// are module-scoped under the hood (they need a module's comm.password: to read from or
+// write into) -- ban/unban/unregister are bare-username-scoped, since some accounts here
+// have no owning module at all.
+
+const XMPP_USER_ACTIONS = {
+  register: {
+    label: 'Register', btnClass: 'btn-outline-success',
+    body: (user, mod) => `Register "${user}" using "${mod.name}"'s configured password?`,
+  },
+  'change-password': {
+    label: 'Reset password', btnClass: 'btn-outline-warning',
+    body: user => {
+      const names = (MODULES_BY_USER[user] || []).map(m => m.name).join(', ') || '(no module)';
+      return `Generate a new random password for "${user}" and write it into every module sharing this identity: ${names}?`;
+    },
+  },
+  ban: {
+    label: 'Ban', btnClass: 'btn-outline-danger',
+    body: user => `Ban "${user}"? This is reversible via Unban.`,
+  },
+  unban: {
+    label: 'Unban', btnClass: 'btn-outline-secondary',
+    body: user => `Unban "${user}", restoring its original password?`,
+  },
+  unregister: {
+    label: 'Unregister', btnClass: 'btn-outline-danger',
+    body: user => `Permanently delete "${user}"'s account -- auth, roster, and vcard data. This cannot be undone.`,
+    retype: true,
+  },
+  kick: {
+    label: 'Kick', btnClass: 'btn-outline-secondary',
+    body: user => `Disconnect "${user}"'s active session? The account itself is untouched -- it can reconnect immediately.`,
+  },
+};
+
+function closeInlineConfirm() {
+  if (!openConfirmUser) return;
+  const row = document.querySelector(`.xmpp-user-row[data-user="${CSS.escape(openConfirmUser)}"]`);
+  if (row) {
+    const box = row.querySelector('.xmpp-inline-confirm');
+    box.classList.add('d-none');
+    box.innerHTML = '';
+  }
+  openConfirmUser = null;
+}
+
+function openInlineConfirm(action, user, moduleIndex) {
+  const cfg = XMPP_USER_ACTIONS[action];
+  const mods = MODULES_BY_USER[user] || [];
+  const mod = moduleIndex !== null ? mods[moduleIndex] : (mods[0] || null);
+  const row = document.querySelector(`.xmpp-user-row[data-user="${CSS.escape(user)}"]`);
+  if (!row) return;
+
+  closeInlineConfirm();
+  openConfirmUser = user;
+
+  const sharedWarning = (action === 'ban' || action === 'unregister') && mods.length > 1
+    ? `<div class="alert alert-warning small py-1 px-2 mb-2">This account is also used by: ${mods.map(m => escapeHtml(m.name)).join(', ')}.</div>`
+    : '';
+  const retypeInput = cfg.retype
+    ? `<div class="mb-2">
+         <label class="form-label small mb-1">Type <code>${escapeHtml(user)}</code> to confirm:</label>
+         <input type="text" class="form-control form-control-sm" id="xmpp-inline-retype">
+       </div>`
+    : '';
+
+  const box = row.querySelector('.xmpp-inline-confirm');
+  box.innerHTML = `
+    <p class="small mb-2">${escapeHtml(cfg.body(user, mod))}</p>
+    ${sharedWarning}
+    ${retypeInput}
+    <div class="xmpp-inline-error alert alert-danger small py-1 px-2 d-none mb-2"></div>
+    <div class="d-flex flex-wrap gap-2">
+      <button type="button" class="btn ${cfg.btnClass.replace('btn-outline-', 'btn-')}" id="xmpp-inline-confirm-btn">${cfg.label}</button>
+      <button type="button" class="btn btn-secondary" id="xmpp-inline-cancel-btn">Cancel</button>
+    </div>
+  `;
+  box.classList.remove('d-none');
+
+  box.querySelector('#xmpp-inline-cancel-btn').addEventListener('click', closeInlineConfirm);
+  box.querySelector('#xmpp-inline-confirm-btn').addEventListener('click', () => submitInlineConfirm(action, user, mod, box));
+
+  box.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function submitInlineConfirm(action, user, mod, box) {
+  const cfg = XMPP_USER_ACTIONS[action];
+  const errEl = box.querySelector('.xmpp-inline-error');
+  errEl.classList.add('d-none');
+
+  if (cfg.retype) {
+    const typed = box.querySelector('#xmpp-inline-retype').value;
+    if (typed !== user) {
+      errEl.textContent = 'Typed name does not match -- not confirmed.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+  }
+
+  let url;
+  const body = {};
+  if (action === 'register' || action === 'change-password') {
+    if (!mod) {
+      errEl.textContent = 'No module available to source this action from.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    url = `/api/modules/${mod.name}/ejabberd/${action}/`;
+    if (mod.host !== 'localhost') body.host = mod.host;
+  } else if (action === 'kick') {
+    // kick_session (not kick_user) needs the specific resource so the module side gets a
+    // reason it can key off of -- see modules/ejabberd.py's kick_session docstring.
+    const resource = latestByUser[user] && latestByUser[user].session && latestByUser[user].session.resource;
+    if (!resource) {
+      errEl.textContent = 'No active session resource found -- may have disconnected already.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    url = `/api/xmpp-users/${user}/kick/`;
+    body.resource = resource;
+  } else {
+    url = `/api/xmpp-users/${user}/${action}/`;
+  }
+
+  const confirmBtn = box.querySelector('#xmpp-inline-confirm-btn');
+  confirmBtn.disabled = true;
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken(), 'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errEl.textContent = data.error || 'Action failed.';
+      errEl.classList.remove('d-none');
+      confirmBtn.disabled = false;
+      return;
+    }
+    closeInlineConfirm();
+    await refreshXmppUsers();
+  } catch (e) {
+    errEl.textContent = `Request failed: ${e}`;
+    errEl.classList.remove('d-none');
+    confirmBtn.disabled = false;
+  }
+}
+
+document.getElementById('xmpp-users-list').addEventListener('click', function (e) {
+  const btn = e.target.closest('[data-action]');
+  if (btn) {
+    const moduleIndex = btn.dataset.moduleIndex !== undefined ? parseInt(btn.dataset.moduleIndex, 10) : null;
+    openInlineConfirm(btn.dataset.action, btn.dataset.user, moduleIndex);
+    return;
+  }
+  const header = e.target.closest('.xmpp-row-header');
+  if (header) toggleRowExpand(header.closest('.xmpp-user-row'));
+});
+
+// ── Manual registration (a module entirely outside this fleet) ──────────────────
+
+async function submitManualRegister() {
+  const userInput = document.getElementById('xmpp-manual-register-user');
+  const passwordInput = document.getElementById('xmpp-manual-register-password');
+  const user = userInput.value.trim();
+  const password = passwordInput.value;
+  const errEl = document.getElementById('xmpp-manual-register-error');
+  errEl.classList.add('d-none');
+  if (!user || !password) {
+    errEl.textContent = 'Username and password are both required.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+  const btn = document.getElementById('xmpp-manual-register-btn');
+  btn.disabled = true;
+  try {
+    const resp = await fetch(`/api/xmpp-users/${encodeURIComponent(user)}/register/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken(), 'Content-Type': 'application/json'},
+      body: JSON.stringify({password}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errEl.textContent = data.error || 'Registration failed.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    userInput.value = '';
+    passwordInput.value = '';
+    await refreshXmppUsers();
+  } catch (e) {
+    errEl.textContent = `Request failed: ${e}`;
+    errEl.classList.remove('d-none');
+  } finally {
+    btn.disabled = false;
   }
 }
 

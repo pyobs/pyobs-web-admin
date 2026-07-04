@@ -47,10 +47,26 @@ is fine, that's what the Design section of the eventual doc is for.
   change; config write-back handles a `comm.user` shared across modules (confirmed against a
   copy of this box's real config). Hub-mode delegation is code-complete but not yet driven
   against a real two-instance pair the way the read path was. Only `README.md` is left.
-  Also shipped a fleet-wide, read-only **Users page** (`/xmpp-users/`) on top of this --
-  every registered account across all hub hosts, cross-referenced against every module's
+  Also shipped a fleet-wide **Users page** (`/xmpp-users/`) on top of this -- every
+  registered account across all hub hosts, cross-referenced against every module's
   `comm.user`, with a running-status dot disambiguating which module owns a shared identity's
-  live session. Deliberately no write actions there yet, see Ideas below.
+  live session, plus write-action buttons: register is per-module (uses that module's own
+  `comm.password:` -- two modules sharing an identity can have different passwords before
+  either is registered, verified live), reset-password/ban/unregister are row-level and
+  bare-username-scoped (no owning module required, so accounts like `admin` are actionable
+  too) via new endpoints separate from the module-scoped ones. Also a standalone manual
+  "register account" form (username + password typed directly, no config to source from) for
+  a module running entirely outside this fleet. Plus a **Kick** action --
+  `ejabberd.kick_session` (not `kick_user`, which takes no reason at all) with a fixed,
+  greppable reason (`"Kicked via pyobs-web-admin"`), so the module side can distinguish an
+  intentional admin kick from any other disconnect. Verified live against a real running
+  `camera` module, twice, including confirming a second Claude session's pyobs-core change
+  that (a) shuts the module down instead of reconnecting when the XMPP stream error is
+  `conflict` specifically (a genuine identity takeover, distinct from e.g. `system-shutdown`,
+  which should still retry), and (b) now logs the actual kick reason text instead of a
+  hardcoded message. UI: no modals anywhere on the page (inline expand-in-place confirms and
+  an always-visible register form instead, for mobile-friendliness), collapsed accordion-style
+  rows (any number open at once, plus an Expand-all toggle) rather than a wide table.
 
 ## Ideas (not yet designed)
 
@@ -65,17 +81,6 @@ is fine, that's what the Design section of the eventual doc is for.
   converting the existing page. Note this would be a third nav pattern in this app (today:
   "always per-host" like module pages, or "always fleet-wide" like ACL Matrix -- this adds
   "both, separately").
-- Write actions directly on the Users page (`/xmpp-users/`), not just links out to each
-  identity's module page: buttons for register, ban/unban, unregister, and change-password
-  right in the table. Needs its own design pass, not just wiring up the existing
-  `api_module_ejabberd_*` endpoints, because the Users page's whole premise is showing
-  accounts a module page can't: an identity with **no** owning module (e.g. `admin`) has
-  nowhere to route "register" to (that action reads the password from a module's own
-  `comm.password:` — there's no config to read it from), and an identity shared by **several**
-  modules needs either a module picker or a per-row action scoped to whichever module the
-  click came from. `EJABBERD_USER_MANAGEMENT.md`'s existing tiered confirmation (simple
-  dialog vs. retype-to-confirm for `unregister`) should carry over unchanged either way.
-
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
 - No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).
