@@ -26,9 +26,7 @@ is fine, that's what the Design section of the eventual doc is for.
 - [ACL_MATRIX.md](ACL_MATRIX.md) — fleet-wide ACL matrix page: view every module's `acl:`
   policy in one table, edit it via a structured form (matrix modal or a per-module tab),
   aggregated across hub hosts. **Core (view/edit/hub-aggregation) shipped.** Groups/profiles
-  (named, reusable caller-lists): storage layer and a standalone `/groups/` management page
-  (create/edit/delete) shipped — **not yet usable from the ACL editor**, since expanding a
-  group into a module's actual `allow`/`deny` entries is a separate, not-yet-started piece.
+  (named caller-list reuse) paused by deliberate choice, not started.
 - [EJABBERD_INTEGRATION.md](EJABBERD_INTEGRATION.md) — read-only visibility into ejabberd's
   own state (registered/connected users, per-module session info) on the dashboard and
   module pages, closing the "process running ≠ XMPP connected" and "config vs. reality" gaps.
