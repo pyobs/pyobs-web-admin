@@ -1,15 +1,17 @@
-# pyobs-web-admin: journald-backed module logging — v0.3 (2026-07-04)
+# pyobs-web-admin: journald-backed module logging — v0.4 (2026-07-04)
 
 ## Status
 
 Design only, nothing implemented yet. Promoted from the one-line `DEVELOPMENT.md` Ideas
 bullet after a design discussion; several key facts below were checked against real source
-(`pyobs-core`'s installed CLI/`application.py`, the `logging_journald` library) and one was
-verified live on this dev box by actually emitting journal records through the exact handler
-class `pyobs-core` builds and querying them back with `journalctl` — not just assumed from
-reading the code. See Design for what's confirmed vs. still open — settled decisions live
-there now, not in Open questions, which only holds what's genuinely still undecided: one item,
-cross-user journal read permissions.
+(`pyobs-core`'s installed CLI/`application.py`, the `logging_journald` library) and several
+were verified live on this dev box — including a genuine cross-user journal read (a separate
+`pyobs`-owned entry read back by a different account) that overturned this doc's original
+assumption that `systemd-journal` group membership would be required; see Design for what
+that test did and didn't settle. See Design for what's confirmed vs. still open — settled
+decisions live there now, not in Open questions, which only holds one remaining item: whether
+a truly group-less service account is ever actually denied (not yet tested, since this box's
+test account already had sufficient group membership incidentally).
 
 ## Motivation
 
@@ -183,16 +185,43 @@ comment); journald has its own retention (`SystemMaxUse=` etc. in `journald.conf
 `pyobs-web-admin` has never managed either, so switching backends doesn't hand this app a new
 responsibility, just a different external mechanism doing the same job it already didn't own.
 
+### Cross-user journal read permission — verified live, with one honest gap left
+
+Real cross-user test on this box, not same-session: a genuinely separate account (`pyobs`,
+uid 1001, this box's actual dedicated pyobs system user) emitted a journal record via
+`sudo -u pyobs`; a different account (`husser`, uid 1000 — the account that would run
+`pyobs-web-admin`) then read it straight back with plain `journalctl
+SYSLOG_IDENTIFIER=pyobs PYOBS_MODULE=camera_crossuser_test`, no error, no warning, `exit: 0`.
+This is a genuine cross-uid read, unlike the earlier same-session test.
+
+**The surprise: `husser` was not in `systemd-journal` at the time and it worked anyway** —
+contradicting this doc's original assumption that group membership would be required. Root
+cause, checked afterward: `husser`'s existing groups (`adm`, `dialout`, `cdrom`, `sudo`, `dip`,
+`plugdev`, `lpadmin`, `docker`, `ollama`, `sambashare`) include `adm`, which on
+Debian/Ubuntu-family systems is granted read access to `/var/log/journal` by a default
+`systemd-tmpfiles` ACL rule, not just `systemd-journal` group ownership. Adding `husser` to
+`systemd-journal` afterward (`usermod -aG` + `sg systemd-journal -c ...`) also succeeded, as
+expected, but was redundant given `adm` already worked.
+
+**What's still not verified: a truly group-less account.** `husser` is this box's original
+setup-time admin account — it already had `adm` (and `sudo`) before this test ever started, so
+this only shows "`adm` is sufficient," not "some grant is always necessary." A dedicated,
+minimal-privilege service account created specifically to run `pyobs-web-admin` (the realistic
+production case, not a workstation's admin user) would very likely start in *neither* `adm`
+nor `systemd-journal` — that negative case (does `journalctl` actually deny/empty-out for such
+an account, and does adding it to either group fix it) was never observed here, so the
+deploy-step recommendation (add the account to `adm` or `systemd-journal`) is still the right
+defensive guidance, just not proven necessary by this test the way it would be by an actual
+denial-then-fix pair — same honesty gap `EJABBERD_INTEGRATION.md`'s own cross-host ACL test
+flagged ("tested from the same machine... strong evidence, not absolute proof").
+
 ## Open questions
 
-- **Cross-user journal read permission — not yet verified.** The live test above ran as the
-  same user that both wrote and read the journal entries (a same-session ACL journald grants
-  automatically). A real deployment where `pyobs-web-admin` runs as one system account and
-  pyobs modules run as another (or as root, or under systemd proper) needs that account in
-  the `systemd-journal` group (or an explicit journald ACL) to read other users'/units'
-  entries — this needs testing against a genuine cross-user setup before shipping, and
-  documenting as a deploy step, mirroring `EJABBERD_INTEGRATION.md`'s `sudo -n ejabberdctl`
-  wrapper precedent for a structurally similar "extra local permission needed" gap.
+- **Whether a genuinely group-less service account is ever actually denied.** This box's test
+  account already had `adm`, which turned out sufficient — so the negative case (a fresh
+  account in neither `adm` nor `systemd-journal`) remains unobserved. Testing this precisely
+  needs a real minimal-privilege account, not a repurposed admin/dev account like the one
+  available on this box.
 
 ## Work Plan
 
@@ -208,8 +237,9 @@ responsibility, just a different external mechanism doing the same job it alread
   lesson `EJABBERD_INTEGRATION.md`'s Work Plan item 3 drew from its own trailing-tab bug.
 - [ ] `get_log_stats()`: journald branch via `--since "-24h" -o json --no-pager`, counting
   directly from each entry's `PRIORITY` field.
-- [ ] Verify cross-user journal read permissions for real (not just same-user as tested in
-  this doc's live check) and document whatever grant is required as a deploy step.
+- [ ] Test the group-less-account negative case for real (see Open questions) — a genuine
+  minimal-privilege service account, not a repurposed admin/dev account — then document
+  whatever grant is actually required (`adm` or `systemd-journal`) as a deploy step.
 - [ ] `README.md`: document `PYOBS_LOG_BACKEND` once the above is implemented and verified
   live end-to-end — not before, matching this repo's existing practice of not documenting a
   setting in README before it's actually consumed by code (see `EJABBERD_INTEGRATION.md`'s
