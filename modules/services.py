@@ -334,6 +334,58 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
 _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 
 
+def _get_all_logs_journald(names: list[str] | None, lines: int) -> list[str]:
+    # names is None means "no PYOBS_MODULE restriction at all" -- broader than "every
+    # currently configured module," since it also surfaces entries from a module whose
+    # config has since been removed/renamed. names == [] means the caller explicitly
+    # deselected every module, which must yield nothing, not fall back to unrestricted.
+    if names is not None and not names:
+        return []
+    args = ["SYSLOG_IDENTIFIER=pyobs"]
+    if names:
+        # Repeating a field name is journalctl's own OR syntax -- combined with the
+        # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
+        args += [f"PYOBS_MODULE={n}" for n in names]
+    args += ["-n", str(lines)]
+    entries = _journalctl_json(args)
+    return [_journal_entry_to_line(e) for e in entries]
+
+
+def _get_all_logs_file(names: list[str], lines: int) -> list[str]:
+    # Each module's own file has no cross-module time index, so the merge tails `lines`
+    # from every file independently, then sorts the union by each line's own leading
+    # timestamp and trims to the overall last `lines` -- an approximation (a module with
+    # much higher log volume could in principle push another's tail out of the merged
+    # window) rather than a true global tail, but matches this app's existing "good enough,
+    # not a from-scratch index" tolerance for the file backend (see get_log_stats's binary
+    # search comment).
+    entries: list[tuple[datetime, int, str]] = []
+    for order, name in enumerate(names):
+        log_file = _log_dir() / f"{_active_name(name)}.log"
+        if not log_file.exists():
+            continue
+        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            m = _TS_RE.match(line)
+            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") if m else datetime.min
+            entries.append((ts, order, line))
+    entries.sort(key=lambda e: (e[0], e[1]))
+    return [line for _, _, line in entries[-lines:]]
+
+
+def get_all_logs(names: list[str] | None = None, lines: int = 300, filter_str: str = "") -> list[str]:
+    if names is not None:
+        for name in names:
+            validate_name(name)
+    if _log_backend() == "journald":
+        log_lines = _get_all_logs_journald(names, lines)
+    else:
+        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines)
+    if filter_str:
+        log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
+    return log_lines
+
+
 def get_log_stats(name: str) -> dict:
     validate_name(name)
     if _log_backend() == "journald":

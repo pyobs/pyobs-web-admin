@@ -155,6 +155,22 @@ def _cross_host_url(host: str, url_name: str, arg: str) -> str:
     return f"{reverse('set_host', args=[host])}?next={target}"
 
 
+def all_logs(request):
+    host = _active_host(request)
+    if host:
+        try:
+            data = proxy.call(host, "GET", "/api/statuses/")
+            modules = [m["name"] for m in data.get("modules", [])]
+        except Exception:
+            modules = []
+    else:
+        modules = services.list_modules()
+    return render(request, "modules/all_logs.html", {
+        "modules": modules,
+        "active_all_logs": True,
+    })
+
+
 def acl_matrix(request):
     # Aggregates across every configured hub host (see ACL_MATRIX.md, "Hub mode
     # interaction") regardless of which host is currently "active" in the session --
@@ -313,6 +329,28 @@ def api_log_stats(request, name: str):
         return _proxy(host, "GET", f"/api/modules/{name}/log-stats/")
     _get_module_or_404(name)
     return JsonResponse({"stats": services.get_log_stats(name)})
+
+
+@require_GET
+def api_all_logs(request):
+    host = _active_host(request)
+    lines = int(request.GET.get("lines", 300))
+    # Query key present but empty ("modules=") means "explicitly none selected" -- distinct
+    # from the key being absent entirely, which means "no restriction" (see
+    # services.get_all_logs). request.GET.get returns None only in the latter case.
+    modules_param = request.GET.get("modules")
+    names = [m for m in modules_param.split(",") if m] if modules_param is not None else None
+    if host:
+        params = {"lines": lines}
+        if modules_param is not None:
+            params["modules"] = modules_param
+        return _proxy(host, "GET", "/api/logs/", params=params)
+    if names is not None:
+        for name in names:
+            _get_module_or_404(name)
+    filter_str = request.GET.get("filter", "")
+    log_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str)
+    return JsonResponse({"lines": log_lines})
 
 
 @require_GET

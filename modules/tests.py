@@ -917,3 +917,95 @@ class LogBackendJournaldTests(unittest.TestCase):
             mock_run.assert_called_once_with(
                 ["tail", "-n", "300", str(log_file)], capture_output=True, text=True
             )
+
+
+# ── get_all_logs ──────────────────────────────────────────────────────────────
+
+class GetAllLogsTests(unittest.TestCase):
+    _CAMERA_ENTRY = (
+        '{"SYSLOG_IDENTIFIER":"pyobs","PYOBS_MODULE":"camera","PRIORITY":"6",'
+        '"__REALTIME_TIMESTAMP":"1783144498000000","CODE_FILE":"camera.py","CODE_LINE":"1",'
+        '"MESSAGE":"camera camera.py:1 from camera"}'
+    )
+    _TELESCOPE_ENTRY = (
+        '{"SYSLOG_IDENTIFIER":"pyobs","PYOBS_MODULE":"telescope","PRIORITY":"6",'
+        '"__REALTIME_TIMESTAMP":"1783144499000000","CODE_FILE":"telescope.py","CODE_LINE":"2",'
+        '"MESSAGE":"telescope telescope.py:2 from telescope"}'
+    )
+
+    def _mock_result(self, stdout):
+        result = MagicMock()
+        result.stdout = stdout
+        return result
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_no_names_omits_module_filter(self, mock_run):
+        mock_run.return_value = self._mock_result(self._CAMERA_ENTRY + "\n" + self._TELESCOPE_ENTRY + "\n")
+        lines = services.get_all_logs(lines=300)
+        self.assertEqual(len(lines), 2)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_names_are_ored_via_repeated_field(self, mock_run):
+        mock_run.return_value = self._mock_result(self._CAMERA_ENTRY + "\n" + self._TELESCOPE_ENTRY + "\n")
+        services.get_all_logs(names=["camera", "telescope"], lines=50)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera", "PYOBS_MODULE=telescope",
+             "-n", "50", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_empty_names_list_means_none_selected_not_all(self, mock_run):
+        lines = services.get_all_logs(names=[], lines=300)
+        self.assertEqual(lines, [])
+        mock_run.assert_not_called()
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_empty_names_list_returns_nothing(self, mock_run):
+        lines = services.get_all_logs(names=[], lines=300)
+        self.assertEqual(lines, [])
+        mock_run.assert_not_called()
+
+    def test_file_backend_merges_and_sorts_across_modules_by_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n"
+                "2026-07-04 08:00:02 [INFO] (camera) x.py:2 world camera\n"
+            )
+            (Path(tmp) / "telescope.log").write_text(
+                "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(names=["camera", "telescope"], lines=300)
+            self.assertEqual(lines, [
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera",
+                "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope",
+                "2026-07-04 08:00:02 [INFO] (camera) x.py:2 world camera",
+            ])
+
+    def test_file_backend_no_names_defaults_to_list_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.yaml").write_text("class: pyobs.modules.Module\n")
+            (Path(tmp) / "camera.log").write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n")
+            with override_settings(PYOBS_CONFIG_DIR=tmp, PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(lines=300)
+            self.assertEqual(lines, ["2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera"])
+
+    def test_filter_str_applies_after_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n"
+            )
+            (Path(tmp) / "telescope.log").write_text(
+                "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(names=["camera", "telescope"], lines=300, filter_str="telescope")
+            self.assertEqual(lines, ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope"])

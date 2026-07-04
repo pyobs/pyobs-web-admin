@@ -8,8 +8,10 @@ urlpatterns = [
     path("modules/<str:name>/", views.module_detail, name="module_detail"),
     path("shared/<str:name>/", views.shared_detail, name="shared_detail"),
     path("acl/", views.acl_matrix, name="acl_matrix"),
+    path("logs/", views.all_logs, name="all_logs"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
+    path("api/logs/", views.api_all_logs, name="api_all_logs"),
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),
     path("api/modules/<str:name>/start/", views.api_start, name="api_start"),
     path("api/modules/<str:name>/stop/", views.api_stop, name="api_stop"),
