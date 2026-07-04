@@ -7,9 +7,8 @@ bullet after a design discussion; several key facts below were checked against r
 (`pyobs-core`'s installed CLI/`application.py`, the `logging_journald` library) and one was
 verified live on this dev box by actually emitting journal records through the exact handler
 class `pyobs-core` builds and querying them back with `journalctl` — not just assumed from
-reading the code. See Design for what's confirmed vs. still open. v0.2 resolves three of the
-five Open questions (no dual-read fallback, no per-module override, upstream bug filed as
-[pyobs/pyobs-core#641](https://github.com/pyobs/pyobs-core/issues/641)) — remaining open:
+reading the code. See Design for what's confirmed vs. still open — settled decisions live
+there now, not in Open questions, which only holds what's genuinely still undecided:
 cross-user journal read permissions, and the retention/rotation documentation callout.
 
 ## Motivation
@@ -63,8 +62,17 @@ PYOBS_LOG_BACKEND = "file"       # "file" (default) or "journald"
 One fleet-wide switch, grouped with the existing `PYOBS_LOG_DIR`/`PYOBS_LOG_LEVEL` settings —
 matches how those are already global, not per-module; this app has no existing mechanism for
 per-module settings (every per-module distinction today comes from that module's own YAML
-config, and log backend isn't part of the `acl:`/`comm:` surface). See Open questions for
-whether a per-module override is worth adding later.
+config, and log backend isn't part of the `acl:`/`comm:` surface). **Settled: global-only, no
+per-module override** — revisit only if a real fleet needs a migrate-one-module-at-a-time mix,
+same reasoning `ACL_MATRIX.md`'s Groups section uses for deferring its own similar questions.
+
+**Settled: switching backends is a clean cutover, not a migration.** A module's log history
+written under the old backend becomes invisible to `get_logs` once `PYOBS_LOG_BACKEND` flips —
+no dual-read, no "check both, merge" reader. Matches this app's existing "no silent fallback
+across backends" preference (see `EJABBERD_INTEGRATION.md`'s HTTP-vs-`ejabberdctl` design,
+which picks one path deterministically and never catches failures to fall back). An operator
+who wants old file logs preserved keeps the file itself around externally; this app makes no
+attempt to reconcile the two.
 
 ### `start_module()`: which CLI flags change
 
@@ -123,9 +131,10 @@ not from the dict's literal order:
 | `7` | `DEBUG` |
 
 (`2`, `1`, `5` never occur in practice — pyobs only ever logs at the five standard Python
-levels, and `CRITICAL` collapses to `0` as shown above.) This is arguably a `pyobs-core` bug
-independent of this feature — see Open questions — but this doc's mapping must match actual
-behavior, not the apparently-intended one.
+levels, and `CRITICAL` collapses to `0` as shown above.) **Settled: filed upstream** as
+[pyobs/pyobs-core#641](https://github.com/pyobs/pyobs-core/issues/641), independent of this
+feature — this doc's reverse-map above matches pyobs's actual behavior regardless of
+whether/when that gets fixed.
 
 Also confirmed live: the module name lands in **two** journal fields — `PYOBS_MODULE`
 (added explicitly by pyobs's own handler subclass) and `EXTRA_PYOBS_MODULE` (the same value,
@@ -177,24 +186,6 @@ which `pyobs`'s own CLI wrapper handles independently of the logging setup this 
   entries — this needs testing against a genuine cross-user setup before shipping, and
   documenting as a deploy step, mirroring `EJABBERD_INTEGRATION.md`'s `sudo -n ejabberdctl`
   wrapper precedent for a structurally similar "extra local permission needed" gap.
-- ~~No dual-read fallback across the switch~~ — **resolved: confirmed, no fallback.** A
-  module's log history written before flipping `PYOBS_LOG_BACKEND` becomes invisible to
-  `get_logs` afterward (the old flat file is simply never looked at again), and no "check
-  both, merge" reader is being built for this. Matches this app's existing "no silent
-  fallback across backends" preference (see `EJABBERD_INTEGRATION.md`'s HTTP-vs-`ejabberdctl`
-  design: picks one path deterministically, never catches failures and falls back). A
-  cutover, not a migration — an operator who wants old file logs preserved keeps the file
-  itself around externally; this app makes no attempt to reconcile the two.
-- ~~Per-module override~~ — **resolved: global-only, `PYOBS_LOG_BACKEND` stays a single
-  setting.** No mechanism for per-module state exists in this app today (every per-module
-  distinction comes from that module's own YAML, and log backend isn't part of that surface),
-  and there's no real fleet need driving a mix. Same reasoning `ACL_MATRIX.md`'s Groups
-  section uses for deferring its own similar questions — revisit only if an actual
-  migrate-one-module-at-a-time need shows up.
-- ~~Whether to file the `CRITICAL`/`FATAL` priority collision upstream~~ — **resolved: filed.**
-  [pyobs/pyobs-core#641](https://github.com/pyobs/pyobs-core/issues/641), independent of
-  whether this doc gets built — this doc's reverse-map already accounts for the bug's actual
-  behavior regardless of whether/when it's fixed upstream.
 - **Retention/rotation isn't controlled by this app either way**, but the knobs differ: file
   logs rely on external `logrotate` (the file handler is a `WatchedFileHandler`, chosen
   specifically for `logrotate` compatibility per its own code comment); journald has its own
