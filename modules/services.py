@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import signal
@@ -45,6 +46,18 @@ def _pyobs_exec() -> str:
 
 def _log_level() -> str:
     return getattr(settings, "PYOBS_LOG_LEVEL", "info")
+
+
+def _log_backend() -> str:
+    return getattr(settings, "PYOBS_LOG_BACKEND", "file")
+
+
+# journald PRIORITY -> pyobs log level. Not the naively-expected {2: CRITICAL, ...} --
+# logging.CRITICAL and logging.FATAL are the same int (50) in Python's logging module, so
+# logging_journald.JournaldLogHandler.LEVELS's dict literal silently collapses to
+# LEVELS[50] == 0, not 2. Verified live against a real emitted CRITICAL record -- see
+# JOURNALD_LOGS.md, Design, for the full trail. 2/1/5 never occur in practice.
+_JOURNALD_PRIORITY_TO_LEVEL = {0: "CRITICAL", 3: "ERROR", 4: "WARNING", 6: "INFO", 7: "DEBUG"}
 
 
 def validate_name(name: str) -> None:
@@ -132,26 +145,22 @@ def start_module(name: str) -> tuple[bool, str]:
         return False, f"Config file not found: {config_file}"
 
     pid_file = _pid_file(name)
-    log_file = _log_dir() / f"{_active_name(name)}.log"
 
     _run_dir().mkdir(parents=True, exist_ok=True)
-    _log_dir().mkdir(parents=True, exist_ok=True)
+
+    args = [_pyobs_exec(), "--pid-file", str(pid_file), "--log-level", _log_level()]
+    if _log_backend() == "journald":
+        args.append("--syslog")
+    else:
+        log_file = _log_dir() / f"{_active_name(name)}.log"
+        _log_dir().mkdir(parents=True, exist_ok=True)
+        args += ["--log-file", str(log_file)]
+    args.append(str(config_file))
 
     try:
         # pyobs daemonizes itself (python-daemon double-fork) when --pid-file is given.
         # The immediate child exits quickly; subprocess.run returns with code 0.
-        result = subprocess.run(
-            [
-                _pyobs_exec(),
-                "--pid-file", str(pid_file),
-                "--log-file", str(log_file),
-                "--log-level", _log_level(),
-                str(config_file),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
     except subprocess.TimeoutExpired:
         return False, "Timed out waiting for module to start"
     except FileNotFoundError:
@@ -256,13 +265,67 @@ def restart_module(name: str) -> tuple[bool, str]:
     return ok, start_msg
 
 
+# ── journald log backend ─────────────────────────────────────────────────────
+#
+# Matched on the exact `name` passed in here, not `_active_name(name)`: pyobs's own
+# PYOBS_MODULE field is Path(config).stem, and start_module() invokes pyobs against
+# `{name}.yaml` verbatim (leading underscore and all, for a deactivated module) -- unlike
+# the file backend's log filename, which is deliberately normalized via _active_name() so
+# toggling activation doesn't rename the log file. See JOURNALD_LOGS.md, Current state.
+
+def _journalctl_json(args: list[str]) -> list[dict]:
+    result = subprocess.run(["journalctl", *args, "-o", "json", "--no-pager"], capture_output=True, text=True)
+    entries = []
+    for raw in result.stdout.splitlines():
+        try:
+            entries.append(json.loads(raw))
+        except ValueError:
+            continue
+    return entries
+
+
+def _journal_entry_to_line(entry: dict) -> str:
+    ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000)
+    level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
+    module = entry.get("PYOBS_MODULE", "")
+    # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal
+    # formatter builds MESSAGE's "<module> <file>:<line> " prefix from %(filename)s (just the
+    # basename) -- basename() here so the two actually match. Caught live: without this, a
+    # real module's log lines doubled up the file:line info instead of stripping it.
+    code_file = os.path.basename(entry.get("CODE_FILE", "?"))
+    code_line = entry.get("CODE_LINE", "?")
+    message = entry.get("MESSAGE", "")
+    prefix = f"{module} {code_file}:{code_line} "
+    if message.startswith(prefix):
+        message = message[len(prefix):]
+    return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
+
+
+def _get_logs_journald(name: str, lines: int) -> list[str]:
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "-n", str(lines)])
+    return [_journal_entry_to_line(e) for e in entries]
+
+
+def _get_log_stats_journald(name: str) -> dict:
+    counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "--since", "-24h"])
+    for entry in entries:
+        level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
+        if level:
+            counts[level] += 1
+    return counts
+
+
 def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
     validate_name(name)
-    log_file = _log_dir() / f"{_active_name(name)}.log"
-    if not log_file.exists():
-        return []
-    result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
-    log_lines = result.stdout.splitlines()
+    if _log_backend() == "journald":
+        log_lines = _get_logs_journald(name, lines)
+    else:
+        log_file = _log_dir() / f"{_active_name(name)}.log"
+        if not log_file.exists():
+            return []
+        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
+        log_lines = result.stdout.splitlines()
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
     return log_lines
@@ -273,6 +336,9 @@ _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 
 def get_log_stats(name: str) -> dict:
     validate_name(name)
+    if _log_backend() == "journald":
+        return _get_log_stats_journald(name)
+
     counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
     log_file = _log_dir() / f"{_active_name(name)}.log"
     if not log_file.exists():

@@ -70,6 +70,12 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"
 PYOBS_LOG_LEVEL = "info"
 
+# Where module logs live -- see JOURNALD_LOGS.md. "file" (default): pyobs writes to
+# PYOBS_LOG_DIR, read back with tail. "journald": pyobs is started with --syslog instead of
+# --log-file, read back with journalctl. Fleet-wide switch, not per-module -- see that doc's
+# Design section for why.
+PYOBS_LOG_BACKEND = "file"
+
 # ejabberd integration -- see EJABBERD_INTEGRATION.md. Off by default: not every fleet has
 # ejabberd co-located. EJABBERD_HOST names whichever host in HUB_HOSTS (or "localhost")
 # actually runs it -- every other host proxies through to that one rather than talking to

@@ -1,17 +1,52 @@
-# pyobs-web-admin: journald-backed module logging — v0.4 (2026-07-04)
+# pyobs-web-admin: journald-backed module logging — v1.0 (2026-07-04)
 
 ## Status
 
-Design only, nothing implemented yet. Promoted from the one-line `DEVELOPMENT.md` Ideas
-bullet after a design discussion; several key facts below were checked against real source
-(`pyobs-core`'s installed CLI/`application.py`, the `logging_journald` library) and several
-were verified live on this dev box — including a genuine cross-user journal read (a separate
-`pyobs`-owned entry read back by a different account) that overturned this doc's original
-assumption that `systemd-journal` group membership would be required; see Design for what
-that test did and didn't settle. See Design for what's confirmed vs. still open — settled
-decisions live there now, not in Open questions, which only holds one remaining item: whether
-a truly group-less service account is ever actually denied (not yet tested, since this box's
-test account already had sufficient group membership incidentally).
+**Implemented and verified live end-to-end** (Work Plan items 1–4; see Progress log). Only
+one item is still open: whether a genuinely group-less service account is ever actually
+denied journal read access (see Open questions) — this doesn't block using the feature, since
+the settled `PYOBS_LOG_BACKEND` default (`"file"`) is unaffected either way.
+
+## Progress log
+
+- **Done.** `PYOBS_LOG_BACKEND` setting added to `pyobs_web_admin/settings.py`
+  (`"file"` default / `"journald"`). `start_module()` branches on it — `--syslog` instead of
+  `--log-file` for `"journald"`, nothing else changes. `get_logs()`/`get_log_stats()` gained
+  journald branches (`modules/services.py`: `_journalctl_json`, `_journal_entry_to_line`,
+  `_get_logs_journald`, `_get_log_stats_journald`), reconstructing the exact file-backend line
+  shape so `_LOG_LEVEL_RE`/`_TS_RE`/`filter_str`/templates need zero changes. Unit tests
+  (`StartModuleLogBackendTests`, `LogBackendJournaldTests` in `modules/tests.py`) use real
+  `journalctl -o json` fixtures captured during this doc's own live verification, not invented
+  shapes — `python manage.py test modules`, 71/71 passing.
+- **A real bug, caught only by live testing, not by the fixtures above.** The first live
+  end-to-end run (a real `pyobs.modules.Module` instance, started via `--syslog`, read back
+  through `get_logs`) produced lines with the file:line info doubled — e.g. `... (testmod)
+  /home/.../pyobs/application.py:155 testmod application.py:155 Loading configuration...`.
+  Root cause: `logging_journald`'s `CODE_FILE` field is `record.pathname` (a full path), but
+  pyobs's own journal formatter builds `MESSAGE`'s `"<module> <file>:<line> "` prefix from
+  `%(filename)s` (just the basename) — so `_journal_entry_to_line`'s prefix-stripping,
+  originally built from `CODE_FILE` directly, never matched and left the prefix in place. The
+  unit test fixtures above didn't catch this because they were captured from an earlier
+  synthetic test that passed a bare `"camera.py"` as the record's filename (already equal to
+  its own basename) rather than a real call site's full path. Fixed by `os.path.basename()`-ing
+  `CODE_FILE` before building the prefix; added a regression test
+  (`test_get_logs_strips_prefix_when_code_file_is_a_full_path`) using a fixture with a real
+  full path, and re-verified live against the same real module afterward — lines now match
+  the file backend's shape exactly (confirmed byte-for-byte against a real `camera.py`-style
+  full-path entry).
+- **Verified live, full round trip:** a real `pyobs.modules.Module` instance (scratch
+  config/run/log dirs, not touching the real `PYOBS_CONFIG_DIR`) started via
+  `services.start_module` with `PYOBS_LOG_BACKEND = "journald"`, confirmed present in the
+  journal via plain `journalctl`, then read back correctly through `services.get_logs`
+  (matching file-backend line shape) and `services.get_log_stats` (correct per-level counts)
+  — then stopped cleanly via `services.stop_module`, confirming process management is
+  genuinely unaffected by the log backend, as the Design section's "What doesn't change"
+  claimed.
+- `README.md` updated: `PYOBS_LOG_BACKEND` added to the Configuration reference block, and
+  "How modules are managed" now documents the `--syslog` branch and journald log reads.
+- **Not done — the one item left in Open questions**: testing the genuinely group-less
+  service account negative case. Doesn't block shipping this, since it's a deploy-time
+  permissions question, not a code-correctness one.
 
 ## Motivation
 
@@ -225,22 +260,26 @@ flagged ("tested from the same machine... strong evidence, not absolute proof").
 
 ## Work Plan
 
-- [ ] Add `PYOBS_LOG_BACKEND` setting (`"file"` default / `"journald"`) to
+- [x] Add `PYOBS_LOG_BACKEND` setting (`"file"` default / `"journald"`) to
   `pyobs_web_admin/settings.py`, grouped with the existing `PYOBS_*` settings.
-- [ ] `start_module()`: branch on `PYOBS_LOG_BACKEND` — pass `--syslog` instead of
+- [x] `start_module()`: branch on `PYOBS_LOG_BACKEND` — pass `--syslog` instead of
   `--log-file` when `"journald"`; no other argument changes.
-- [ ] `get_logs()`: journald branch via `journalctl SYSLOG_IDENTIFIER=pyobs
+- [x] `get_logs()`: journald branch via `journalctl SYSLOG_IDENTIFIER=pyobs
   PYOBS_MODULE=<name> -n <lines> -o json --no-pager`, reconstructing lines into the existing
   text shape via the verified priority reverse-map above. Unit tests against **real captured
   `journalctl -o json` output**, not invented JSON shapes — this doc already found one real
   surprise (the `CRITICAL`→`0` collapse) that an invented fixture would have missed, the same
-  lesson `EJABBERD_INTEGRATION.md`'s Work Plan item 3 drew from its own trailing-tab bug.
-- [ ] `get_log_stats()`: journald branch via `--since "-24h" -o json --no-pager`, counting
+  lesson `EJABBERD_INTEGRATION.md`'s Work Plan item 3 drew from its own trailing-tab bug. →
+  `modules/services.py`, tests in `modules/tests.py`. Caught a second real bug along the way
+  (`CODE_FILE` full-path-vs-basename mismatch) that even the real fixtures missed — see
+  Progress log.
+- [x] `get_log_stats()`: journald branch via `--since "-24h" -o json --no-pager`, counting
   directly from each entry's `PRIORITY` field.
-- [ ] Test the group-less-account negative case for real (see Open questions) — a genuine
-  minimal-privilege service account, not a repurposed admin/dev account — then document
-  whatever grant is actually required (`adm` or `systemd-journal`) as a deploy step.
-- [ ] `README.md`: document `PYOBS_LOG_BACKEND` once the above is implemented and verified
+- [ ] **Deferred — deploy-time, not code.** Test the group-less-account negative case for
+  real (see Open questions) — a genuine minimal-privilege service account, not a repurposed
+  admin/dev account — then document whatever grant is actually required (`adm` or
+  `systemd-journal`) as a deploy step.
+- [x] `README.md`: document `PYOBS_LOG_BACKEND` once the above is implemented and verified
   live end-to-end — not before, matching this repo's existing practice of not documenting a
   setting in README before it's actually consumed by code (see `EJABBERD_INTEGRATION.md`'s
   Progress log, Work Plan item 2, for the same reasoning applied there).

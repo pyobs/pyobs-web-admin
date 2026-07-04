@@ -35,9 +35,9 @@ is fine, that's what the Design section of the eventual doc is for.
 - [JOURNALD_LOGS.md](JOURNALD_LOGS.md) — one switch (`PYOBS_LOG_BACKEND`) that both starts
   pyobs modules logging into the systemd journal (`pyobs --syslog`, already supported
   upstream) instead of a flat file, and reads them back from there for the existing log
-  viewer. **Design only, not started** — several facts already checked against real source
-  and one verified live (a `pyobs-core` priority-mapping quirk that silently mismarks
-  `CRITICAL` log lines), see that doc's Status.
+  viewer. **Implemented and verified live end-to-end.** Only one deploy-time question left
+  open (whether a genuinely group-less service account needs an explicit `journalctl`
+  permission grant), see that doc's Status.
 
 ## Ideas (not yet designed)
 

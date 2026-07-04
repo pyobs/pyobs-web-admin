@@ -166,6 +166,7 @@ PYOBS_CONFIG_DIR = "/opt/pyobs/config"      # directory containing *.yaml module
 PYOBS_LOG_DIR = "/opt/pyobs/log"            # directory containing *.log files
 PYOBS_RUN_DIR = "/opt/pyobs/run"            # directory for PID files
 PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
+PYOBS_LOG_BACKEND = "file"                  # "file" (default) or "journald" -- see JOURNALD_LOGS.md
 
 # Hub (optional — see Hub mode section)
 HUB_TOKEN = ""                              # token to accept from a hub instance
@@ -299,11 +300,12 @@ observatory control host — see `EJABBERD_INTEGRATION.md` if your threat model 
 
 - **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
 - **Activate / Deactivate** — deactivating a module renames its config from `name.yaml` to `_name.yaml` (stopping it first if running); activating renames it back. Deactivated modules are excluded from *Start All* and *Restart All*.
-- **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`.
+- **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`. If `PYOBS_LOG_BACKEND = "journald"`, `--syslog` is passed instead of `--log-file` — pyobs then logs directly to the systemd journal, tagged `SYSLOG_IDENTIFIER=pyobs` and `PYOBS_MODULE=<name>` (see [JOURNALD_LOGS.md](JOURNALD_LOGS.md)).
 - **Stop** — sends `SIGTERM` to the PID in the PID file; falls back to `SIGKILL` after 5 s.
 - **Restart** — stop followed by start.
 - **Status** — checks whether the process with the stored PID is alive (`os.kill(pid, 0)`).
 - **Resource usage** — uptime, CPU %, and RSS memory read via `psutil` on every status poll.
+- **Logs** — read from `PYOBS_LOG_DIR`'s flat files by default, or from the systemd journal via `journalctl` if `PYOBS_LOG_BACKEND = "journald"`; the log viewer and per-level counts work identically either way.
 - **Log counts** — per-level message counts (DEBUG / INFO / WARNING / ERROR / CRITICAL) for the last 24 h, using binary search on the log file to avoid reading the whole file.
 
 ---

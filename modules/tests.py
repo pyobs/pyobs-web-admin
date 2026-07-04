@@ -1,5 +1,7 @@
+import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -712,3 +714,206 @@ class EjabberdPathSelectionTests(unittest.TestCase):
     @override_settings(EJABBERD_API_URL="")
     def test_ctl_used_when_api_url_empty(self):
         self.assertFalse(ejabberd._use_http())
+
+
+# ── journald log backend (see JOURNALD_LOGS.md) ─────────────────────────────────
+
+class StartModuleLogBackendTests(unittest.TestCase):
+    """start_module()'s only journald-related job is choosing --syslog vs --log-file --
+    everything else (pid file, --log-level, config arg) is unchanged either way, per
+    JOURNALD_LOGS.md's Design, "What doesn't change"."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "config").mkdir()
+        (self.tmp_path / "run").mkdir()
+        (self.tmp_path / "log").mkdir()
+        (self.tmp_path / "config" / "camera.yaml").write_text("class: pyobs.modules.camera.BaseCamera\n")
+        self._settings = override_settings(
+            PYOBS_CONFIG_DIR=str(self.tmp_path / "config"),
+            PYOBS_RUN_DIR=str(self.tmp_path / "run"),
+            PYOBS_LOG_DIR=str(self.tmp_path / "log"),
+            PYOBS_EXEC="pyobs",
+            PYOBS_LOG_LEVEL="info",
+        )
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _run_side_effect(self, pid_file: Path, pid: int = 4242):
+        def _run(args, **kwargs):
+            pid_file.write_text(str(pid))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+        return _run
+
+    @override_settings(PYOBS_LOG_BACKEND="file")
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_passes_log_file_not_syslog(self, mock_run, _mock_alive):
+        pid_file = self.tmp_path / "run" / "camera.pid"
+        mock_run.side_effect = self._run_side_effect(pid_file)
+        ok, msg = services.start_module("camera")
+        self.assertTrue(ok)
+        args = mock_run.call_args[0][0]
+        self.assertIn("--log-file", args)
+        self.assertNotIn("--syslog", args)
+        self.assertEqual(args[-1], str(self.tmp_path / "config" / "camera.yaml"))
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.subprocess.run")
+    def test_journald_backend_passes_syslog_not_log_file(self, mock_run, _mock_alive):
+        pid_file = self.tmp_path / "run" / "camera.pid"
+        mock_run.side_effect = self._run_side_effect(pid_file)
+        ok, msg = services.start_module("camera")
+        self.assertTrue(ok)
+        args = mock_run.call_args[0][0]
+        self.assertIn("--syslog", args)
+        self.assertNotIn("--log-file", args)
+        self.assertEqual(args[-1], str(self.tmp_path / "config" / "camera.yaml"))
+        self.assertEqual(list((self.tmp_path / "log").glob("*.log")), [])
+
+
+class LogBackendJournaldTests(unittest.TestCase):
+    """Fixtures are real `journalctl -o json` lines, captured by instantiating the exact
+    handler class pyobs/application.py builds and emitting real records through it (see
+    JOURNALD_LOGS.md, Design) -- an invented JSON shape would have missed the real surprise
+    these caught: pyobs journals CRITICAL as PRIORITY 0, not the naively-expected 2."""
+
+    _DEBUG_ENTRY = (
+        '{"_GID":"1000","_BOOT_ID":"c64abca0faac4631899bda2bedcdc028","_RUNTIME_SCOPE":"system",'
+        '"_SYSTEMD_UNIT":"user@1000.service","MESSAGE_ID":"bfa904f2902437eb8e3a2d4fa47e0f39",'
+        '"RELATIVE_USEC":"360920240","_COMM":"python3","CODE_FILE":"camera.py","CODE":"camera.None:42",'
+        '"CODE_LINE":"42","_EXE":"/usr/bin/python3.14","__SEQNUM":"803506",'
+        '"_MACHINE_ID":"36f4b5eac84c44deae61f9b10c0b5dbd","PROCESS_NAME":"MainProcess",'
+        '"_SYSTEMD_USER_UNIT":"app-pycharm@bc5ad7f66bbe4bcb9767b927877e084f.service",'
+        '"_SYSTEMD_USER_SLICE":"app.slice","_CAP_EFFECTIVE":"0","SYSLOG_IDENTIFIER":"pyobs",'
+        '"_HOSTNAME":"husserLaptop","__REALTIME_TIMESTAMP":"1783144498389717",'
+        '"_CMDLINE":"/opt/pyobs/venv/bin/python3 -","_AUDIT_SESSION":"4","_SYSTEMD_SLICE":"user-1000.slice",'
+        '"_AUDIT_LOGINUID":"1000","_TRANSPORT":"journal","PID":"535522","_PID":"535522",'
+        '"MESSAGE":"camera_verify_test camera.py:42 debug line",'
+        '"__MONOTONIC_TIMESTAMP":"101244893036",'
+        '"_SYSTEMD_CGROUP":"/user.slice/user-1000.slice/user@1000.service/app.slice/app-pycharm@bc5ad7f66bbe4bcb9767b927877e084f.service",'
+        '"CREATED_USEC":"1783144498389476",'
+        '"__CURSOR":"s=ca9321337fb04d6f8365c542905d8539;i=c42b2;b=c64abca0faac4631899bda2bedcdc028;m=1792aa776c;t=655c2ae68e2d5;x=53f39c8c4dc5a4c8",'
+        '"THREAD_NAME":"MainThread","EXTRA_PYOBS_MODULE":"camera_verify_test",'
+        '"_SYSTEMD_INVOCATION_ID":"3ff770e2105a45a0885b7d8dcf16679c","SYSLOG_FACILITY":"23",'
+        '"_SYSTEMD_OWNER_UID":"1000","_SOURCE_REALTIME_TIMESTAMP":"1783144498389601",'
+        '"LOGGER_NAME":"journald_verify_test","MESSAGE_RAW":"debug line","THREAD_ID":"138519519175168",'
+        '"PRIORITY":"7","_UID":"1000","__SEQNUM_ID":"ca9321337fb04d6f8365c542905d8539",'
+        '"CODE_MODULE":"camera","PYOBS_MODULE":"camera_verify_test"}'
+    )
+
+    _CRITICAL_ENTRY = (
+        '{"_MACHINE_ID":"36f4b5eac84c44deae61f9b10c0b5dbd","PID":"535522","_AUDIT_SESSION":"4",'
+        '"_UID":"1000","_AUDIT_LOGINUID":"1000","CODE_LINE":"42","__MONOTONIC_TIMESTAMP":"101244894241",'
+        '"EXTRA_PYOBS_MODULE":"camera_verify_test","CREATED_USEC":"1783144498389720",'
+        '"SYSLOG_IDENTIFIER":"pyobs","MESSAGE_ID":"8bea426d6424387bab814e125313660d",'
+        '"__SEQNUM":"803510","PRIORITY":"0","__REALTIME_TIMESTAMP":"1783144498390922",'
+        '"__CURSOR":"s=ca9321337fb04d6f8365c542905d8539;i=c42b6;b=c64abca0faac4631899bda2bedcdc028;m=1792aa7c21;t=655c2ae68e78a;x=342c1a819294758",'
+        '"_HOSTNAME":"husserLaptop","_CAP_EFFECTIVE":"0","_SYSTEMD_OWNER_UID":"1000",'
+        '"MESSAGE_RAW":"critical line","THREAD_NAME":"MainThread","_SYSTEMD_SLICE":"user-1000.slice",'
+        '"_SYSTEMD_USER_SLICE":"app.slice","CODE_FILE":"camera.py",'
+        '"_SYSTEMD_INVOCATION_ID":"3ff770e2105a45a0885b7d8dcf16679c","_SYSTEMD_UNIT":"user@1000.service",'
+        '"_BOOT_ID":"c64abca0faac4631899bda2bedcdc028","_CMDLINE":"/opt/pyobs/venv/bin/python3 -",'
+        '"_PID":"535522","MESSAGE":"camera_verify_test camera.py:42 critical line",'
+        '"_RUNTIME_SCOPE":"system","_SOURCE_REALTIME_TIMESTAMP":"1783144498389742",'
+        '"THREAD_ID":"138519519175168","PROCESS_NAME":"MainProcess","CODE_MODULE":"camera",'
+        '"_TRANSPORT":"journal","LOGGER_NAME":"journald_verify_test","PYOBS_MODULE":"camera_verify_test",'
+        '"CODE":"camera.None:42","SYSLOG_FACILITY":"23","_COMM":"python3",'
+        '"_SYSTEMD_USER_UNIT":"app-pycharm@bc5ad7f66bbe4bcb9767b927877e084f.service",'
+        '"__SEQNUM_ID":"ca9321337fb04d6f8365c542905d8539","_GID":"1000"}'
+    )
+
+    def _mock_result(self, stdout):
+        result = MagicMock()
+        result.stdout = stdout
+        return result
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_reconstructs_file_shaped_lines_from_real_captured_json(self, mock_run):
+        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
+        lines = services.get_logs("camera_verify_test", lines=300)
+        # Derived the same way the code does (datetime.fromtimestamp is local-TZ-dependent,
+        # matching the file backend's own asctime-based lines) rather than a hardcoded wall
+        # clock string, which would be wrong under a different process TZ (e.g. Django's test
+        # runner forces TZ=UTC regardless of the machine's own timezone).
+        debug_ts = datetime.fromtimestamp(1783144498389717 / 1_000_000)
+        critical_ts = datetime.fromtimestamp(1783144498390922 / 1_000_000)
+        self.assertEqual(lines, [
+            f"{debug_ts:%Y-%m-%d %H:%M:%S} [DEBUG] (camera_verify_test) camera.py:42 debug line",
+            f"{critical_ts:%Y-%m-%d %H:%M:%S} [CRITICAL] (camera_verify_test) camera.py:42 critical line",
+        ])
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_filter_str_applies_after_reconstruction(self, mock_run):
+        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
+        lines = services.get_logs("camera_verify_test", filter_str="critical")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("critical line", lines[0])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_empty_journal_returns_empty_list(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        self.assertEqual(services.get_logs("nonexistent_module"), [])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_log_stats_counts_by_priority_not_by_reparsing_text(self, mock_run):
+        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
+        counts = services.get_log_stats("camera_verify_test")
+        self.assertEqual(counts, {"DEBUG": 1, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 1})
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--since", "-24h", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_strips_prefix_when_code_file_is_a_full_path(self, mock_run):
+        """Regression test for a real bug caught by live testing, not by the other fixtures
+        here: logging_journald's CODE_FILE is record.pathname (a full path), but pyobs's own
+        journal formatter builds MESSAGE's "<module> <file>:<line> " prefix from
+        %(filename)s (just the basename) -- the earlier fixtures above used a bare
+        "camera.py" for CODE_FILE, which accidentally already equaled its own basename and
+        so didn't exercise this mismatch. A real running module's CODE_FILE is a full path,
+        which caught the bug live: the prefix was never stripped, so lines came out with
+        the file:line info doubled."""
+        entry = json.loads(self._DEBUG_ENTRY)
+        entry["CODE_FILE"] = "/home/husser/code/pyobs/pyobs-core/pyobs/application.py"
+        entry["MESSAGE"] = "camera_verify_test application.py:42 debug line"
+        mock_run.return_value = self._mock_result(json.dumps(entry) + "\n")
+        lines = services.get_logs("camera_verify_test")
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].count("application.py:42"), 1)
+        self.assertTrue(lines[0].endswith("application.py:42 debug line"))
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_uses_tail_not_journalctl(self, mock_run):
+        """PYOBS_LOG_BACKEND="file" (the default) must keep routing to `tail`, not
+        `journalctl` -- confirms the new branch didn't disturb the existing path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "camera.log"
+            log_file.write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
+            mock_run.return_value = MagicMock(stdout="2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                services.get_logs("camera")
+            mock_run.assert_called_once_with(
+                ["tail", "-n", "300", str(log_file)], capture_output=True, text=True
+            )
