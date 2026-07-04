@@ -600,37 +600,13 @@ def api_create_module(request):
 
 
 def api_groups(request):
-    """GET lists every group; POST creates or overwrites one (name + callers).
-
-    GET honors an explicit ?host= query param when present -- needed by the ACL matrix's
-    per-row modal, which can open a row for any configured host regardless of which one is
-    "active" in the session (mirrors api_acl's POST trusting an explicit host field in its
-    body, for the same reason: the matrix aggregates every host on one page, so it can't
-    rely on "the" active host the way a single-host page can). Falls back to the session's
-    active host when the param is absent, matching every other module_detail-feeding
-    endpoint -- used by groups_page's own page load and module_detail's ACL tab, neither of
-    which needs the explicit-host escape hatch since they only ever show one host at a time.
-
-    POST always follows the session's active host -- the standalone Groups page (create/
-    edit/delete) has no multi-host-per-page case the way ACL saves do.
-    """
-    if request.method == "GET":
-        host_name = request.GET.get("host")
-        if host_name:
-            if host_name == "localhost":
-                host = None
-            else:
-                host = proxy.get_host_config(host_name)
-                if not host:
-                    return JsonResponse({"error": f"Unknown host: {host_name!r}"}, status=400)
-        else:
-            host = _active_host(request)
-        if host:
-            return _proxy(host, "GET", "/api/groups/")
-        return JsonResponse({"groups": services.list_groups()})
-
+    """GET lists every group; POST creates or overwrites one (name + callers). Follows the
+    session's active host like api_config -- see groups_page's docstring for why this isn't
+    fleet-wide aggregated like acl_matrix/xmpp_users."""
     host = _active_host(request)
     if host:
+        if request.method == "GET":
+            return _proxy(host, "GET", "/api/groups/")
         if request.method == "POST":
             try:
                 data = json.loads(request.body)
@@ -638,6 +614,8 @@ def api_groups(request):
                 return JsonResponse({"success": False, "error": str(e)}, status=400)
             return _proxy(host, "POST", "/api/groups/", json=data)
         return JsonResponse({"error": "Method not allowed"}, status=405)
+    if request.method == "GET":
+        return JsonResponse({"groups": services.list_groups()})
     if request.method == "POST":
         try:
             data = json.loads(request.body)
@@ -723,14 +701,12 @@ def api_acl(request, name: str):
     except json.JSONDecodeError as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
 
-    applied_groups = data.get("applied_groups") or []
-
     host_name = data.get("host") or "localhost"
     if host_name != "localhost":
         host = proxy.get_host_config(host_name)
         if not host:
             return JsonResponse({"success": False, "error": f"Unknown host: {host_name!r}"}, status=400)
-        return _proxy(host, "POST", f"/api/modules/{name}/acl/", json={"acl": data.get("acl"), "applied_groups": applied_groups})
+        return _proxy(host, "POST", f"/api/modules/{name}/acl/", json={"acl": data.get("acl")})
 
     _get_module_or_404(name)
     acl = data.get("acl")
@@ -749,20 +725,11 @@ def api_acl(request, name: str):
 
     try:
         services.save_local_acl(name, acl)
+        return JsonResponse({"success": True})
     except ValueError as e:
         return JsonResponse({"success": False, "error": str(e)}, status=409)
     except FileNotFoundError as e:
         return JsonResponse({"success": False, "error": str(e)}, status=404)
-
-    # Work Plan item 10 (ACL_MATRIX.md): record which group(s) were expanded into this save,
-    # for a future "re-apply" action -- purely informational bookkeeping, never blocks or
-    # affects the ACL save itself, which has already succeeded by this point.
-    for g in applied_groups:
-        group_name, callers = (g or {}).get("name"), (g or {}).get("callers")
-        if group_name and callers:
-            services.record_group_application(name, group_name, callers)
-
-    return JsonResponse({"success": True})
 
 
 # ── ejabberd hub-mode delegation ────────────────────────────────────────────────

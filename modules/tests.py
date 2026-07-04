@@ -790,61 +790,6 @@ class GroupsStorageTests(unittest.TestCase):
         self.assertEqual(leftover, [])
 
 
-# ── ACL group applications (Work Plan item 10) ───────────────────────────────────
-
-class GroupApplicationsTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_STORAGE_DIR=str(self.tmp_path / "storage"))
-        self._settings.enable()
-
-    def tearDown(self):
-        self._settings.disable()
-        self.tmp.cleanup()
-
-    def test_empty_when_never_recorded(self):
-        self.assertEqual(services.get_group_applications("telescope"), {})
-
-    def test_record_and_get(self):
-        services.record_group_application("telescope", "core-system", ["camera", "telescope"])
-        self.assertEqual(
-            services.get_group_applications("telescope"),
-            {"core-system": ["camera", "telescope"]},
-        )
-
-    def test_record_deduplicates_and_sorts_snapshot(self):
-        services.record_group_application("telescope", "core-system", ["b", "a", "a"])
-        self.assertEqual(services.get_group_applications("telescope"), {"core-system": ["a", "b"]})
-
-    def test_multiple_groups_on_same_module(self):
-        services.record_group_application("telescope", "core-system", ["camera"])
-        services.record_group_application("telescope", "admins", ["gui-admin"])
-        self.assertEqual(
-            services.get_group_applications("telescope"),
-            {"core-system": ["camera"], "admins": ["gui-admin"]},
-        )
-
-    def test_applications_isolated_per_module(self):
-        services.record_group_application("telescope", "core-system", ["camera"])
-        services.record_group_application("dome", "students", ["guest1"])
-        self.assertEqual(services.get_group_applications("telescope"), {"core-system": ["camera"]})
-        self.assertEqual(services.get_group_applications("dome"), {"students": ["guest1"]})
-
-    def test_re_recording_overwrites_snapshot(self):
-        services.record_group_application("telescope", "core-system", ["camera"])
-        services.record_group_application("telescope", "core-system", ["camera", "dome"])
-        self.assertEqual(
-            services.get_group_applications("telescope"),
-            {"core-system": ["camera", "dome"]},
-        )
-
-    def test_no_leftover_temp_file_after_record(self):
-        services.record_group_application("telescope", "core-system", ["camera"])
-        leftover = list((self.tmp_path / "storage").glob(".acl_group_applications-*"))
-        self.assertEqual(leftover, [])
-
-
 # ── ejabberd ──────────────────────────────────────────────────────────────────
 #
 # Fixtures below are the exact responses captured against a real, running ejabberd 24.12-4
