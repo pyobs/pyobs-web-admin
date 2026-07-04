@@ -50,8 +50,11 @@ is fine, that's what the Design section of the eventual doc is for.
 
 ## Ideas (not yet designed)
 
-*(none currently — the last one, XMPP user management, was promoted to
-[EJABBERD_USER_MANAGEMENT.md](EJABBERD_USER_MANAGEMENT.md) above)*
+- Make the Dashboard fleet-wide (aggregate modules across all hub hosts, like `ACL_MATRIX.md`
+  and the "All Logs" view do) instead of only showing whichever host is currently active. Sidebar
+  nav already treats Dashboard as a global entry (listed above the Hosts section), but the view
+  itself (`modules/views.py:dashboard`) still switches to the single active host — that mismatch
+  is the motivation.
 
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 

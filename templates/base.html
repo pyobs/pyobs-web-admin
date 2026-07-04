@@ -116,20 +116,6 @@
 
     <div class="p-2 flex-grow-1 overflow-auto">
 
-      {% if hub_hosts|length > 1 %}
-      <div class="px-2 pb-1">
-        <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Hosts</span>
-      </div>
-      {% for host in hub_hosts %}
-      <a href="{% url 'set_host' host.name %}"
-         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_host == host.name %}active{% endif %}">
-        <i class="bi bi-hdd-network" style="font-size:0.8rem;flex-shrink:0"></i>
-        {{ host.name }}
-        {% if active_host == host.name %}<i class="bi bi-check ms-auto" style="font-size:0.8rem"></i>{% endif %}
-      </a>
-      {% endfor %}
-      {% endif %}
-
       <div class="px-2 py-2">
         <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs %}active{% endif %}">
           <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
@@ -144,6 +130,20 @@
           ACL Matrix
         </a>
       </div>
+
+      {% if hub_hosts|length > 1 %}
+      <div class="px-2 pb-1">
+        <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Hosts</span>
+      </div>
+      {% for host in hub_hosts %}
+      <a href="{% url 'set_host' host.name %}"
+         class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_host == host.name %}active{% endif %}">
+        <i class="bi bi-hdd-network" style="font-size:0.8rem;flex-shrink:0"></i>
+        {{ host.name }}
+        {% if active_host == host.name %}<i class="bi bi-check ms-auto" style="font-size:0.8rem"></i>{% endif %}
+      </a>
+      {% endfor %}
+      {% endif %}
 
       <div class="px-2 pb-1">
         <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Modules</span>
