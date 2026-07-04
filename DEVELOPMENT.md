@@ -47,6 +47,10 @@ is fine, that's what the Design section of the eventual doc is for.
   change; config write-back handles a `comm.user` shared across modules (confirmed against a
   copy of this box's real config). Hub-mode delegation is code-complete but not yet driven
   against a real two-instance pair the way the read path was. Only `README.md` is left.
+  Also shipped a fleet-wide, read-only **Users page** (`/xmpp-users/`) on top of this --
+  every registered account across all hub hosts, cross-referenced against every module's
+  `comm.user`, with a running-status dot disambiguating which module owns a shared identity's
+  live session. Deliberately no write actions there yet, see Ideas below.
 
 ## Ideas (not yet designed)
 
@@ -61,12 +65,16 @@ is fine, that's what the Design section of the eventual doc is for.
   converting the existing page. Note this would be a third nav pattern in this app (today:
   "always per-host" like module pages, or "always fleet-wide" like ACL Matrix -- this adds
   "both, separately").
-- A separate "Users" page listing every XMPP account (registered/banned/connected, across all
-  modules — and possibly accounts with no matching `comm.user` at all, like `admin`) in one
-  table, parallel to `ACL_MATRIX.md`'s and "All Logs"'s fleet-wide pages. `EJABBERD_USER_MANAGEMENT.md`
-  deliberately scoped its write actions to one module's page at a time (Overview tab's XMPP
-  row) — this would be the fleet-wide view on top of that, the same relationship "All Logs"
-  has to the per-module Logs tab.
+- Write actions directly on the Users page (`/xmpp-users/`), not just links out to each
+  identity's module page: buttons for register, ban/unban, unregister, and change-password
+  right in the table. Needs its own design pass, not just wiring up the existing
+  `api_module_ejabberd_*` endpoints, because the Users page's whole premise is showing
+  accounts a module page can't: an identity with **no** owning module (e.g. `admin`) has
+  nowhere to route "register" to (that action reads the password from a module's own
+  `comm.password:` — there's no config to read it from), and an identity shared by **several**
+  modules needs either a module picker or a per-row action scoped to whichever module the
+  click came from. `EJABBERD_USER_MANAGEMENT.md`'s existing tiered confirmation (simple
+  dialog vs. retype-to-confirm for `unregister`) should carry over unchanged either way.
 
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
