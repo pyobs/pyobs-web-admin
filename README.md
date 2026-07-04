@@ -23,6 +23,7 @@ filter their logs, and view and edit their configuration files — all from a br
 - **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
 - **Hub mode** — control multiple remote pyobs hosts from a single browser tab; remote hosts are listed in the sidebar and all actions are proxied transparently
 - **ejabberd / XMPP status** (optional) — dashboard summary tile and per-module connected/not-connected indicator, plus a session/last-seen/registered-account block on each module's own page, for modules with a `comm.user` in their config — closes the gap between "the process is running" and "the module is actually reachable over XMPP" (see [ejabberd integration](#ejabberd-integration))
+- **ejabberd / XMPP user management** (optional, builds on the above) — register, reset password, ban/unban, unregister, and kick XMPP accounts, either from a module's own Overview tab or from a fleet-wide **Users** page (`/xmpp-users/`) listing every registered account across every host, cross-referenced against which module(s) use it and which one is actually running. Safe by design for an identity shared across more than one module's `comm.user` — a password reset writes back to every module sharing it, and destructive actions name which other modules are affected before you confirm (see [ejabberd user management](#ejabberd-user-management))
 - **Responsive** — works on mobile with a slide-in sidebar
 - **No pyobs-core dependency** — communicates with `pyobs` directly via subprocess; no Python imports from pyobs-core
 
@@ -177,7 +178,10 @@ EJABBERD_ENABLED = False                       # show XMPP status on the dashboa
 EJABBERD_HOST = "localhost"                     # which host runs ejabberd -- "localhost" or a HUB_HOSTS name
 EJABBERD_DOMAIN = ""                            # the XMPP vhost ejabberd serves
 EJABBERD_API_URL = "http://127.0.0.1:5281/api"  # mod_http_api base URL
-EJABBERDCTL = "ejabberdctl"                     # fallback if EJABBERD_API_URL can't be reached
+EJABBERDCTL = "ejabberdctl"                     # required for user management writes (register/
+                                                 # reset/ban/unregister/kick); also a read fallback
+                                                 # if EJABBERD_API_URL can't be reached -- see
+                                                 # ejabberd user management section below
 ```
 
 ---
@@ -296,6 +300,72 @@ observatory control host — see `EJABBERD_INTEGRATION.md` if your threat model 
 
 ---
 
+## ejabberd user management
+
+Builds on [ejabberd integration](#ejabberd-integration) above (requires `EJABBERD_ENABLED =
+True`) to add write actions on top of the read-only status it already shows: **register**,
+**reset password**, **ban** / **unban**, **unregister**, and **kick** (force-disconnect one
+session without touching the account) for any module's `comm.user`. Reversible actions get a
+single confirmation dialog; `unregister` — the one action with no undo — requires retyping the
+account's username first. An identity shared by more than one module's `comm.user` (a real,
+supported scenario — e.g. a test copy of a module reusing a real module's identity) is handled
+safely: a password reset writes the new password back into *every* module sharing it, not just
+the one the action was triggered from, and destructive actions (ban/unregister) name every
+other module affected before you can confirm.
+
+This surfaces in two places:
+
+- The module detail page's existing ejabberd block (Overview tab) — register when the account
+  isn't registered yet, reset/ban/unregister when it is.
+- A dedicated **Users** page (`/xmpp-users/`), linked from the sidebar whenever
+  `EJABBERD_ENABLED = True` — every registered XMPP account across every configured host, in
+  one fleet-wide, mobile-friendly list. Unlike the module page, this also covers accounts with
+  no owning module at all (e.g. `admin`) via a manual "register account" form, and accounts
+  shared by more than one module show a status dot marking which one is actually the connected
+  session.
+
+### Transport: `ejabberdctl`, not `mod_http_api`
+
+Unlike the read path above, writes always go through the `ejabberdctl` CLI, never
+`mod_http_api` — a write's cost is dominated by a human clicking a confirmation dialog, not
+command latency, so the ~50–60x speed advantage HTTP has for reads doesn't matter here. This
+also means **no `api_permissions` change is needed** for user management specifically — but see
+the security note below, since `ejabberdctl` itself is far more powerful than the read-only
+HTTP whitelist above.
+
+`ejabberdctl` normally refuses to run as anything other than `root` or the `ejabberd` system
+user (`"can only be run by root or the user ejabberd"`), which only matters here since writes
+always need it (the read path mostly avoids it via `mod_http_api`). If pyobs-web-admin runs as
+its own service user (e.g. `pyobs`, per `deploy/pyobs-web-admin.service`), give that user a
+narrowly-scoped passwordless sudo rule for just this one binary:
+
+```
+# /etc/sudoers.d/pyobs-web-admin-ejabberdctl
+pyobs ALL=(root) NOPASSWD: /usr/sbin/ejabberdctl
+```
+
+(adjust the username and binary path for your setup — check with `which ejabberdctl`), then
+point `EJABBERDCTL` in `local_settings.py` at the wrapper script committed at the repo root:
+
+```python
+EJABBERDCTL = "/opt/pyobs/pyobs-web-admin/ejabberdctl-sudo.sh"
+```
+
+`ejabberdctl-sudo.sh` is a two-line wrapper (`exec sudo -n ejabberdctl "$@"`) — the `-n` flag
+makes `sudo` fail fast instead of hanging on a password prompt if the sudoers rule above isn't
+in place. Not needed at all if pyobs-web-admin already runs as `root` or `ejabberd`.
+
+**Security note.** This is a materially bigger trust step than the read-only integration
+above: `ejabberdctl` can do anything an ejabberd administrator can do, not just the small
+read-only whitelist `mod_http_api`'s `api_permissions` enforces. There is no OS-level or
+ejabberd-level restriction narrowing what the sudo rule allows beyond "run `ejabberdctl` as
+root at all" — this app's own tiered confirmation dialogs are the only safety net between a
+logged-in admin and any `ejabberdctl` subcommand this app happens to call. Acceptable for the
+same reason as the read path's IP-based trust: a dedicated, single-purpose observatory control
+host with one admin identity, not a shared or multi-tenant one.
+
+---
+
 ## How modules are managed
 
 - **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
@@ -321,17 +391,19 @@ modules/
   services.py               All pyobs process and filesystem logic
   views.py                  HTML pages + JSON API endpoints
   proxy.py                  HTTP client for hub → remote host calls
-  ejabberd.py               mod_http_api/ejabberdctl client for XMPP status
+  ejabberd.py               mod_http_api (status) + ejabberdctl (user management) client
   middleware.py             Login-required redirect + hub token auth
   context_processors.py
 deploy/
   pyobs-web-admin.service   systemd unit file
+ejabberdctl-sudo.sh         sudo wrapper for EJABBERDCTL -- see ejabberd user management
 templates/
   base.html                 Bootstrap 5 layout with responsive sidebar
   modules/
     dashboard.html
     detail.html
     shared_detail.html      Config editor for *.shared.yaml files
+    xmpp_users.html         Fleet-wide XMPP account list + write actions
   registration/
     login.html
 ```

@@ -2,18 +2,19 @@
 
 ## Status
 
-**Implemented and verified live end-to-end.** All Work Plan items are done: `get_comm_user`
-source-tracking, the five `modules/ejabberd.py` write functions plus `get_ban_details`,
-`services.py`'s shared-`comm.user` handling and config write-back, the module page's tiered
-confirmation UI, and hub-mode delegation. Verified against a real ejabberd 24.12-4 instance
-using a disposable test account and a scratch module config (never a real module or account)
-— register → check → reset password (config write-back confirmed byte-for-byte against the
-live account) → ban → unban → unregister, plus the shared-identity warning with a second
-module sharing the same identity, plus an error-path probe (register with no `comm.password:`
-configured). Only remaining Work Plan item is `README.md`, deliberately deferred until now
-that everything above is actually true. Not yet exercised live: a genuine two-instance
-hub/spoke pair for the write actions specifically (the delegation code mirrors the read
-path's already-verified shape, but hasn't itself been driven end-to-end across two real
+**Implemented and verified live end-to-end. All Work Plan items are done, including
+`README.md`.** `get_comm_user` source-tracking, the five `modules/ejabberd.py` write functions
+plus `get_ban_details`, `services.py`'s shared-`comm.user` handling and config write-back, the
+module page's tiered confirmation UI, and hub-mode delegation. Verified against a real
+ejabberd 24.12-4 instance using a disposable test account and a scratch module config (never a
+real module or account) — register → check → reset password (config write-back confirmed
+byte-for-byte against the live account) → ban → unban → unregister, plus the shared-identity
+warning with a second module sharing the same identity, plus an error-path probe (register
+with no `comm.password:` configured). Kick (`kick_session`, added after this doc's original
+scope — see `DEVELOPMENT.md`) and the fleet-wide **Users** page are documented in `README.md`
+too, though neither was part of this doc's own Work Plan. Not yet exercised live: a genuine
+two-instance hub/spoke pair for the write actions specifically (the delegation code mirrors the
+read path's already-verified shape, but hasn't itself been driven end-to-end across two real
 instances the way `EJABBERD_INTEGRATION.md`'s reads were).
 
 ## Motivation
@@ -278,6 +279,21 @@ Revisit this section if implementation surfaces something the design didn't anti
   directly — never even reaches ejabberd (no phantom account created). All scratch fixtures
   (config dir, settings module, `sudo -n ejabberdctl` wrapper, cookies) removed afterward;
   `ejabberdctl registered_users` confirmed back to exactly the original six real accounts.
+- **Done — `README.md`, the last Work Plan item.** New "ejabberd user management" section
+  (after "ejabberd integration"), covering: what the feature does and where it surfaces
+  (module page's Overview tab, plus the fleet-wide Users page built afterward, out of this
+  doc's original scope but documented alongside it since it's the same feature from a user's
+  perspective); the `ejabberdctl`-only transport decision and why (dominated by human
+  confirmation time, not latency, unlike the read path); the real deploy-time wrinkle
+  (`ejabberdctl` refusing to run as anything but `root`/`ejabberd`) with a concrete sudoers
+  snippet and the `ejabberdctl-sudo.sh` wrapper, since this doc's own Transport section only
+  described the wrinkle in prose without a copy-pasteable fix; and a security note that this
+  is a materially bigger trust step than the read-only integration -- `ejabberdctl` has no
+  narrow whitelist the way `mod_http_api`'s `api_permissions` does for reads, so the app's own
+  confirmation dialogs are the only safety net. Also updated the `EJABBERDCTL` setting's
+  comment in the Configuration reference (previously described it as only a read-path
+  fallback, which stopped being true once writes started depending on it unconditionally) and
+  the Features/Project layout sections (`xmpp_users.html`, `ejabberdctl-sudo.sh`).
 
 ## Work Plan
 
@@ -307,7 +323,7 @@ Revisit this section if implementation surfaces something the design didn't anti
   already-verified read path, but not itself driven end-to-end against a real two-instance
   hub/spoke pair the way the read path was in `EJABBERD_INTEGRATION.md`. Worth doing before
   fully trusting this in a real multi-host fleet.
-- [ ] `README.md`: document once implemented and verified live, not before — matches this
+- [x] `README.md`: document once implemented and verified live, not before — matches this
   repo's existing practice of not documenting a setting/feature before it's actually consumed
   (see `EJABBERD_INTEGRATION.md`'s Progress log, and `JOURNALD_LOGS.md`'s Work Plan, for the
   same reasoning applied there).

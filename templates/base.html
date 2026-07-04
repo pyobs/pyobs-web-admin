@@ -126,10 +126,6 @@
     <div class="p-2 flex-grow-1 overflow-auto">
 
       <div class="px-2 py-2">
-        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs and not active_xmpp_users %}active{% endif %}">
-          <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
-          Dashboard
-        </a>
         <a href="{% url 'all_logs' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_all_logs %}active{% endif %}">
           <i class="bi bi-journal-text" style="font-size:0.8rem"></i>
           Logs
@@ -159,6 +155,13 @@
       </a>
       {% endfor %}
       {% endif %}
+
+      <div class="px-2 py-2">
+        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs and not active_xmpp_users %}active{% endif %}">
+          <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
+          Dashboard
+        </a>
+      </div>
 
       <div class="px-2 pb-1">
         <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Modules</span>

@@ -81,14 +81,21 @@ is fine, that's what the Design section of the eventual doc is for.
 - Two dashboards rather than making the existing one fleet-wide: keep today's Dashboard as a
   per-host operational control surface (Start All/Stop All and per-module quick actions make
   more sense scoped to one host at a time — a fleet-wide "Stop All" from one button is a real
-  footgun), and add a *separate*, lighter fleet-wide overview page (which hosts are up,
-  aggregate counts, no bulk actions) closer in spirit to `ACL_MATRIX.md`/"All Logs". Sidebar
-  nav already treats Dashboard as a global entry (listed above the Hosts section) even though
-  the view itself (`modules/views.py:dashboard`) still switches to the single active host --
-  that mismatch was the original motivation, before landing on two-pages-not-one instead of
-  converting the existing page. Note this would be a third nav pattern in this app (today:
-  "always per-host" like module pages, or "always fleet-wide" like ACL Matrix -- this adds
-  "both, separately").
+  footgun), and add a *separate*, lighter fleet-wide overview page (one row per host: reachable
+  or not, running/stopped/total counts, aggregate CPU/RAM, a link into that host's own
+  Dashboard — no per-module rows, no bulk actions at all, not even per-module ones, since the
+  page is deliberately host-summary-only) closer in spirit to `ACL_MATRIX.md`/"All Logs". Note
+  this would be a third nav pattern in this app (today: "always per-host" like module pages, or
+  "always fleet-wide" like ACL Matrix -- this adds "both, separately"). Still not designed or
+  built — this bullet is the idea only.
+
+  The sidebar-position half of the original motivation is now fixed, separately from the idea
+  above: Dashboard used to be listed as a global entry above the Hosts section even though the
+  view itself (`modules/views.py:dashboard`) still switches to the single active host — that
+  mismatch is what originally prompted this idea. The sidebar link has since been moved to sit
+  below Hosts (right before the Modules section, in `templates/base.html`), correctly reflecting
+  that it's per-host — done independently of, and without waiting for, the fleet-wide overview
+  page above.
 ## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
 - No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).
