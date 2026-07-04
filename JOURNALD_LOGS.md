@@ -1,4 +1,4 @@
-# pyobs-web-admin: journald-backed module logging — v0.2 (2026-07-04)
+# pyobs-web-admin: journald-backed module logging — v0.3 (2026-07-04)
 
 ## Status
 
@@ -8,8 +8,8 @@ bullet after a design discussion; several key facts below were checked against r
 verified live on this dev box by actually emitting journal records through the exact handler
 class `pyobs-core` builds and querying them back with `journalctl` — not just assumed from
 reading the code. See Design for what's confirmed vs. still open — settled decisions live
-there now, not in Open questions, which only holds what's genuinely still undecided:
-cross-user journal read permissions, and the retention/rotation documentation callout.
+there now, not in Open questions, which only holds what's genuinely still undecided: one item,
+cross-user journal read permissions.
 
 ## Motivation
 
@@ -176,6 +176,13 @@ CPU/memory/uptime stats — is entirely orthogonal to this switch. `--syslog` on
 where `Application.__init__`'s logging handlers point; it has no effect on daemonization,
 which `pyobs`'s own CLI wrapper handles independently of the logging setup this doc touches.
 
+**Settled: retention/rotation stays out of this app's control either way, same as today.**
+The knobs differ — file logs rely on external `logrotate` (the file handler is a
+`WatchedFileHandler`, chosen specifically for `logrotate` compatibility per its own code
+comment); journald has its own retention (`SystemMaxUse=` etc. in `journald.conf`) — but
+`pyobs-web-admin` has never managed either, so switching backends doesn't hand this app a new
+responsibility, just a different external mechanism doing the same job it already didn't own.
+
 ## Open questions
 
 - **Cross-user journal read permission — not yet verified.** The live test above ran as the
@@ -186,12 +193,6 @@ which `pyobs`'s own CLI wrapper handles independently of the logging setup this 
   entries — this needs testing against a genuine cross-user setup before shipping, and
   documenting as a deploy step, mirroring `EJABBERD_INTEGRATION.md`'s `sudo -n ejabberdctl`
   wrapper precedent for a structurally similar "extra local permission needed" gap.
-- **Retention/rotation isn't controlled by this app either way**, but the knobs differ: file
-  logs rely on external `logrotate` (the file handler is a `WatchedFileHandler`, chosen
-  specifically for `logrotate` compatibility per its own code comment); journald has its own
-  retention (`SystemMaxUse=` etc. in `journald.conf`), which this app has no visibility into
-  or control over. Worth a one-line callout wherever this switch ends up documented for
-  operators, so switching backends isn't assumed to carry the same retention behavior over.
 
 ## Work Plan
 
