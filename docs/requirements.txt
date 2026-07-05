@@ -1,2 +1,6 @@
 sphinx-rtd-theme
 django>=6.0.6
+psutil>=6.0
+pyyaml>=6.0
+requests>=2.32
+ruamel.yaml>=0.18
