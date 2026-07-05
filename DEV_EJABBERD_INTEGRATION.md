@@ -8,9 +8,9 @@ was verified; that section stays the authoritative record even though there's no
 Plan left to narrate. `ejabberdctl` is kept as a documented fallback to `mod_http_api`, not
 deleted from the plan. IP-only (`acl: loopback`) is the settled security model — see
 "Credential layer investigation" in Security model for why. Not in this pass, and open for
-later if wanted: the "typo/staleness detection" tie-in with `ACL_MATRIX.md` (cross-checking
+later if wanted: the "typo/staleness detection" tie-in with `DEV_ACL_MATRIX.md` (cross-checking
 `acl:` callers against `registered_users`) mentioned in Current state, and write actions
-(register/unregister/password), explicitly out of scope per Motivation. See ACL_MATRIX.md
+(register/unregister/password), explicitly out of scope per Motivation. See DEV_ACL_MATRIX.md
 for the ACL matrix feature this one is related to but separate from (both surface "who can
 talk to what," but this one reads live XMPP server state rather than static config).
 
@@ -224,7 +224,7 @@ authoritative state, this log just narrates it.
 ## Motivation
 
 `pyobs-web-admin` usually runs on the same host as the `ejabberd` server pyobs-core's comm
-layer connects through (`pyobs.comm.xmpp.XmppComm`, per ACL_MATRIX.md's ACL matrix doc).
+layer connects through (`pyobs.comm.xmpp.XmppComm`, per DEV_ACL_MATRIX.md's ACL matrix doc).
 ejabberd exposes the same underlying admin commands through several independent interfaces
 (`ejabberdctl`, the CLI; `mod_http_api`, HTTP+JSON; others) — either way, this is a local
 daemon this app can already query directly, the same architectural shape this app already

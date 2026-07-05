@@ -171,7 +171,7 @@ PYOBS_RUN_DIR = "/opt/pyobs/run"            # directory for PID files
 PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 PYOBS_LOG_BACKEND = None                    # None (default): auto-detect from pyobsd's own
                                              # config; "file" or "journald" to override --
-                                             # see JOURNALD_LOGS.md
+                                             # see DEV_JOURNALD_LOGS.md
 
 # Hub (optional — see Hub mode section)
 HUB_TOKEN = ""                              # token to accept from a hub instance
@@ -300,7 +300,7 @@ it as-is; `mod_http_api` can also expose account-management commands
 trusted, no password or token is involved. This blocks the network (a request from outside
 the host is rejected), but **not** other processes on the same machine, which get the same
 access pyobs-web-admin does. That's an accepted tradeoff for a dedicated, single-purpose
-observatory control host — see `EJABBERD_INTEGRATION.md` if your threat model is different.
+observatory control host — see `DEV_EJABBERD_INTEGRATION.md` if your threat model is different.
 
 ---
 
@@ -375,7 +375,7 @@ host with one admin identity, not a shared or multi-tenant one.
 - **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
 - **Creating a module** — the "New module" button writes a fresh `<name>.yaml` with a minimal starter (`class:` key only); `PYOBS_CONFIG_DIR` is created automatically if it doesn't exist yet.
 - **Activate / Deactivate** — deactivating a module renames its config from `name.yaml` to `_name.yaml` (stopping it first if running); activating renames it back. Deactivated modules are excluded from *Start All* and *Restart All*.
-- **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`. If the effective log backend is `"journald"` (see below), `--syslog` is passed instead of `--log-file` — pyobs then logs directly to the systemd journal, tagged `SYSLOG_IDENTIFIER=pyobs` and `PYOBS_MODULE=<name>` (see [JOURNALD_LOGS.md](JOURNALD_LOGS.md)).
+- **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`. If the effective log backend is `"journald"` (see below), `--syslog` is passed instead of `--log-file` — pyobs then logs directly to the systemd journal, tagged `SYSLOG_IDENTIFIER=pyobs` and `PYOBS_MODULE=<name>` (see [DEV_JOURNALD_LOGS.md](DEV_JOURNALD_LOGS.md)).
 - **Stop** — sends `SIGTERM` to the PID in the PID file; falls back to `SIGKILL` after 5 s.
 - **Restart** — stop followed by start.
 - **Status** — checks whether the process with the stored PID is alive (`os.kill(pid, 0)`).
