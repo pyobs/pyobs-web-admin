@@ -1,11 +1,15 @@
+import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import yaml
 from django.test import override_settings
 
-from modules import services
+from modules import ejabberd, services
+from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
 
 
@@ -245,6 +249,99 @@ class ResolveAndValidateAclTests(unittest.TestCase):
         self.assertIsNotNone(error)
 
 
+# ── services.get_comm_user ────────────────────────────────────────────────────
+
+class GetCommUserTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def test_missing_module_returns_none(self):
+        self.assertIsNone(services.get_comm_user("nope"))
+
+    def test_no_comm_block_returns_none(self):
+        """Confirmed real example: HttpFileCache has no comm: block at all -- this is the
+        signal EJABBERD_INTEGRATION.md uses to skip modules that were never expected to
+        have an XMPP identity, not an error."""
+        self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
+        self.assertIsNone(services.get_comm_user("filecache"))
+
+    def test_comm_block_without_user_key_returns_none(self):
+        self._write("cam1", "comm:\n  password: pyobs\n")
+        self.assertIsNone(services.get_comm_user("cam1"))
+
+    def test_comm_user_defined_locally(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: pyobs\n")
+        self.assertEqual(services.get_comm_user("cam1"), "camera")
+
+    def test_comm_user_via_anchor_merge_key(self):
+        """Matches a real config's shape: comm: {<<: *comm, user: camera, password: pyobs}."""
+        self._write(
+            "cam1",
+            "_comm_defaults: &comm\n  class: pyobs.comm.xmpp.XmppComm\n"
+            "  jid: pyobs\n"
+            "class: pyobs.modules.camera.BaseCamera\n"
+            "comm:\n  <<: *comm\n  user: camera\n  password: pyobs\n",
+        )
+        self.assertEqual(services.get_comm_user("cam1"), "camera")
+
+    def test_comm_user_via_include(self):
+        """comm: pulled in from a shared fragment via {include} -- get_comm_user reuses
+        get_resolved_acl's exact resolution pipeline, so this works the same way."""
+        self._write("comm.shared", "comm:\n  user: camera\n  password: pyobs\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n",
+        )
+        self.assertEqual(services.get_comm_user("cam1"), "camera")
+
+    def test_resolved_missing_module_returns_none_triple(self):
+        self.assertEqual(services.get_resolved_comm("nope"), (None, None, None))
+
+    def test_resolved_comm_defined_locally_has_no_source(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: pyobs\n")
+        user, password, source = services.get_resolved_comm("cam1")
+        self.assertEqual(user, "camera")
+        self.assertEqual(password, "pyobs")
+        self.assertIsNone(source)
+
+    def test_resolved_comm_via_bare_top_level_include_has_source(self):
+        """comm: key itself doesn't appear in the module's own file -- the whole block, key
+        included, comes from a bare top-level {include} -- EJABBERD_USER_MANAGEMENT.md's
+        config write-back must refuse to edit comm.password: in this case, the same way
+        save_local_acl already refuses for acl:."""
+        self._write("comm.shared", "comm:\n  user: camera\n  password: pyobs\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n",
+        )
+        user, password, source = services.get_resolved_comm("cam1")
+        self.assertEqual(user, "camera")
+        self.assertEqual(password, "pyobs")
+        self.assertEqual(source, "comm.shared")
+
+    def test_resolved_comm_via_inline_include_value_has_source(self):
+        """comm: key present in the module's own file, but its value is {include}'d."""
+        self._write("comm.shared", "user: camera\npassword: pyobs\n")
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\ncomm:\n  {include comm.shared.yaml}\n",
+        )
+        user, password, source = services.get_resolved_comm("cam1")
+        self.assertEqual(user, "camera")
+        self.assertEqual(password, "pyobs")
+        self.assertEqual(source, "comm.shared")
+
+
 # ── services.build_acl_matrix ──────────────────────────────────────────────────
 
 class BuildAclMatrixTests(unittest.TestCase):
@@ -284,10 +381,26 @@ class BuildAclMatrixTests(unittest.TestCase):
         )
         matrix = services.build_acl_matrix()
         # "scheduler" and "external-script" aren't modules this installation manages, and
-        # "rogue-client" only ever appears in a deny list -- all three must still be columns.
+        # "rogue-client" only ever appears in a deny list -- all three must still be columns,
+        # alongside every actual module ("cam1", "telescope") which is always a column too.
         self.assertEqual(
-            set(matrix["callers"]), {"scheduler", "external-script", "rogue-client"}
+            set(matrix["callers"]),
+            {"scheduler", "external-script", "rogue-client", "cam1", "telescope"}
         )
+
+    def test_every_module_is_always_a_column_even_with_no_acl_at_all(self):
+        # "always show all modules in both headers" -- a module must appear as a column
+        # (and get a real cell computed against every other module's acl:) even if it's
+        # never referenced as a caller anywhere and has no acl: block of its own.
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\nacl:\n  allow:\n    scheduler: '*'\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\n")  # open, never a caller
+        matrix = services.build_acl_matrix()
+        self.assertEqual(set(matrix["callers"]), {"scheduler", "cam1", "telescope"})
+        # cam1's acl: only mentions "scheduler" -- but "telescope" and "cam1" (itself) must
+        # still each get a real, correctly-denied cell rather than being missing entirely.
+        cam1_cells = self._row(matrix, "cam1")["cells"]
+        self.assertEqual(cam1_cells["telescope"]["kind"], "denied")
+        self.assertEqual(cam1_cells["cam1"]["kind"], "denied")
 
     def test_allow_all_vs_allow_methods_vs_not_listed(self):
         self._write(
@@ -423,6 +536,144 @@ class SaveLocalAclTests(unittest.TestCase):
         self.assertEqual(source, "acl.shared")
 
 
+# ── services.create_module ───────────────────────────────────────────────────────
+
+class CreateModuleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def test_creates_minimal_starter_yaml(self):
+        services.create_module("camera2")
+        self.assertIn("camera2", services.list_modules())
+        content = (self.tmp_path / "camera2.yaml").read_text()
+        self.assertIn("class:", content)
+
+    def test_refuses_invalid_name(self):
+        with self.assertRaises(ValueError):
+            services.create_module("bad name!")
+        self.assertEqual(services.list_modules(), [])
+
+    def test_refuses_if_already_exists(self):
+        (self.tmp_path / "camera2.yaml").write_text("class: pyobs.modules.camera.BaseCamera\n")
+        with self.assertRaises(FileExistsError):
+            services.create_module("camera2")
+        # the existing file must survive untouched, not get clobbered with the starter template
+        self.assertEqual((self.tmp_path / "camera2.yaml").read_text(), "class: pyobs.modules.camera.BaseCamera\n")
+
+    def test_creates_config_dir_if_missing(self):
+        missing_dir = self.tmp_path / "does-not-exist-yet"
+        with override_settings(PYOBS_CONFIG_DIR=str(missing_dir)):
+            services.create_module("camera2")
+            self.assertTrue((missing_dir / "camera2.yaml").exists())
+
+
+# ── services.save_comm_password / find_modules_sharing_comm_user ────────────────
+
+class SaveCommPasswordTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def _read(self, name: str) -> str:
+        return (self.tmp_path / f"{name}.yaml").read_text()
+
+    def test_replaces_password_preserving_anchor_merge_key(self):
+        # Matches this box's own real telescope.yaml shape exactly.
+        self._write(
+            "telescope",
+            "_comm_defaults: &comm\n  class: pyobs.comm.xmpp.XmppComm\n  domain: localhost\n"
+            "class: pyobs.modules.telescope.BaseTelescope\n"
+            "comm:\n  <<: *comm\n  user: telescope\n  password: pyobs\n",
+        )
+        updated = services.save_comm_password("telescope", "newpass123")
+        self.assertEqual(updated, ["telescope"])
+        raw = self._read("telescope")
+        self.assertIn("password: newpass123", raw)
+        self.assertIn("<<: *comm", raw)  # anchor merge key survives, not flattened
+        self.assertIn("user: telescope", raw)
+
+    def test_updates_every_module_sharing_the_same_comm_user(self):
+        """EJABBERD_INTEGRATION.md's own real-world case: a _test copy reusing a real
+        module's identity. A password change must not leave one of them stale."""
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        updated = services.save_comm_password("shared_id", "newpass")
+        self.assertEqual(sorted(updated), ["_test", "camera"])
+        self.assertIn("password: newpass", self._read("camera"))
+        self.assertIn("password: newpass", self._read("_test"))
+
+    def test_unrelated_lines_and_other_modules_untouched(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: old\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\ncomm:\n  user: telescope\n  password: untouched\n")
+        services.save_comm_password("camera", "newpass")
+        self.assertIn("class: pyobs.modules.camera.BaseCamera", self._read("camera"))
+        self.assertIn("password: untouched", self._read("telescope"))
+
+    def test_password_value_is_yaml_quoted_safely(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: old\n")
+        services.save_comm_password("camera", "a: weird, value")
+        _, password, _ = services.get_resolved_comm("camera")
+        self.assertEqual(password, "a: weird, value")
+
+    def test_no_module_has_this_comm_user_raises(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n  password: old\n")
+        with self.assertRaises(ValueError):
+            services.save_comm_password("nonexistent_identity", "newpass")
+
+    def test_refuses_when_comm_comes_from_shared_fragment(self):
+        self._write("comm.shared", "comm:\n  user: camera\n  password: old\n")
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n")
+        with self.assertRaises(ValueError):
+            services.save_comm_password("camera", "newpass")
+        # nothing written -- shared fragment untouched
+        self.assertIn("password: old", self._read("comm.shared"))
+
+    def test_all_or_nothing_across_shared_identity_when_one_source_is_shared(self):
+        """One of two modules sharing an identity has comm: from a shared fragment -- must
+        refuse before writing to *either* module, not just the one that's actually shared."""
+        self._write("comm.shared", "comm:\n  user: shared_id\n  password: old\n")
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n")
+        with self.assertRaises(ValueError):
+            services.save_comm_password("shared_id", "newpass")
+        self.assertIn("password: old", self._read("camera"))
+        self.assertIn("password: old", self._read("comm.shared"))
+
+    def test_find_modules_sharing_comm_user(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\ncomm:\n  user: telescope\n  password: old\n")
+        self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
+        self.assertEqual(sorted(services.find_modules_sharing_comm_user("shared_id")), ["_test", "camera"])
+        self.assertEqual(services.find_modules_sharing_comm_user("nonexistent_identity"), [])
+
+    def test_build_comm_user_map(self):
+        self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
+        self._write("telescope", "class: pyobs.modules.telescope.BaseTelescope\ncomm:\n  user: telescope\n  password: old\n")
+        self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
+        mapping = services.build_comm_user_map()
+        self.assertEqual(sorted(mapping["shared_id"]), ["_test", "camera"])
+        self.assertEqual(mapping["telescope"], ["telescope"])
+        self.assertNotIn("filecache", mapping)  # no comm.user at all -- not a key, not a value
+
+
 # ── services.merge_acl_matrices ─────────────────────────────────────────────────
 
 class MergeAclMatricesTests(unittest.TestCase):
@@ -463,3 +714,731 @@ class MergeAclMatricesTests(unittest.TestCase):
         cam1_cells = self._row(merged, "localhost", "cam1")["cells"]
         self.assertEqual(cam1_cells["scheduler"]["kind"], "all")
         self.assertEqual(cam1_cells["rogue-client"]["kind"], "denied")  # allow-listed, not mentioned -> denied
+
+
+# ── ejabberd ──────────────────────────────────────────────────────────────────
+#
+# Fixtures below are the exact responses captured against a real, running ejabberd 24.12-4
+# instance during EJABBERD_INTEGRATION.md's design phase (see that doc's Data layer), not
+# invented shapes -- both the HTTP (mod_http_api) and ejabberdctl paths are covered since
+# ejabberdctl is a real fallback, not dead code (see modules/ejabberd.py, _use_http).
+
+class EjabberdHttpTests(unittest.TestCase):
+    """EJABBERD_API_URL set -> HTTP path. Mocks requests.post's response only; the URL/JSON
+    body construction itself is exercised for real (not mocked) via the assertion on what
+    _http.post was called with."""
+
+    def setUp(self):
+        self._settings = override_settings(
+            EJABBERD_API_URL="http://127.0.0.1:5281/api", EJABBERD_DOMAIN="localhost",
+        )
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+
+    def _mock_response(self, json_body):
+        resp = MagicMock()
+        resp.json.return_value = json_body
+        resp.raise_for_status.return_value = None
+        return resp
+
+    @patch("modules.ejabberd._http.post")
+    def test_status(self, mock_post):
+        mock_post.return_value = self._mock_response(
+            "The node ejabberd@localhost is started. Status: started  ejabberd 24.12-4 is running in that node"
+        )
+        self.assertEqual(ejabberd.status(), "The node ejabberd@localhost is started. Status: started  ejabberd 24.12-4 is running in that node")
+        mock_post.assert_called_once_with("http://127.0.0.1:5281/api/status", json={}, timeout=5)
+
+    @patch("modules.ejabberd._http.post")
+    def test_stats(self, mock_post):
+        mock_post.return_value = self._mock_response(6)
+        self.assertEqual(ejabberd.stats("registeredusers"), 6)
+        mock_post.assert_called_once_with(
+            "http://127.0.0.1:5281/api/stats", json={"name": "registeredusers"}, timeout=5
+        )
+
+    @patch("modules.ejabberd._http.post")
+    def test_connected_users_info(self, mock_post):
+        mock_post.return_value = self._mock_response([{
+            "jid": "camera@localhost/pyobs", "connection": "c2s_tls", "ip": "::1", "port": 51918,
+            "priority": 0, "node": "ejabberd@localhost", "uptime": 5, "status": "available",
+            "resource": "pyobs", "statustext": "",
+        }])
+        result = ejabberd.connected_users_info()
+        self.assertEqual(result[0]["jid"], "camera@localhost/pyobs")
+        self.assertEqual(result[0]["resource"], "pyobs")
+
+    @patch("modules.ejabberd._http.post")
+    def test_registered_users(self, mock_post):
+        mock_post.return_value = self._mock_response(
+            ["admin", "camera", "mastermind", "observer", "scheduler", "telescope"]
+        )
+        self.assertEqual(
+            ejabberd.registered_users(),
+            ["admin", "camera", "mastermind", "observer", "scheduler", "telescope"],
+        )
+        mock_post.assert_called_once_with(
+            "http://127.0.0.1:5281/api/registered_users", json={"host": "localhost"}, timeout=5
+        )
+
+    @patch("modules.ejabberd._http.post")
+    def test_check_account_true_and_false(self, mock_post):
+        mock_post.return_value = self._mock_response(0)
+        self.assertTrue(ejabberd.check_account("camera"))
+        mock_post.return_value = self._mock_response(1)
+        self.assertFalse(ejabberd.check_account("nonexistent-user-xyz"))
+
+    @patch("modules.ejabberd._http.post")
+    def test_get_last_online(self, mock_post):
+        mock_post.return_value = self._mock_response(
+            {"timestamp": "2026-07-03T17:15:25.464942Z", "status": "ONLINE"}
+        )
+        self.assertEqual(ejabberd.get_last("camera"), {"timestamp": "2026-07-03T17:15:25.464942Z", "status": "ONLINE"})
+
+
+class EjabberdCtlFallbackTests(unittest.TestCase):
+    """EJABBERD_API_URL empty -> ejabberdctl subprocess path. Raw stdout fixtures are the
+    exact text captured from the live instance, including the trailing-tab empty
+    statustext field confirmed via `cat -A` (see EJABBERD_INTEGRATION.md, Data layer)."""
+
+    def setUp(self):
+        self._settings = override_settings(EJABBERD_API_URL="", EJABBERDCTL="ejabberdctl", EJABBERD_DOMAIN="localhost")
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+
+    def _mock_result(self, stdout="", returncode=0):
+        result = MagicMock()
+        result.stdout = stdout
+        result.returncode = returncode
+        return result
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_status(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "The node ejabberd@localhost is started with status: started\nejabberd 24.12-4 is running in that node\n"
+        )
+        self.assertIn("started", ejabberd.status())
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "status"], capture_output=True, text=True, timeout=10
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_stats(self, mock_run):
+        mock_run.return_value = self._mock_result("6\n")
+        self.assertEqual(ejabberd.stats("registeredusers"), 6)
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_connected_users_info_parses_tab_separated_line_with_jid(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "camera@localhost/pyobs\tc2s_tls\t::1\t55368\t0\tejabberd@localhost\t23\tavailable\tpyobs\t\n"
+        )
+        result = ejabberd.connected_users_info()
+        self.assertEqual(result, [{
+            "jid": "camera@localhost/pyobs", "connection": "c2s_tls", "ip": "::1", "port": 55368,
+            "priority": 0, "node": "ejabberd@localhost", "uptime": 23, "status": "available",
+            "resource": "pyobs", "statustext": "",
+        }])
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_connected_users_info_empty_result_is_not_an_error(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        self.assertEqual(ejabberd.connected_users_info(), [])
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_user_sessions_info_parses_tab_separated_line_without_jid(self, mock_run):
+        mock_run.return_value = self._mock_result("c2s_tls\t::1\t55368\t0\tejabberd@localhost\t44\tavailable\tpyobs\t\n")
+        result = ejabberd.user_sessions_info("camera")
+        self.assertEqual(result, [{
+            "connection": "c2s_tls", "ip": "::1", "port": 55368, "priority": 0,
+            "node": "ejabberd@localhost", "uptime": 44, "status": "available",
+            "resource": "pyobs", "statustext": "",
+        }])
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_registered_users(self, mock_run):
+        mock_run.return_value = self._mock_result("admin\ncamera\nmastermind\nobserver\nscheduler\ntelescope\n")
+        self.assertEqual(
+            ejabberd.registered_users(),
+            ["admin", "camera", "mastermind", "observer", "scheduler", "telescope"],
+        )
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "registered_users", "localhost"], capture_output=True, text=True, timeout=10
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_last_while_online(self, mock_run):
+        mock_run.return_value = self._mock_result("2026-07-03T17:15:25.464942Z\tONLINE\n")
+        self.assertEqual(ejabberd.get_last("camera"), {"timestamp": "2026-07-03T17:15:25.464942Z", "status": "ONLINE"})
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_last_freeform_disconnect_reason_not_a_fixed_enum(self, mock_run):
+        mock_run.return_value = self._mock_result("2026-06-16T18:14:02Z\tStream reset by peer\n")
+        self.assertEqual(
+            ejabberd.get_last("scheduler"),
+            {"timestamp": "2026-06-16T18:14:02Z", "status": "Stream reset by peer"},
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_check_account_true(self, mock_run):
+        mock_run.return_value = self._mock_result(returncode=0)
+        self.assertTrue(ejabberd.check_account("camera"))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_check_account_false(self, mock_run):
+        mock_run.return_value = self._mock_result(stdout="Error: false\n", returncode=1)
+        self.assertFalse(ejabberd.check_account("nonexistent-user-xyz"))
+
+
+# ── ejabberd.py write commands ────────────────────────────────────────────────
+#
+# Fixtures are the exact stdout/returncode captured live against a real ejabberd 24.12-4
+# instance, using a disposable test account created and fully removed afterward -- see
+# EJABBERD_USER_MANAGEMENT.md's "Verified live" table. Not mod_http_api -- these commands
+# are ejabberdctl-only by design (see that doc's Transport decision), so EJABBERD_API_URL is
+# irrelevant here; still set to "" to make that explicit rather than rely on the default.
+
+class EjabberdWriteCommandTests(unittest.TestCase):
+    def setUp(self):
+        self._settings = override_settings(EJABBERD_API_URL="", EJABBERDCTL="ejabberdctl", EJABBERD_DOMAIN="localhost")
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+
+    def _mock_result(self, stdout="", returncode=0):
+        result = MagicMock()
+        result.stdout = stdout
+        result.returncode = returncode
+        return result
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_register_success(self, mock_run):
+        mock_run.return_value = self._mock_result("User newuser@localhost successfully registered\n", 0)
+        ejabberd.register("newuser", "somepassword")
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "register", "newuser", "localhost", "somepassword"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_register_conflict_raises_with_ejabberds_own_message(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "Error: conflict: User newuser@localhost already registered\n", 1
+        )
+        with self.assertRaises(ValueError) as ctx:
+            ejabberd.register("newuser", "somepassword")
+        self.assertIn("already registered", str(ctx.exception))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_change_password_success_has_empty_stdout(self, mock_run):
+        # Verified live: unlike ejabberdctl help's own example (which shows a printed 'ok'),
+        # this ejabberd version prints nothing on success -- empty stdout is the success case,
+        # not a sign the call didn't go through.
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.change_password("newuser", "newpassword")
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_change_password_nonexistent_user_raises_with_erlang_tuple_message(self, mock_run):
+        mock_run.return_value = self._mock_result('{not_found,"unknown_user"}\n', 1)
+        with self.assertRaises(ValueError) as ctx:
+            ejabberd.change_password("nonexistent-user-xyz", "newpassword")
+        self.assertIn("not_found", str(ctx.exception))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_ban_account_success(self, mock_run):
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.ban_account("newuser", "policy violation")
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "ban_account", "newuser", "localhost", "policy violation"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_unban_account_success(self, mock_run):
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.unban_account("newuser")
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_unregister_success(self, mock_run):
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.unregister("newuser")
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_unregister_nonexistent_user_is_silently_idempotent_not_an_error(self, mock_run):
+        """Verified live: ejabberd itself doesn't distinguish "removed" from "was never
+        there" -- exit 0, empty output either way. Callers needing that distinction must
+        check_account first; unregister's own result can't tell them."""
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.unregister("never-existed-xyz")  # must not raise
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_ban_details_when_banned_parses_tab_separated_fields(self, mock_run):
+        mock_run.return_value = self._mock_result(
+            "reason\tsecond verification ban\n"
+            "bandate\t2026-07-04T09:27:15.202186Z\n"
+            "lastdate\t2026-07-04T09:24:35Z\n"
+            "lastreason\tRegistered but didn't login\n"
+        )
+        self.assertEqual(ejabberd.get_ban_details("newuser"), {
+            "reason": "second verification ban",
+            "bandate": "2026-07-04T09:27:15.202186Z",
+            "lastdate": "2026-07-04T09:24:35Z",
+            "lastreason": "Registered but didn't login",
+        })
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_get_ban_details_when_not_banned_returns_none(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        self.assertIsNone(ejabberd.get_ban_details("newuser"))
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_kick_session_success_has_empty_stdout(self, mock_run):
+        # Verified live against a real connected session: empty stdout/stderr, exit 0 on
+        # success -- same silent-rescode pattern as change_password, despite ejabberdctl's
+        # own help text example showing a printed 'ok'.
+        mock_run.return_value = self._mock_result("", 0)
+        ejabberd.kick_session("newuser", "pyobs", "Kicked via pyobs-web-admin")
+        mock_run.assert_called_once_with(
+            ["ejabberdctl", "kick_session", "newuser", "localhost", "pyobs", "Kicked via pyobs-web-admin"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("modules.ejabberd.subprocess.run")
+    def test_kick_session_failure_raises(self, mock_run):
+        # The failure path itself wasn't exercised live (only success was, against a real
+        # session) -- this just confirms the generic raise-on-nonzero-exit wiring works,
+        # not a specific verified error message shape.
+        mock_run.return_value = self._mock_result("error", 1)
+        with self.assertRaises(ValueError):
+            ejabberd.kick_session("never-connected-xyz", "pyobs", "test")
+
+
+class EjabberdPathSelectionTests(unittest.TestCase):
+    """Which transport gets used is decided purely by whether EJABBERD_API_URL is set, not
+    by probing/falling back on HTTP failure -- see modules.ejabberd._use_http's docstring
+    for why (ejabberdctl is a fallback for un-configured hosts, not for real HTTP errors,
+    which should surface rather than be silently masked)."""
+
+    @override_settings(EJABBERD_API_URL="http://127.0.0.1:5281/api")
+    def test_http_used_when_api_url_set(self):
+        self.assertTrue(ejabberd._use_http())
+
+    @override_settings(EJABBERD_API_URL="")
+    def test_ctl_used_when_api_url_empty(self):
+        self.assertFalse(ejabberd._use_http())
+
+
+# ── pyobsd config auto-detection (see JOURNALD_LOGS.md) ──────────────────────────
+
+class PyobsdAutoDetectTests(unittest.TestCase):
+    """_log_backend()'s auto-detection reads the same global config file pyobsd itself
+    reads (pyobs-core/pyobs/cli/_cli.py's CLI._load_config) -- these tests point
+    services._PYOBSD_CONFIG_CANDIDATES at a controlled temp path instead of the real
+    ~/.config/pyobs.yaml /etc/pyobs.yaml /opt/pyobs/storage/pyobs.yaml locations, so results
+    don't depend on whatever happens to exist on the machine running the tests."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.candidate = str(self.tmp_path / "pyobs.yaml")
+        self._patch = patch.object(services, "_PYOBSD_CONFIG_CANDIDATES", [self.candidate])
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        self.tmp.cleanup()
+
+    def _write(self, content: str) -> None:
+        Path(self.candidate).write_text(content)
+
+    def test_no_candidate_file_returns_empty(self):
+        self.assertEqual(services._pyobsd_config(), {})
+
+    def test_reads_pyobsd_section(self):
+        self._write("pyobsd:\n  syslog: true\n  log_level: debug\n")
+        self.assertEqual(services._pyobsd_config(), {"syslog": True, "log_level": "debug"})
+
+    def test_missing_pyobsd_section_returns_empty(self):
+        self._write("some_other_section:\n  key: value\n")
+        self.assertEqual(services._pyobsd_config(), {})
+
+    def test_malformed_yaml_returns_empty_not_crash(self):
+        self._write("pyobsd: [this is not: valid yaml structure\n")
+        self.assertEqual(services._pyobsd_config(), {})
+
+    def test_first_existing_candidate_wins(self):
+        second = str(self.tmp_path / "second.yaml")
+        Path(second).write_text("pyobsd:\n  syslog: true\n")
+        with patch.object(services, "_PYOBSD_CONFIG_CANDIDATES", [self.candidate, second]):
+            self._write("pyobsd:\n  syslog: false\n")
+            self.assertEqual(services._pyobsd_config(), {"syslog": False})
+
+    @override_settings(PYOBS_LOG_BACKEND=None)
+    def test_log_backend_defaults_to_file_when_no_config_and_no_override(self):
+        self.assertEqual(services._log_backend(), "file")
+
+    @override_settings(PYOBS_LOG_BACKEND=None)
+    def test_log_backend_auto_detects_journald(self):
+        self._write("pyobsd:\n  syslog: true\n")
+        self.assertEqual(services._log_backend(), "journald")
+
+    @override_settings(PYOBS_LOG_BACKEND=None)
+    def test_log_backend_auto_detects_file_when_syslog_false(self):
+        self._write("pyobsd:\n  syslog: false\n")
+        self.assertEqual(services._log_backend(), "file")
+
+    @override_settings(PYOBS_LOG_BACKEND="file")
+    def test_explicit_setting_overrides_auto_detected_journald(self):
+        self._write("pyobsd:\n  syslog: true\n")
+        self.assertEqual(services._log_backend(), "file")
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    def test_explicit_setting_overrides_auto_detected_file(self):
+        self._write("pyobsd:\n  syslog: false\n")
+        self.assertEqual(services._log_backend(), "journald")
+
+
+# ── journald log backend (see JOURNALD_LOGS.md) ─────────────────────────────────
+
+class StartModuleLogBackendTests(unittest.TestCase):
+    """start_module()'s only journald-related job is choosing --syslog vs --log-file --
+    everything else (pid file, --log-level, config arg) is unchanged either way, per
+    JOURNALD_LOGS.md's Design, "What doesn't change"."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "config").mkdir()
+        (self.tmp_path / "run").mkdir()
+        (self.tmp_path / "log").mkdir()
+        (self.tmp_path / "config" / "camera.yaml").write_text("class: pyobs.modules.camera.BaseCamera\n")
+        self._settings = override_settings(
+            PYOBS_CONFIG_DIR=str(self.tmp_path / "config"),
+            PYOBS_RUN_DIR=str(self.tmp_path / "run"),
+            PYOBS_LOG_DIR=str(self.tmp_path / "log"),
+            PYOBS_EXEC="pyobs",
+            PYOBS_LOG_LEVEL="info",
+        )
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _run_side_effect(self, pid_file: Path, pid: int = 4242):
+        def _run(args, **kwargs):
+            pid_file.write_text(str(pid))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+        return _run
+
+    @override_settings(PYOBS_LOG_BACKEND="file")
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_passes_log_file_not_syslog(self, mock_run, _mock_alive):
+        pid_file = self.tmp_path / "run" / "camera.pid"
+        mock_run.side_effect = self._run_side_effect(pid_file)
+        ok, msg = services.start_module("camera")
+        self.assertTrue(ok)
+        args = mock_run.call_args[0][0]
+        self.assertIn("--log-file", args)
+        self.assertNotIn("--syslog", args)
+        self.assertEqual(args[-1], str(self.tmp_path / "config" / "camera.yaml"))
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.subprocess.run")
+    def test_journald_backend_passes_syslog_not_log_file(self, mock_run, _mock_alive):
+        pid_file = self.tmp_path / "run" / "camera.pid"
+        mock_run.side_effect = self._run_side_effect(pid_file)
+        ok, msg = services.start_module("camera")
+        self.assertTrue(ok)
+        args = mock_run.call_args[0][0]
+        self.assertIn("--syslog", args)
+        self.assertNotIn("--log-file", args)
+        self.assertEqual(args[-1], str(self.tmp_path / "config" / "camera.yaml"))
+        self.assertEqual(list((self.tmp_path / "log").glob("*.log")), [])
+
+
+class LogBackendJournaldTests(unittest.TestCase):
+    """Fixtures are real `journalctl -o json` lines, captured by instantiating the exact
+    handler class pyobs/application.py builds and emitting real records through it (see
+    JOURNALD_LOGS.md, Design) -- an invented JSON shape would have missed the real surprise
+    these caught: pyobs journals CRITICAL as PRIORITY 0, not the naively-expected 2."""
+
+    _DEBUG_ENTRY = (
+        '{"_GID":"1000","_BOOT_ID":"c64abca0faac4631899bda2bedcdc028","_RUNTIME_SCOPE":"system",'
+        '"_SYSTEMD_UNIT":"user@1000.service","MESSAGE_ID":"bfa904f2902437eb8e3a2d4fa47e0f39",'
+        '"RELATIVE_USEC":"360920240","_COMM":"python3","CODE_FILE":"camera.py","CODE":"camera.None:42",'
+        '"CODE_LINE":"42","_EXE":"/usr/bin/python3.14","__SEQNUM":"803506",'
+        '"_MACHINE_ID":"36f4b5eac84c44deae61f9b10c0b5dbd","PROCESS_NAME":"MainProcess",'
+        '"_SYSTEMD_USER_UNIT":"app-pycharm@bc5ad7f66bbe4bcb9767b927877e084f.service",'
+        '"_SYSTEMD_USER_SLICE":"app.slice","_CAP_EFFECTIVE":"0","SYSLOG_IDENTIFIER":"pyobs",'
+        '"_HOSTNAME":"husserLaptop","__REALTIME_TIMESTAMP":"1783144498389717",'
+        '"_CMDLINE":"/opt/pyobs/venv/bin/python3 -","_AUDIT_SESSION":"4","_SYSTEMD_SLICE":"user-1000.slice",'
+        '"_AUDIT_LOGINUID":"1000","_TRANSPORT":"journal","PID":"535522","_PID":"535522",'
+        '"MESSAGE":"camera_verify_test camera.py:42 debug line",'
+        '"__MONOTONIC_TIMESTAMP":"101244893036",'
+        '"_SYSTEMD_CGROUP":"/user.slice/user-1000.slice/user@1000.service/app.slice/app-pycharm@bc5ad7f66bbe4bcb9767b927877e084f.service",'
+        '"CREATED_USEC":"1783144498389476",'
+        '"__CURSOR":"s=ca9321337fb04d6f8365c542905d8539;i=c42b2;b=c64abca0faac4631899bda2bedcdc028;m=1792aa776c;t=655c2ae68e2d5;x=53f39c8c4dc5a4c8",'
+        '"THREAD_NAME":"MainThread","EXTRA_PYOBS_MODULE":"camera_verify_test",'
+        '"_SYSTEMD_INVOCATION_ID":"3ff770e2105a45a0885b7d8dcf16679c","SYSLOG_FACILITY":"23",'
+        '"_SYSTEMD_OWNER_UID":"1000","_SOURCE_REALTIME_TIMESTAMP":"1783144498389601",'
+        '"LOGGER_NAME":"journald_verify_test","MESSAGE_RAW":"debug line","THREAD_ID":"138519519175168",'
+        '"PRIORITY":"7","_UID":"1000","__SEQNUM_ID":"ca9321337fb04d6f8365c542905d8539",'
+        '"CODE_MODULE":"camera","PYOBS_MODULE":"camera_verify_test"}'
+    )
+
+    _CRITICAL_ENTRY = (
+        '{"_MACHINE_ID":"36f4b5eac84c44deae61f9b10c0b5dbd","PID":"535522","_AUDIT_SESSION":"4",'
+        '"_UID":"1000","_AUDIT_LOGINUID":"1000","CODE_LINE":"42","__MONOTONIC_TIMESTAMP":"101244894241",'
+        '"EXTRA_PYOBS_MODULE":"camera_verify_test","CREATED_USEC":"1783144498389720",'
+        '"SYSLOG_IDENTIFIER":"pyobs","MESSAGE_ID":"8bea426d6424387bab814e125313660d",'
+        '"__SEQNUM":"803510","PRIORITY":"0","__REALTIME_TIMESTAMP":"1783144498390922",'
+        '"__CURSOR":"s=ca9321337fb04d6f8365c542905d8539;i=c42b6;b=c64abca0faac4631899bda2bedcdc028;m=1792aa7c21;t=655c2ae68e78a;x=342c1a819294758",'
+        '"_HOSTNAME":"husserLaptop","_CAP_EFFECTIVE":"0","_SYSTEMD_OWNER_UID":"1000",'
+        '"MESSAGE_RAW":"critical line","THREAD_NAME":"MainThread","_SYSTEMD_SLICE":"user-1000.slice",'
+        '"_SYSTEMD_USER_SLICE":"app.slice","CODE_FILE":"camera.py",'
+        '"_SYSTEMD_INVOCATION_ID":"3ff770e2105a45a0885b7d8dcf16679c","_SYSTEMD_UNIT":"user@1000.service",'
+        '"_BOOT_ID":"c64abca0faac4631899bda2bedcdc028","_CMDLINE":"/opt/pyobs/venv/bin/python3 -",'
+        '"_PID":"535522","MESSAGE":"camera_verify_test camera.py:42 critical line",'
+        '"_RUNTIME_SCOPE":"system","_SOURCE_REALTIME_TIMESTAMP":"1783144498389742",'
+        '"THREAD_ID":"138519519175168","PROCESS_NAME":"MainProcess","CODE_MODULE":"camera",'
+        '"_TRANSPORT":"journal","LOGGER_NAME":"journald_verify_test","PYOBS_MODULE":"camera_verify_test",'
+        '"CODE":"camera.None:42","SYSLOG_FACILITY":"23","_COMM":"python3",'
+        '"_SYSTEMD_USER_UNIT":"app-pycharm@bc5ad7f66bbe4bcb9767b927877e084f.service",'
+        '"__SEQNUM_ID":"ca9321337fb04d6f8365c542905d8539","_GID":"1000"}'
+    )
+
+    def _mock_result(self, stdout):
+        result = MagicMock()
+        result.stdout = stdout
+        return result
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_reconstructs_file_shaped_lines_from_real_captured_json(self, mock_run):
+        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
+        lines = services.get_logs("camera_verify_test", lines=300)
+        # Derived the same way the code does (datetime.fromtimestamp is local-TZ-dependent,
+        # matching the file backend's own asctime-based lines) rather than a hardcoded wall
+        # clock string, which would be wrong under a different process TZ (e.g. Django's test
+        # runner forces TZ=UTC regardless of the machine's own timezone).
+        debug_ts = datetime.fromtimestamp(1783144498389717 / 1_000_000)
+        critical_ts = datetime.fromtimestamp(1783144498390922 / 1_000_000)
+        self.assertEqual(lines, [
+            f"{debug_ts:%Y-%m-%d %H:%M:%S} [DEBUG] (camera_verify_test) camera.py:42 debug line",
+            f"{critical_ts:%Y-%m-%d %H:%M:%S} [CRITICAL] (camera_verify_test) camera.py:42 critical line",
+        ])
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_filter_str_applies_after_reconstruction(self, mock_run):
+        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
+        lines = services.get_logs("camera_verify_test", filter_str="critical")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("critical line", lines[0])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_empty_journal_returns_empty_list(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        self.assertEqual(services.get_logs("nonexistent_module"), [])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_log_stats_counts_by_priority_not_by_reparsing_text(self, mock_run):
+        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
+        counts = services.get_log_stats("camera_verify_test")
+        self.assertEqual(counts, {"DEBUG": 1, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 1})
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--since", "-24h", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_strips_prefix_when_code_file_is_a_full_path(self, mock_run):
+        """Regression test for a real bug caught by live testing, not by the other fixtures
+        here: logging_journald's CODE_FILE is record.pathname (a full path), but pyobs's own
+        journal formatter builds MESSAGE's "<module> <file>:<line> " prefix from
+        %(filename)s (just the basename) -- the earlier fixtures above used a bare
+        "camera.py" for CODE_FILE, which accidentally already equaled its own basename and
+        so didn't exercise this mismatch. A real running module's CODE_FILE is a full path,
+        which caught the bug live: the prefix was never stripped, so lines came out with
+        the file:line info doubled."""
+        entry = json.loads(self._DEBUG_ENTRY)
+        entry["CODE_FILE"] = "/home/husser/code/pyobs/pyobs-core/pyobs/application.py"
+        entry["MESSAGE"] = "camera_verify_test application.py:42 debug line"
+        mock_run.return_value = self._mock_result(json.dumps(entry) + "\n")
+        lines = services.get_logs("camera_verify_test")
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].count("application.py:42"), 1)
+        self.assertTrue(lines[0].endswith("application.py:42 debug line"))
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_uses_tail_not_journalctl(self, mock_run):
+        """PYOBS_LOG_BACKEND="file" (the default) must keep routing to `tail`, not
+        `journalctl` -- confirms the new branch didn't disturb the existing path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "camera.log"
+            log_file.write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
+            mock_run.return_value = MagicMock(stdout="2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                services.get_logs("camera")
+            mock_run.assert_called_once_with(
+                ["tail", "-n", "300", str(log_file)], capture_output=True, text=True
+            )
+
+
+# ── get_all_logs ──────────────────────────────────────────────────────────────
+
+class GetAllLogsTests(unittest.TestCase):
+    _CAMERA_ENTRY = (
+        '{"SYSLOG_IDENTIFIER":"pyobs","PYOBS_MODULE":"camera","PRIORITY":"6",'
+        '"__REALTIME_TIMESTAMP":"1783144498000000","CODE_FILE":"camera.py","CODE_LINE":"1",'
+        '"MESSAGE":"camera camera.py:1 from camera"}'
+    )
+    _TELESCOPE_ENTRY = (
+        '{"SYSLOG_IDENTIFIER":"pyobs","PYOBS_MODULE":"telescope","PRIORITY":"6",'
+        '"__REALTIME_TIMESTAMP":"1783144499000000","CODE_FILE":"telescope.py","CODE_LINE":"2",'
+        '"MESSAGE":"telescope telescope.py:2 from telescope"}'
+    )
+
+    def _mock_result(self, stdout):
+        result = MagicMock()
+        result.stdout = stdout
+        return result
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_no_names_omits_module_filter(self, mock_run):
+        mock_run.return_value = self._mock_result(self._CAMERA_ENTRY + "\n" + self._TELESCOPE_ENTRY + "\n")
+        lines = services.get_all_logs(lines=300)
+        self.assertEqual(len(lines), 2)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_names_are_ored_via_repeated_field(self, mock_run):
+        mock_run.return_value = self._mock_result(self._CAMERA_ENTRY + "\n" + self._TELESCOPE_ENTRY + "\n")
+        services.get_all_logs(names=["camera", "telescope"], lines=50)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera", "PYOBS_MODULE=telescope",
+             "-n", "50", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_empty_names_list_means_none_selected_not_all(self, mock_run):
+        lines = services.get_all_logs(names=[], lines=300)
+        self.assertEqual(lines, [])
+        mock_run.assert_not_called()
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_empty_names_list_returns_nothing(self, mock_run):
+        lines = services.get_all_logs(names=[], lines=300)
+        self.assertEqual(lines, [])
+        mock_run.assert_not_called()
+
+    def test_file_backend_merges_and_sorts_across_modules_by_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n"
+                "2026-07-04 08:00:02 [INFO] (camera) x.py:2 world camera\n"
+            )
+            (Path(tmp) / "telescope.log").write_text(
+                "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(names=["camera", "telescope"], lines=300)
+            self.assertEqual(lines, [
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera",
+                "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope",
+                "2026-07-04 08:00:02 [INFO] (camera) x.py:2 world camera",
+            ])
+
+    def test_merge_log_lines_combines_and_trims_multiple_already_ordered_lists(self):
+        # Exercises the same helper views.api_all_logs uses to combine each hub host's own
+        # already-fetched result into one fleet-wide view -- one list per "host" here, though
+        # the function itself has no notion of hosts, just ordered line lists.
+        host_a = [
+            "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello",
+            "2026-07-04 08:00:03 [INFO] (camera) x.py:2 world",
+        ]
+        host_b = ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hi"]
+        merged = services.merge_log_lines([host_a, host_b], lines=300)
+        self.assertEqual(merged, [
+            "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello",
+            "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hi",
+            "2026-07-04 08:00:03 [INFO] (camera) x.py:2 world",
+        ])
+
+    def test_merge_log_lines_trims_to_overall_last_n(self):
+        merged = services.merge_log_lines([
+            [f"2026-07-04 08:00:{i:02d} [INFO] (a) x.py:1 line{i}" for i in range(5)],
+        ], lines=2)
+        self.assertEqual(merged, [
+            "2026-07-04 08:00:03 [INFO] (a) x.py:1 line3",
+            "2026-07-04 08:00:04 [INFO] (a) x.py:1 line4",
+        ])
+
+    def test_file_backend_no_names_defaults_to_list_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.yaml").write_text("class: pyobs.modules.Module\n")
+            (Path(tmp) / "camera.log").write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n")
+            with override_settings(PYOBS_CONFIG_DIR=tmp, PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(lines=300)
+            self.assertEqual(lines, ["2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera"])
+
+    def test_filter_str_applies_after_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n"
+            )
+            (Path(tmp) / "telescope.log").write_text(
+                "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(names=["camera", "telescope"], lines=300, filter_str="telescope")
+            self.assertEqual(lines, ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope"])
+
+
+# ── _tag_host (fleet-wide All Logs cross-host tagging) ────────────────────────
+
+class TagHostTests(unittest.TestCase):
+    def test_inserts_host_tag_right_after_leading_timestamp(self):
+        # Regression test for a real bug caught by live cross-host testing: an earlier
+        # version of api_all_logs forwarded bare module names ("dome2") to a remote host's
+        # own api_all_logs, which now expects "host:module" tokens -- the remote silently
+        # dropped anything without a colon, so a selected remote module's logs vanished
+        # entirely. That bug was in the *forwarding* params, not this tagging helper, but
+        # this test locks in the tag's own placement so a client-side timestamp parse
+        # (which requires the timestamp to lead the line) keeps working once lines from
+        # multiple hosts are merged into one view.
+        line = "2026-07-04 09:00:00 [INFO] (camera1) x.py:1 hello"
+        self.assertEqual(
+            _tag_host(line, "spoke1"),
+            "2026-07-04 09:00:00 [spoke1] [INFO] (camera1) x.py:1 hello",
+        )
+
+    def test_falls_back_to_prefix_when_no_leading_timestamp(self):
+        self.assertEqual(_tag_host("no timestamp here", "spoke1"), "[spoke1] no timestamp here")

@@ -5,6 +5,22 @@
 {% block extra_head %}
 <style>
   #acl-matrix th, #acl-matrix td { white-space: nowrap; }
+  /* Bootstrap's .table is width: 100% by default, stretching to fill table-responsive's
+     container regardless of actual content width. display: inline-table shrink-wraps to
+     content the same way inline-block does (width: auto alone isn't enough -- per the
+     table-layout spec, an auto-width table's used width is still
+     max(containing-block width, sum-of-column-widths)).
+     Important: don't give any column an explicit percentage width (e.g. width: 1%) to try
+     to further "minimize" it, even though that's the usual trick for shrinking one greedy
+     column -- a percentage width needs a definite table width to resolve against, so its
+     mere presence forces the whole table straight back to filling its container, undoing
+     inline-table's shrink-wrap entirely (verified by bisecting a standalone reproduction:
+     removing width: 1% from a single column was the only change needed to bring a
+     1598px-wide table back down to its actual ~134px content width). Every column here is
+     already naturally minimal without any width hint at all -- rotated headers and
+     icon-only cells have very little intrinsic content, so plain auto-layout already sizes
+     them tightly. */
+  #acl-matrix { display: inline-table; width: auto; }
   #acl-matrix .col-target {
     position: sticky;
     left: 0;
@@ -12,7 +28,27 @@
     z-index: 2;
   }
   #acl-matrix thead .col-target { background-color: #1a1d21; z-index: 3; }
-  .acl-cell-methods { white-space: normal; }
+  /* Caller column headers rotated 90 degrees -- a column only needs to be as wide as one
+     row-height once its label runs vertically, instead of as wide as the longest caller
+     name, so far more columns fit before the table needs to scroll horizontally at all. */
+  #acl-matrix .col-caller {
+    vertical-align: bottom;
+    padding: 4px 2px;
+  }
+  /* Icon-only data cells don't need Bootstrap's default table-sm horizontal padding -- each
+     column only has to be as wide as one icon. */
+  #acl-matrix td.col-cell {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  #acl-matrix .col-caller-label {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    display: inline-block;
+    max-height: 140px;
+  }
+  #acl-matrix .acl-cell-icon { font-size: 1.1rem; }
 </style>
 {% endblock %}
 
@@ -36,14 +72,18 @@
 {% else %}
 <p class="text-muted small">
   Rows are modules across every configured host (this installation plus any hub hosts); columns
-  are every caller name referenced in any module's <code>acl:</code> block, whether or not that
-  caller is itself a managed module.
+  (names rotated to save width) are every caller name referenced in any module's
+  <code>acl:</code> block, whether or not that caller is itself a managed module.
+  <i class="bi bi-check-circle-fill text-success"></i> full access (all methods),
+  <i class="bi bi-circle-half text-warning"></i> partial access (hover/long-press a cell for
+  which methods), <i class="bi bi-dash-circle text-secondary"></i> no access.
   <span class="badge bg-danger-subtle text-danger-emphasis">open</span> rows have no
   <code>acl:</code> key at all — any caller may reach them.
-  The <i class="bi bi-pencil" style="font-size:0.7rem"></i> next to a module name opens a form
-  to edit that module's <code>acl:</code> block directly; a row whose <code>acl:</code> comes
-  from a shared fragment instead shows that fragment's name — edit it there, since it also
-  applies to every other module listed as sharing it.
+  Click a module's name to go straight to its own ACL tab; the
+  <i class="bi bi-pencil" style="font-size:0.7rem"></i> next to it instead opens a quick-edit
+  form right here. A row whose <code>acl:</code> comes from a shared fragment shows that
+  fragment's name instead — edit it there, since it also applies to every other module listed
+  as sharing it.
 </p>
 
 <div class="table-responsive border rounded" style="max-height: 75vh;">
@@ -52,12 +92,14 @@
     <tr>
       <th class="col-target">Target</th>
       {% for caller in caller_headers %}
-      <th class="text-center small">
-        {% if caller.url %}
-        <a href="{{ caller.url }}" class="text-decoration-none text-reset">{{ caller.name }}</a>
-        {% else %}
-        {{ caller.name }}
-        {% endif %}
+      <th class="col-caller text-center small">
+        <span class="col-caller-label">
+          {% if caller.url %}
+          <a href="{{ caller.url }}" class="text-decoration-none text-reset">{{ caller.name }}</a>
+          {% else %}
+          {{ caller.name }}
+          {% endif %}
+        </span>
       </th>
       {% endfor %}
     </tr>
@@ -66,7 +108,7 @@
   {% for row in targets %}
   <tr>
     <td class="col-target fw-semibold">
-      <a href="{{ row.module_url }}" class="text-decoration-none text-reset">{{ row.name }}</a>
+      <a href="{{ row.module_acl_url }}" class="text-decoration-none text-reset">{{ row.name }}</a>
       {% if show_host_badges %}
       <span class="badge bg-dark-subtle text-body-secondary ms-1" title="managed by host {{ row.host }}">
         <i class="bi bi-hdd-network"></i> {{ row.host }}
@@ -103,20 +145,14 @@
     </td>
     {% else %}
     {% for cell in row.cell_list %}
-    <td class="text-center small">
+    <td class="col-cell text-center">
       {% if cell.kind == 'denied' %}
-      <span class="text-muted">—</span>
+      <i class="bi bi-dash-circle text-secondary acl-cell-icon" title="{{ cell.caller }}: no access"></i>
       {% elif cell.kind == 'all' %}
-      <span class="badge bg-success">all</span>
+      <i class="bi bi-check-circle-fill text-success acl-cell-icon" title="{{ cell.caller }}: full access (all methods)"></i>
       {% elif cell.kind == 'methods' %}
-      <div class="acl-cell-methods">
-        {% for m in cell.methods %}
-        <span class="badge {% if m.is_interface %}bg-info text-dark{% else %}bg-primary{% endif %} me-1 mb-1"
-              {% if m.is_interface %}title="interface shorthand — pyobs-core expands this to that interface's methods at runtime"{% endif %}>
-          {{ m.name }}{% if m.is_interface %} (interface){% endif %}
-        </span>
-        {% endfor %}
-      </div>
+      <i class="bi bi-circle-half text-warning acl-cell-icon"
+         title="{{ cell.caller }}: partial access — {% for m in cell.methods %}{{ m.name }}{% if m.is_interface %} (interface){% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}"></i>
       {% endif %}
     </td>
     {% endfor %}

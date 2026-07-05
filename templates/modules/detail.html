@@ -77,6 +77,15 @@
         <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
+        {% if ejabberd_enabled %}
+        <tr id="stat-ejabberd-row" class="d-none">
+          <th class="text-muted fw-normal pe-4">XMPP</th>
+          <td>
+            <div id="stat-ejabberd"></div>
+            <div id="ejabberd-actions" class="d-flex gap-2 flex-wrap mt-1"></div>
+          </td>
+        </tr>
+        {% endif %}
         <tr><th class="text-muted fw-normal pe-4">Log messages</th>
           <td>
             <div class="d-flex gap-3 flex-wrap">
@@ -205,6 +214,34 @@ Loading…</pre>
   </div>
 
 </div>
+
+{% if ejabberd_enabled %}
+<!-- ejabberd write-action confirmation modal (EJABBERD_USER_MANAGEMENT.md) -->
+<div class="modal fade" id="ejabberd-confirm-modal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="ejabberd-confirm-title"></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p id="ejabberd-confirm-body"></p>
+        <div id="ejabberd-confirm-shared" class="alert alert-warning small d-none"></div>
+        <div id="ejabberd-confirm-retype-group" class="d-none">
+          <label class="form-label small">Type <code id="ejabberd-confirm-retype-target"></code> to confirm:</label>
+          <input type="text" id="ejabberd-confirm-retype-input" class="form-control">
+        </div>
+        <div id="ejabberd-confirm-error" class="alert alert-danger d-none small mt-2"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" id="ejabberd-confirm-btn" class="btn"></button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {{ other_modules|json_script:"acl-tab-other-modules-data" }}
 {% endblock %}
 
@@ -214,6 +251,7 @@ Loading…</pre>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/addon/mode/overlay.min.js"></script>
 <script>
 const MODULE = "{{ module_name }}";
+const EJABBERD_ENABLED = {{ ejabberd_enabled|yesno:"true,false" }};
 
 // ── Status ────────────────────────────────────────────────────────────────────
 function fmtUptime(s) {
@@ -253,6 +291,203 @@ async function updateStatus() {
     uptimeRow.classList.add('d-none');
     memRow.classList.add('d-none');
     cpuRow.classList.add('d-none');
+  }
+}
+
+// ── ejabberd ────────────────────────────────────────────────────────────────────
+let ejabberdState = null;  // last-fetched /api/modules/<name>/ejabberd/ response, read by the confirm modal
+
+async function refreshEjabberd() {
+  if (!EJABBERD_ENABLED) return;  // don't even fetch -- feature is off for this fleet
+  const row = document.getElementById('stat-ejabberd-row');
+  const actionsEl = document.getElementById('ejabberd-actions');
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/ejabberd/`);
+    const data = await resp.json();
+    ejabberdState = data;
+    if (!data.comm_user) {
+      row.classList.add('d-none');  // module has no comm.user -- was never expected to connect
+      return;
+    }
+    row.classList.remove('d-none');
+    renderEjabberdActions(data);
+
+    const cell = document.getElementById('stat-ejabberd');
+    const commUser = escapeHtml(data.comm_user);
+    if (data.error) {
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>ejabberd unreachable: ${escapeHtml(data.error)}</span>`;
+      return;
+    }
+    if (data.ban_details) {
+      const reason = data.ban_details.reason ? ` (${escapeHtml(data.ban_details.reason)})` : '';
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-slash-circle me-1"></i>"${commUser}" is banned${reason}</span>`;
+    } else if (!data.registered) {
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>"${commUser}" is not a registered XMPP account</span>`;
+    } else if (!data.module_running) {
+      // Not this module's own process -- another module can share the same comm.user (see
+      // api_module_ejabberd), so a live session for that identity isn't necessarily this
+      // module's. Same "nothing meaningful to show" treatment as PID/uptime/memory/CPU,
+      // already blank for a module that isn't running -- but registered/ban_details above
+      // are account-level facts, not session state, so they still show either way.
+      cell.innerHTML = `<span class="text-secondary small">"${commUser}" registered · module not running</span>`;
+    } else if (data.sessions && data.sessions.length > 0) {
+      const s = data.sessions[0];
+      cell.innerHTML = `<span class="text-success"><i class="bi bi-chat-dots-fill me-1"></i>Connected as "${commUser}"</span>
+        <span class="text-secondary small ms-2">${fmtUptime(s.uptime)} · ${escapeHtml(s.ip)} · ${escapeHtml(s.connection)}</span>`;
+    } else {
+      const last = data.last;
+      const lastText = last && last.status !== 'NOT FOUND' ? `last seen ${escapeHtml(last.timestamp)} (${escapeHtml(last.status)})` : 'never connected';
+      cell.innerHTML = `<span class="text-warning"><i class="bi bi-chat-dots me-1"></i>"${commUser}" not connected</span>
+        <span class="text-secondary small ms-2">${lastText}</span>`;
+    }
+  } catch (_) {}
+}
+
+// ── ejabberd write actions (EJABBERD_USER_MANAGEMENT.md) ────────────────────────
+//
+// Tiered confirmation: register/change-password/ban/unban get a single confirm dialog
+// (this app's first destructive-action confirmation of any kind); unregister -- the one
+// irreversible action -- requires retyping the account's bare XMPP username first. A
+// shared_with warning is shown for ban/unregister whenever another module resolves to the
+// same comm.user, since that action affects all of them, not just this module's page.
+
+const EJABBERD_ACTIONS = {
+  register: {
+    label: 'Register', btnClass: 'btn-outline-success',
+    title: 'Register XMPP account',
+    body: user => `Register "${user}" using the password already configured in this module's comm: block?`,
+    endpoint: 'register', retype: false, warnShared: false,
+  },
+  'change-password': {
+    label: 'Reset password', btnClass: 'btn-outline-warning',
+    title: 'Reset XMPP password',
+    body: (user, data) => {
+      const others = (data.shared_with || []).length
+        ? ` This also updates every other module sharing this identity: ${data.shared_with.join(', ')}.`
+        : '';
+      return `Generate a new random password for "${user}" and write it into this module's config${others}`;
+    },
+    endpoint: 'change-password', retype: false, warnShared: false,
+  },
+  ban: {
+    label: 'Ban', btnClass: 'btn-outline-danger',
+    title: 'Ban XMPP account',
+    body: user => `Ban "${user}"? This is reversible via Unban.`,
+    endpoint: 'ban', retype: false, warnShared: true,
+  },
+  unban: {
+    label: 'Unban', btnClass: 'btn-outline-secondary',
+    title: 'Unban XMPP account',
+    body: user => `Unban "${user}", restoring its original password?`,
+    endpoint: 'unban', retype: false, warnShared: false,
+  },
+  unregister: {
+    label: 'Unregister', btnClass: 'btn-outline-danger',
+    title: 'Unregister XMPP account',
+    body: user => `Permanently delete "${user}"'s account -- auth, roster, and vcard data. This cannot be undone.`,
+    endpoint: 'unregister', retype: true, warnShared: true,
+  },
+};
+
+function renderEjabberdActions(data) {
+  const el = document.getElementById('ejabberd-actions');
+  el.innerHTML = '';
+  const addBtn = key => {
+    const cfg = EJABBERD_ACTIONS[key];
+    const btn = document.createElement('button');
+    btn.className = `btn btn-sm ${cfg.btnClass}`;
+    btn.textContent = cfg.label;
+    btn.onclick = () => openEjabberdConfirm(key);
+    el.appendChild(btn);
+  };
+  if (data.error) return;  // can't act on an account we can't currently query
+  if (data.ban_details) {
+    addBtn('unban');
+  } else if (!data.registered) {
+    addBtn('register');
+  } else {
+    addBtn('change-password');
+    addBtn('ban');
+  }
+  if (data.registered) addBtn('unregister');
+}
+
+let ejabberdModal = null;
+let ejabberdPendingAction = null;
+
+function openEjabberdConfirm(actionKey) {
+  const cfg = EJABBERD_ACTIONS[actionKey];
+  const data = ejabberdState;
+  const user = data.comm_user;
+  ejabberdPendingAction = actionKey;
+
+  document.getElementById('ejabberd-confirm-title').textContent = cfg.title;
+  document.getElementById('ejabberd-confirm-body').textContent = cfg.body(user, data);
+  document.getElementById('ejabberd-confirm-error').classList.add('d-none');
+
+  const sharedEl = document.getElementById('ejabberd-confirm-shared');
+  if (cfg.warnShared && data.shared_with && data.shared_with.length) {
+    sharedEl.textContent = `This account is also used by: ${data.shared_with.join(', ')}.`;
+    sharedEl.classList.remove('d-none');
+  } else {
+    sharedEl.classList.add('d-none');
+  }
+
+  const retypeGroup = document.getElementById('ejabberd-confirm-retype-group');
+  const retypeInput = document.getElementById('ejabberd-confirm-retype-input');
+  retypeInput.value = '';
+  if (cfg.retype) {
+    document.getElementById('ejabberd-confirm-retype-target').textContent = user;
+    retypeGroup.classList.remove('d-none');
+  } else {
+    retypeGroup.classList.add('d-none');
+  }
+
+  const confirmBtn = document.getElementById('ejabberd-confirm-btn');
+  confirmBtn.className = `btn ${cfg.btnClass.replace('btn-outline-', 'btn-')}`;
+  confirmBtn.textContent = cfg.label;
+  confirmBtn.disabled = false;
+  confirmBtn.onclick = submitEjabberdConfirm;
+
+  if (!ejabberdModal) ejabberdModal = new bootstrap.Modal(document.getElementById('ejabberd-confirm-modal'));
+  ejabberdModal.show();
+}
+
+async function submitEjabberdConfirm() {
+  const cfg = EJABBERD_ACTIONS[ejabberdPendingAction];
+  const errEl = document.getElementById('ejabberd-confirm-error');
+  errEl.classList.add('d-none');
+
+  if (cfg.retype) {
+    const typed = document.getElementById('ejabberd-confirm-retype-input').value;
+    if (typed !== ejabberdState.comm_user) {
+      errEl.textContent = 'Typed name does not match -- not confirmed.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+  }
+
+  const confirmBtn = document.getElementById('ejabberd-confirm-btn');
+  confirmBtn.disabled = true;
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/ejabberd/${cfg.endpoint}/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken(), 'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errEl.textContent = data.error || 'Action failed.';
+      errEl.classList.remove('d-none');
+      confirmBtn.disabled = false;
+      return;
+    }
+    ejabberdModal.hide();
+    await refreshEjabberd();
+  } catch (e) {
+    errEl.textContent = `Request failed: ${e}`;
+    errEl.classList.remove('d-none');
+    confirmBtn.disabled = false;
   }
 }
 
@@ -516,6 +751,8 @@ updateStatus();
 setInterval(updateStatus, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
+refreshEjabberd();
+setInterval(refreshEjabberd, 10000);
 
 // Start auto-refresh if enabled (default: on)
 if (autoRefreshEl.checked) logTimer = setInterval(fetchLogs, 3000);
