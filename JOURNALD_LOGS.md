@@ -1,11 +1,14 @@
-# pyobs-web-admin: journald-backed module logging — v1.0 (2026-07-04)
+# pyobs-web-admin: journald-backed module logging — v1.1 (2026-07-05)
 
 ## Status
 
 **Implemented and verified live end-to-end** (Work Plan items 1–4; see Progress log). Only
 one item is still open: whether a genuinely group-less service account is ever actually
-denied journal read access (see Open questions) — this doesn't block using the feature, since
-the settled `PYOBS_LOG_BACKEND` default (`"file"`) is unaffected either way.
+denied journal read access (see Open questions) — this doesn't block using the feature.
+v1.1 adds auto-detection: `PYOBS_LOG_BACKEND`'s default changed from `"file"` to `None`
+(auto-detect from `pyobsd`'s own config file), not a Work Plan item originally but a real gap
+closed after `pyobsd` (`pyobs-core`'s daemon manager) turned out to read its own global
+config for the same `file`-vs-`journald` decision — see Progress log.
 
 ## Progress log
 
@@ -47,6 +50,7 @@ the settled `PYOBS_LOG_BACKEND` default (`"file"`) is unaffected either way.
 - **Not done — the one item left in Open questions**: testing the genuinely group-less
   service account negative case. Doesn't block shipping this, since it's a deploy-time
   permissions question, not a code-correctness one.
+- **Done — v1.1, auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own config, not a Work Plan item.** Requested after learning `pyobsd` (`pyobs-core`'s daemon manager, `pyobs-core/pyobs/cli/pyobsd.py` — read directly, this app has no dependency on it) has its own global config file with a `syslog` key it already uses to decide `--syslog` vs. not, when it starts modules itself. `modules/services.py`: `_pyobsd_config()` reads that same file — the exact candidate-path list and "first one found wins" order as `pyobs-core/pyobs/cli/_cli.py`'s `CLI._load_config` (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, `/opt/pyobs/storage/pyobs.yaml`) — and returns just its `pyobsd` section, `{}` if no candidate exists or the file is malformed (never raises; this is a convenience auto-detection, not something that should ever break a page load). `_log_backend()` (the single existing choke point every journald-vs-file branch already called through) now checks `settings.PYOBS_LOG_BACKEND` first — if explicitly set (`"file"`/`"journald"`), that always wins, so any deployment that already configured this keeps working completely unchanged — and only falls through to `"journald" if _pyobsd_config().get("syslog") else "file"` when it's unset. `pyobs_web_admin/settings.py`'s default changed from `"file"` to `None` specifically so `_log_backend()` can tell "admin explicitly wants file" apart from "never configured, please auto-detect" — before this change every installation implicitly had an explicit `"file"` value (Django's settings loading always supplies the module-level default), so auto-detection could never have activated for anyone. Tests: `PyobsdAutoDetectTests` in `modules/tests.py` (10 tests — no-candidate-file, reads the `pyobsd` section, missing section, malformed YAML doesn't crash, first-existing-candidate-wins, auto-detects both `journald` and `file`, explicit setting overrides auto-detection in both directions), all patching `services._PYOBSD_CONFIG_CANDIDATES` to a controlled temp path rather than touching the real candidate locations, so results don't depend on whatever happens to exist on the machine running the tests. Verified live via `manage.py shell` against the real settings module (not just the test harness): confirmed a real temp `pyobs.yaml` with `syslog: true`/`false` correctly auto-detects `journald`/`file` when `PYOBS_LOG_BACKEND` is unset, and confirmed an explicit `PYOBS_LOG_BACKEND` setting overrides auto-detection even when the file disagrees. `python manage.py test modules` — 122/122 passing, no regressions (this repo's real `local_settings.py` already has `PYOBS_LOG_BACKEND = "journald"` set explicitly, confirmed to still take priority over auto-detection unchanged).
 
 ## Motivation
 
@@ -93,7 +97,8 @@ independent settings that could drift out of sync with each other.
 ### Settings
 
 ```python
-PYOBS_LOG_BACKEND = "file"       # "file" (default) or "journald"
+PYOBS_LOG_BACKEND = None       # None (default): auto-detect from pyobsd's own config;
+                                # "file" or "journald": explicit override
 ```
 
 One fleet-wide switch, grouped with the existing `PYOBS_LOG_DIR`/`PYOBS_LOG_LEVEL` settings —
@@ -101,7 +106,19 @@ matches how those are already global, not per-module; this app has no existing m
 per-module settings (every per-module distinction today comes from that module's own YAML
 config, and log backend isn't part of the `acl:`/`comm:` surface). **Settled: global-only, no
 per-module override** — revisit only if a real fleet needs a migrate-one-module-at-a-time mix,
-same reasoning `ACL_MATRIX.md`'s Groups section uses for deferring its own similar questions.
+same reasoning `ACL_GROUPS.md` uses for deferring its own similar questions.
+
+**v1.1: auto-detected from `pyobsd`'s own config, not a manual setting by default.**
+`pyobsd` (`pyobs-core`'s daemon manager, `pyobs-core/pyobs/cli/pyobsd.py`) reads a global
+config file (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, or `/opt/pyobs/storage/pyobs.yaml`,
+first one found wins — `pyobs-core/pyobs/cli/_cli.py`'s `CLI._load_config`) with its own
+`pyobsd: syslog: true/false` key, which decides whether *it* starts modules with `--syslog`.
+Requiring `PYOBS_LOG_BACKEND` set separately in `local_settings.py` meant it could silently
+drift out of sync with what `pyobsd` actually does — reading the same file removes that risk
+entirely for anyone who doesn't explicitly override it. `PYOBS_LOG_BACKEND`'s default changed
+from `"file"` to `None` so this app can tell "never configured, please auto-detect" apart from
+"admin explicitly wants file" — an explicit `"file"`/`"journald"` setting always wins over
+auto-detection, so any existing deployment that already set this keeps working unchanged.
 
 **Settled: switching backends is a clean cutover, not a migration.** A module's log history
 written under the old backend becomes invisible to `get_logs` once `PYOBS_LOG_BACKEND` flips —
@@ -283,3 +300,5 @@ flagged ("tested from the same machine... strong evidence, not absolute proof").
   live end-to-end — not before, matching this repo's existing practice of not documenting a
   setting in README before it's actually consumed by code (see `EJABBERD_INTEGRATION.md`'s
   Progress log, Work Plan item 2, for the same reasoning applied there).
+- [x] **v1.1, not in the original plan.** Auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own
+  config file instead of requiring it set a second time — see Progress log.

@@ -48,8 +48,44 @@ def _log_level() -> str:
     return getattr(settings, "PYOBS_LOG_LEVEL", "info")
 
 
+_PYOBSD_CONFIG_CANDIDATES = [
+    os.path.expanduser(os.path.join("~", ".config", "pyobs.yaml")),
+    os.path.join("/", "etc", "pyobs.yaml"),
+    os.path.join("/", "opt", "pyobs", "storage", "pyobs.yaml"),
+]
+
+
+def _pyobsd_config() -> dict:
+    """Reads pyobsd's own global config file, if one exists -- same candidate paths and
+    "first one found wins" order as pyobs-core's own CLI._load_config
+    (pyobs-core/pyobs/cli/_cli.py), so this reads exactly the file pyobsd itself would.
+    Returns just the "pyobsd" section (PyobsDaemonCLI.CONFIG_SECTION in
+    pyobs-core/pyobs/cli/pyobsd.py), {} if no candidate exists or the file doesn't have that
+    section. A malformed file is treated the same as a missing one -- this is a convenience
+    auto-detection, not something that should ever crash a page load.
+    """
+    for path in _PYOBSD_CONFIG_CANDIDATES:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    cfg = yaml.safe_load(f)
+            except (OSError, yaml.YAMLError):
+                return {}
+            return (cfg or {}).get("pyobsd") or {}
+    return {}
+
+
 def _log_backend() -> str:
-    return getattr(settings, "PYOBS_LOG_BACKEND", "file")
+    """"file" or "journald". An explicit PYOBS_LOG_BACKEND setting always wins (admin
+    override); otherwise auto-detected from pyobsd's own config (_pyobsd_config): "journald"
+    if its syslog key is true, "file" otherwise -- matching pyobsd's own --syslog default of
+    False. Auto-detecting instead of requiring this configured a second time removes the
+    risk of PYOBS_LOG_BACKEND silently drifting out of sync with what pyobsd actually starts
+    modules with -- see JOURNALD_LOGS.md."""
+    configured = getattr(settings, "PYOBS_LOG_BACKEND", None)
+    if configured:
+        return configured
+    return "journald" if _pyobsd_config().get("syslog") else "file"
 
 
 # journald PRIORITY -> pyobs log level. Not the naively-expected {2: CRITICAL, ...} --

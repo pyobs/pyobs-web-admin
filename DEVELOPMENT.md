@@ -38,7 +38,9 @@ is fine, that's what the Design section of the eventual doc is for.
   upstream) instead of a flat file, and reads them back from there for the existing log
   viewer. **Implemented and verified live end-to-end.** Only one deploy-time question left
   open (whether a genuinely group-less service account needs an explicit `journalctl`
-  permission grant), see that doc's Status.
+  permission grant), see that doc's Status. `PYOBS_LOG_BACKEND` now defaults to auto-detecting
+  from `pyobsd`'s own config file (`pyobs-core`'s daemon manager) instead of requiring it set
+  a second time — an explicit setting still overrides.
 - [EJABBERD_USER_MANAGEMENT.md](EJABBERD_USER_MANAGEMENT.md) — register/reset-password/ban/
   unregister XMPP accounts for a module's `comm.user` from pyobs-web-admin, closing the
   write-side gap `EJABBERD_INTEGRATION.md` deliberately left open. **Implemented and

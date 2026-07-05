@@ -1032,6 +1032,76 @@ class EjabberdPathSelectionTests(unittest.TestCase):
         self.assertFalse(ejabberd._use_http())
 
 
+# ── pyobsd config auto-detection (see JOURNALD_LOGS.md) ──────────────────────────
+
+class PyobsdAutoDetectTests(unittest.TestCase):
+    """_log_backend()'s auto-detection reads the same global config file pyobsd itself
+    reads (pyobs-core/pyobs/cli/_cli.py's CLI._load_config) -- these tests point
+    services._PYOBSD_CONFIG_CANDIDATES at a controlled temp path instead of the real
+    ~/.config/pyobs.yaml /etc/pyobs.yaml /opt/pyobs/storage/pyobs.yaml locations, so results
+    don't depend on whatever happens to exist on the machine running the tests."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.candidate = str(self.tmp_path / "pyobs.yaml")
+        self._patch = patch.object(services, "_PYOBSD_CONFIG_CANDIDATES", [self.candidate])
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        self.tmp.cleanup()
+
+    def _write(self, content: str) -> None:
+        Path(self.candidate).write_text(content)
+
+    def test_no_candidate_file_returns_empty(self):
+        self.assertEqual(services._pyobsd_config(), {})
+
+    def test_reads_pyobsd_section(self):
+        self._write("pyobsd:\n  syslog: true\n  log_level: debug\n")
+        self.assertEqual(services._pyobsd_config(), {"syslog": True, "log_level": "debug"})
+
+    def test_missing_pyobsd_section_returns_empty(self):
+        self._write("some_other_section:\n  key: value\n")
+        self.assertEqual(services._pyobsd_config(), {})
+
+    def test_malformed_yaml_returns_empty_not_crash(self):
+        self._write("pyobsd: [this is not: valid yaml structure\n")
+        self.assertEqual(services._pyobsd_config(), {})
+
+    def test_first_existing_candidate_wins(self):
+        second = str(self.tmp_path / "second.yaml")
+        Path(second).write_text("pyobsd:\n  syslog: true\n")
+        with patch.object(services, "_PYOBSD_CONFIG_CANDIDATES", [self.candidate, second]):
+            self._write("pyobsd:\n  syslog: false\n")
+            self.assertEqual(services._pyobsd_config(), {"syslog": False})
+
+    @override_settings(PYOBS_LOG_BACKEND=None)
+    def test_log_backend_defaults_to_file_when_no_config_and_no_override(self):
+        self.assertEqual(services._log_backend(), "file")
+
+    @override_settings(PYOBS_LOG_BACKEND=None)
+    def test_log_backend_auto_detects_journald(self):
+        self._write("pyobsd:\n  syslog: true\n")
+        self.assertEqual(services._log_backend(), "journald")
+
+    @override_settings(PYOBS_LOG_BACKEND=None)
+    def test_log_backend_auto_detects_file_when_syslog_false(self):
+        self._write("pyobsd:\n  syslog: false\n")
+        self.assertEqual(services._log_backend(), "file")
+
+    @override_settings(PYOBS_LOG_BACKEND="file")
+    def test_explicit_setting_overrides_auto_detected_journald(self):
+        self._write("pyobsd:\n  syslog: true\n")
+        self.assertEqual(services._log_backend(), "file")
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    def test_explicit_setting_overrides_auto_detected_file(self):
+        self._write("pyobsd:\n  syslog: false\n")
+        self.assertEqual(services._log_backend(), "journald")
+
+
 # ── journald log backend (see JOURNALD_LOGS.md) ─────────────────────────────────
 
 class StartModuleLogBackendTests(unittest.TestCase):
