@@ -66,6 +66,9 @@ napoleon_use_ivar = True
 # show c'tor parameters in class only
 autoclass_content = "both"
 
+# avoid false "duplicate label" warnings for same-named sections across different pages
+autosectionlabel_prefix_document = True
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
