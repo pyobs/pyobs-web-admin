@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import re
 import signal
@@ -12,8 +14,18 @@ _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 import psutil
 import yaml
 from django.conf import settings
+from ruamel.yaml import YAML as _RuamelYAML
 
 from modules.pyobs_config import pre_process_yaml
+
+# Used only to serialize a *fresh* acl: block for _replace_local_acl_block -- ruamel's
+# round-trip dumper reads more like hand-written YAML (indented block sequences, minimal
+# quoting) than plain pyyaml's default output. Not used for reading/round-tripping a whole
+# config file: the raw file can contain bare {include ...} lines that aren't valid
+# standalone YAML (see pyobs_config.pre_process_yaml), so it's never parsed generically.
+_ACL_YAML = _RuamelYAML()
+_ACL_YAML.indent(mapping=2, sequence=4, offset=2)
+_ACL_YAML.default_flow_style = False
 
 
 def _config_dir() -> Path:
@@ -34,6 +46,54 @@ def _pyobs_exec() -> str:
 
 def _log_level() -> str:
     return getattr(settings, "PYOBS_LOG_LEVEL", "info")
+
+
+_PYOBSD_CONFIG_CANDIDATES = [
+    os.path.expanduser(os.path.join("~", ".config", "pyobs.yaml")),
+    os.path.join("/", "etc", "pyobs.yaml"),
+    os.path.join("/", "opt", "pyobs", "storage", "pyobs.yaml"),
+]
+
+
+def _pyobsd_config() -> dict:
+    """Reads pyobsd's own global config file, if one exists -- same candidate paths and
+    "first one found wins" order as pyobs-core's own CLI._load_config
+    (pyobs-core/pyobs/cli/_cli.py), so this reads exactly the file pyobsd itself would.
+    Returns just the "pyobsd" section (PyobsDaemonCLI.CONFIG_SECTION in
+    pyobs-core/pyobs/cli/pyobsd.py), {} if no candidate exists or the file doesn't have that
+    section. A malformed file is treated the same as a missing one -- this is a convenience
+    auto-detection, not something that should ever crash a page load.
+    """
+    for path in _PYOBSD_CONFIG_CANDIDATES:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    cfg = yaml.safe_load(f)
+            except (OSError, yaml.YAMLError):
+                return {}
+            return (cfg or {}).get("pyobsd") or {}
+    return {}
+
+
+def _log_backend() -> str:
+    """"file" or "journald". An explicit PYOBS_LOG_BACKEND setting always wins (admin
+    override); otherwise auto-detected from pyobsd's own config (_pyobsd_config): "journald"
+    if its syslog key is true, "file" otherwise -- matching pyobsd's own --syslog default of
+    False. Auto-detecting instead of requiring this configured a second time removes the
+    risk of PYOBS_LOG_BACKEND silently drifting out of sync with what pyobsd actually starts
+    modules with -- see DEV_JOURNALD_LOGS.md."""
+    configured = getattr(settings, "PYOBS_LOG_BACKEND", None)
+    if configured:
+        return configured
+    return "journald" if _pyobsd_config().get("syslog") else "file"
+
+
+# journald PRIORITY -> pyobs log level. Not the naively-expected {2: CRITICAL, ...} --
+# logging.CRITICAL and logging.FATAL are the same int (50) in Python's logging module, so
+# logging_journald.JournaldLogHandler.LEVELS's dict literal silently collapses to
+# LEVELS[50] == 0, not 2. Verified live against a real emitted CRITICAL record -- see
+# DEV_JOURNALD_LOGS.md, Design, for the full trail. 2/1/5 never occur in practice.
+_JOURNALD_PRIORITY_TO_LEVEL = {0: "CRITICAL", 3: "ERROR", 4: "WARNING", 6: "INFO", 7: "DEBUG"}
 
 
 def validate_name(name: str) -> None:
@@ -121,26 +181,22 @@ def start_module(name: str) -> tuple[bool, str]:
         return False, f"Config file not found: {config_file}"
 
     pid_file = _pid_file(name)
-    log_file = _log_dir() / f"{_active_name(name)}.log"
 
     _run_dir().mkdir(parents=True, exist_ok=True)
-    _log_dir().mkdir(parents=True, exist_ok=True)
+
+    args = [_pyobs_exec(), "--pid-file", str(pid_file), "--log-level", _log_level()]
+    if _log_backend() == "journald":
+        args.append("--syslog")
+    else:
+        log_file = _log_dir() / f"{_active_name(name)}.log"
+        _log_dir().mkdir(parents=True, exist_ok=True)
+        args += ["--log-file", str(log_file)]
+    args.append(str(config_file))
 
     try:
         # pyobs daemonizes itself (python-daemon double-fork) when --pid-file is given.
         # The immediate child exits quickly; subprocess.run returns with code 0.
-        result = subprocess.run(
-            [
-                _pyobs_exec(),
-                "--pid-file", str(pid_file),
-                "--log-file", str(log_file),
-                "--log-level", _log_level(),
-                str(config_file),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
     except subprocess.TimeoutExpired:
         return False, "Timed out waiting for module to start"
     except FileNotFoundError:
@@ -245,13 +301,67 @@ def restart_module(name: str) -> tuple[bool, str]:
     return ok, start_msg
 
 
+# ── journald log backend ─────────────────────────────────────────────────────
+#
+# Matched on the exact `name` passed in here, not `_active_name(name)`: pyobs's own
+# PYOBS_MODULE field is Path(config).stem, and start_module() invokes pyobs against
+# `{name}.yaml` verbatim (leading underscore and all, for a deactivated module) -- unlike
+# the file backend's log filename, which is deliberately normalized via _active_name() so
+# toggling activation doesn't rename the log file. See DEV_JOURNALD_LOGS.md, Current state.
+
+def _journalctl_json(args: list[str]) -> list[dict]:
+    result = subprocess.run(["journalctl", *args, "-o", "json", "--no-pager"], capture_output=True, text=True)
+    entries = []
+    for raw in result.stdout.splitlines():
+        try:
+            entries.append(json.loads(raw))
+        except ValueError:
+            continue
+    return entries
+
+
+def _journal_entry_to_line(entry: dict) -> str:
+    ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000)
+    level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
+    module = entry.get("PYOBS_MODULE", "")
+    # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal
+    # formatter builds MESSAGE's "<module> <file>:<line> " prefix from %(filename)s (just the
+    # basename) -- basename() here so the two actually match. Caught live: without this, a
+    # real module's log lines doubled up the file:line info instead of stripping it.
+    code_file = os.path.basename(entry.get("CODE_FILE", "?"))
+    code_line = entry.get("CODE_LINE", "?")
+    message = entry.get("MESSAGE", "")
+    prefix = f"{module} {code_file}:{code_line} "
+    if message.startswith(prefix):
+        message = message[len(prefix):]
+    return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
+
+
+def _get_logs_journald(name: str, lines: int) -> list[str]:
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "-n", str(lines)])
+    return [_journal_entry_to_line(e) for e in entries]
+
+
+def _get_log_stats_journald(name: str) -> dict:
+    counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "--since", "-24h"])
+    for entry in entries:
+        level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
+        if level:
+            counts[level] += 1
+    return counts
+
+
 def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
     validate_name(name)
-    log_file = _log_dir() / f"{_active_name(name)}.log"
-    if not log_file.exists():
-        return []
-    result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
-    log_lines = result.stdout.splitlines()
+    if _log_backend() == "journald":
+        log_lines = _get_logs_journald(name, lines)
+    else:
+        log_file = _log_dir() / f"{_active_name(name)}.log"
+        if not log_file.exists():
+            return []
+        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
+        log_lines = result.stdout.splitlines()
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
     return log_lines
@@ -260,8 +370,78 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
 _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 
 
+def _get_all_logs_journald(names: list[str] | None, lines: int) -> list[str]:
+    # names is None means "no PYOBS_MODULE restriction at all" -- broader than "every
+    # currently configured module," since it also surfaces entries from a module whose
+    # config has since been removed/renamed. names == [] means the caller explicitly
+    # deselected every module, which must yield nothing, not fall back to unrestricted.
+    if names is not None and not names:
+        return []
+    args = ["SYSLOG_IDENTIFIER=pyobs"]
+    if names:
+        # Repeating a field name is journalctl's own OR syntax -- combined with the
+        # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
+        args += [f"PYOBS_MODULE={n}" for n in names]
+    args += ["-n", str(lines)]
+    entries = _journalctl_json(args)
+    return [_journal_entry_to_line(e) for e in entries]
+
+
+def merge_log_lines(line_lists: list[list[str]], lines: int) -> list[str]:
+    """Merges several already-formatted, already-oldest-first-ordered log line lists into one
+    list ordered by each line's own leading timestamp, trimmed to the overall last `lines`.
+
+    Used both for the file backend's per-module tail merge (_get_all_logs_file) and, in
+    views.py, for combining each hub host's own already-merged fleet-wide result into one
+    cross-host view -- same "no shared time index, so merge-and-trim after the fact" shape
+    either way, just one level up in the second case.
+    """
+    entries: list[tuple[datetime, int, int, str]] = []
+    for list_index, line_list in enumerate(line_lists):
+        for order, line in enumerate(line_list):
+            m = _TS_RE.match(line)
+            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") if m else datetime.min
+            entries.append((ts, list_index, order, line))
+    entries.sort(key=lambda e: (e[0], e[1], e[2]))
+    return [line for _, _, _, line in entries[-lines:]]
+
+
+def _get_all_logs_file(names: list[str], lines: int) -> list[str]:
+    # Each module's own file has no cross-module time index, so the merge tails `lines`
+    # from every file independently, then sorts the union by each line's own leading
+    # timestamp and trims to the overall last `lines` -- an approximation (a module with
+    # much higher log volume could in principle push another's tail out of the merged
+    # window) rather than a true global tail, but matches this app's existing "good enough,
+    # not a from-scratch index" tolerance for the file backend (see get_log_stats's binary
+    # search comment).
+    line_lists = []
+    for name in names:
+        log_file = _log_dir() / f"{_active_name(name)}.log"
+        if not log_file.exists():
+            continue
+        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
+        line_lists.append(result.stdout.splitlines())
+    return merge_log_lines(line_lists, lines)
+
+
+def get_all_logs(names: list[str] | None = None, lines: int = 300, filter_str: str = "") -> list[str]:
+    if names is not None:
+        for name in names:
+            validate_name(name)
+    if _log_backend() == "journald":
+        log_lines = _get_all_logs_journald(names, lines)
+    else:
+        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines)
+    if filter_str:
+        log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
+    return log_lines
+
+
 def get_log_stats(name: str) -> dict:
     validate_name(name)
+    if _log_backend() == "journald":
+        return _get_log_stats_journald(name)
+
     counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
     log_file = _log_dir() / f"{_active_name(name)}.log"
     if not log_file.exists():
@@ -343,6 +523,26 @@ def save_config(name: str, content: str) -> None:
     config_file.write_text(content)
 
 
+_NEW_MODULE_TEMPLATE = (
+    "# class: pyobs.modules.<package>.<ClassName> -- see other modules' configs, or\n"
+    "# pyobs-core's own docs, for the class path\n"
+    "class: \n"
+)
+
+
+def create_module(name: str) -> None:
+    """Creates a brand-new module config with minimal starter YAML -- unlike save_config,
+    which refuses to write a file that doesn't exist yet, this is the one path that's
+    allowed to. Refuses if a config with this name already exists, same as it would if
+    someone tried to hand-create a file that's already there."""
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if config_file.exists():
+        raise FileExistsError(f"Module {name!r} already exists")
+    _config_dir().mkdir(parents=True, exist_ok=True)
+    config_file.write_text(_NEW_MODULE_TEMPLATE)
+
+
 # ── ACL resolution ────────────────────────────────────────────────────────────
 
 _TOP_LEVEL_KEY_RE = re.compile(r"^(\S+):(.*)$")
@@ -355,22 +555,26 @@ def _shared_name(filename: str) -> str:
     return filename[: -len(".yaml")] if filename.endswith(".yaml") else filename
 
 
-def _acl_source_file(raw: str) -> str | None:
-    """Given a module's raw (unprocessed) config text, determines whether its "acl:" key's
+def _block_source_file(raw: str, key: str) -> str | None:
+    """Given a module's raw (unprocessed) config text, determines whether its `<key>:` key's
     value is defined directly in the module's own file or pulled in from a shared fragment
     via {include}. Returns the shared fragment's name (as used by list_shared_configs()),
-    or None if the acl block (if any) is defined locally.
+    or None if the block (if any) is defined locally. Generalized from what used to be
+    acl:-only (`_acl_source_file`) so `get_resolved_comm` can reuse the exact same
+    detection for `comm:` -- see DEV_EJABBERD_USER_MANAGEMENT.md's config write-back, which needs
+    the same "is this locally editable or does it live in a shared fragment" answer for
+    comm.password that get_resolved_acl already gives for acl:.
 
     Only recognizes the two patterns pyobs-web-admin's own editor can produce (see
-    DEVELOPMENT.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
-    whose target's own top-level content defines "acl:", or an "acl:" key whose entire
+    DEV_ACL_MATRIX.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
+    whose target's own top-level content defines `<key>:`, or a `<key>:` key whose entire
     value is a single `{include x.shared.yaml}`. A more deeply nested include structure
     (e.g. an include reaching into a dotted sub-key of a larger fragment) falls back to
     being reported as "own file" -- a conservative default: such a rule just isn't routed
     to a shared-fragment edit yet, and is edited in the module's own file instead.
     """
     lines = raw.splitlines()
-    acl_block: list[str] | None = None
+    key_block: list[str] | None = None
     bare_includes: list[str] = []
 
     i = 0
@@ -378,28 +582,28 @@ def _acl_source_file(raw: str) -> str | None:
         line = lines[i]
         if line and not line[0].isspace():
             m = _TOP_LEVEL_KEY_RE.match(line)
-            if m and m.group(1) == "acl":
+            if m and m.group(1) == key:
                 block = [line]
                 i += 1
                 while i < len(lines) and (lines[i] == "" or lines[i][0].isspace()):
                     block.append(lines[i])
                     i += 1
-                acl_block = block
+                key_block = block
                 continue
             inc = _INCLUDE_RE.fullmatch(line.strip())
             if inc:
                 bare_includes.append(inc.group(1))
         i += 1
 
-    if acl_block is not None:
-        inline_value = acl_block[0].split(":", 1)[1].strip()
-        body = "\n".join(acl_block[1:]).strip() or inline_value
+    if key_block is not None:
+        inline_value = key_block[0].split(":", 1)[1].strip()
+        body = "\n".join(key_block[1:]).strip() or inline_value
         inc = _INCLUDE_RE.fullmatch(body)
         return _shared_name(inc.group(1)) if inc else None
 
     for filename in bare_includes:
         included = _config_dir() / filename
-        if included.exists() and re.search(r"(?m)^acl:", included.read_text()):
+        if included.exists() and re.search(rf"(?m)^{key}:", included.read_text()):
             return _shared_name(filename)
     return None
 
@@ -421,7 +625,277 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     acl = resolved.get("acl")
     if acl is None:
         return None, None
-    return acl, _acl_source_file(config_file.read_text())
+    return acl, _block_source_file(config_file.read_text(), "acl")
+
+
+def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
+    """Returns (comm_user, comm_password, source) for a module's *effective* comm: block --
+    the same resolution get_resolved_acl uses for acl:, via pre_process_yaml +
+    yaml.safe_load, since comm: can equally arrive via {include} or a YAML anchor/merge key
+    (a real config uses `comm: {<<: *comm, user: camera, password: pyobs}`).
+
+    comm_user/comm_password are None if the module has no comm: block at all (confirmed real
+    example: HttpFileCache) or the respective sub-key is missing -- not an error, just "this
+    module was never expected to have an XMPP identity" (see DEV_EJABBERD_INTEGRATION.md, "Where
+    it surfaces"). source is None if comm: is defined directly in the module's own file, or
+    the shared fragment's name if pulled in via {include}.
+
+    The password is needed (not just user) for DEV_EJABBERD_USER_MANAGEMENT.md's register
+    action: it registers a new XMPP account using whatever password the module's config
+    *already* declares, rather than prompting for a new one -- the whole point is making an
+    existing comm.user/comm.password config actually work, not choosing a fresh credential.
+    source is needed for that same doc's config write-back (change_password), which must
+    refuse to edit comm.password: when it resolves to a shared fragment, exactly the guard
+    save_local_acl already applies to acl:.
+    """
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if not config_file.exists():
+        return None, None, None
+    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    comm = resolved.get("comm")
+    if not isinstance(comm, dict):
+        return None, None, None
+    user = comm.get("user")
+    password = comm.get("password")
+    return (
+        user if isinstance(user, str) else None,
+        password if isinstance(password, str) else None,
+        _block_source_file(config_file.read_text(), "comm"),
+    )
+
+
+def get_comm_user(name: str) -> str | None:
+    """Resolves a module's own XMPP identity -- its comm.user, e.g. "camera" in
+    comm: {user: camera, ...}. Display-only convenience wrapper around get_resolved_comm,
+    dropping the password/source -- most callers (dashboard, module page) only ever show
+    this value, they don't edit it or need its credential. See get_resolved_comm for the
+    fuller resolution DEV_EJABBERD_USER_MANAGEMENT.md's write actions need.
+    """
+    return get_resolved_comm(name)[0]
+
+
+def find_modules_sharing_comm_user(user: str) -> list[str]:
+    """Every locally-configured module whose resolved comm.user equals user.
+
+    Needed because DEV_EJABBERD_USER_MANAGEMENT.md's write actions (register/change_password/
+    ban_account/unban_account/unregister) affect *every* module sharing an XMPP identity,
+    not just whichever module's page an action was triggered from -- DEV_EJABBERD_INTEGRATION.md's
+    own "third bug" documents _test and camera sharing one comm.user for real, in this exact
+    fleet, not a hypothetical edge case.
+    """
+    return [name for name in list_modules() if get_comm_user(name) == user]
+
+
+def build_comm_user_map() -> dict[str, list[str]]:
+    """Maps every local module's resolved comm.user to the list of module names using it --
+    the reverse direction of find_modules_sharing_comm_user, built once across all of
+    list_modules() rather than queried one identity at a time.
+
+    Feeds the fleet-wide Users page (DEVELOPMENT.md's Ideas -> promoted here): unlike the
+    module page's own XMPP row, that page needs "for every registered ejabberd account,
+    which module(s) if any use it" -- the reverse lookup, not "for this one identity, which
+    modules share it."
+    """
+    mapping: dict[str, list[str]] = {}
+    for name in list_modules():
+        user = get_comm_user(name)
+        if user:
+            mapping.setdefault(user, []).append(name)
+    return mapping
+
+
+def _yaml_scalar(value: str) -> str:
+    """Renders value as a single-line YAML scalar suitable for splicing directly after
+    "key: " in raw config text -- reuses PyYAML's own quoting rules (handles colons, quotes,
+    leading/trailing whitespace, etc. correctly) via a throwaway single-key dict dump,
+    rather than hand-rolling escaping logic for a config value as sensitive as a password."""
+    dumped = yaml.safe_dump({"_": value}, default_flow_style=False).strip()
+    return dumped.split(": ", 1)[1]
+
+
+def _replace_comm_password(raw: str, new_password: str) -> str:
+    """Replaces just the password: sub-value inside a module's top-level comm: block,
+    leaving every other line in that block -- including a `<<: *comm` anchor merge key,
+    `user:`, or anything else -- byte-for-byte untouched.
+
+    Unlike _replace_local_acl_block, which re-serializes its whole block fresh, comm: can't
+    be treated that way without destroying an anchor-merge reference: a real config's actual
+    shape is `comm: {<<: *comm, user: telescope, password: pyobs}` in block style (confirmed
+    against this box's own telescope.yaml) -- re-dumping the resolved dict from scratch would
+    expand `<<: *comm` into a flat copy of every merged-in key instead of preserving the
+    merge-key shorthand, a much more destructive change than acl:'s "comments are lost"
+    tradeoff.
+
+    Only valid to call when comm: is known to be defined directly in this file (source is
+    None, see get_resolved_comm) and already has its own password: sub-key. Raises
+    ValueError if no top-level comm: block or no password: sub-key is found -- this doesn't
+    handle adding a password: key that doesn't exist yet, matching this feature's scope of
+    managing an *existing* comm.user (see DEV_EJABBERD_USER_MANAGEMENT.md, "Modules with no
+    comm: block").
+    """
+    lines = raw.splitlines()
+    block_start = block_end = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "comm":
+                block_start = i
+                i += 1
+                while i < len(lines) and lines[i] != "" and lines[i][0].isspace():
+                    i += 1
+                block_end = i
+                break
+        i += 1
+
+    if block_start is None:
+        raise ValueError("no top-level comm: block found")
+
+    password_re = re.compile(r"^(\s*)password\s*:\s*.*$")
+    for j in range(block_start, block_end):
+        m = password_re.match(lines[j])
+        if m:
+            lines[j] = f"{m.group(1)}password: {_yaml_scalar(new_password)}"
+            return "\n".join(lines) + "\n"
+
+    raise ValueError("comm: block has no password: sub-key to replace")
+
+
+def save_comm_password(user: str, new_password: str) -> list[str]:
+    """Writes new_password into comm.password: for every local module whose comm.user
+    resolves to user, splicing just that sub-key (_replace_comm_password). Returns the list
+    of module names updated.
+
+    All-or-nothing: if *any* matching module's comm: resolves to a shared fragment, raises
+    before writing to *any* of them -- a partial write (some modules updated, others left
+    with a now-stale password) would be a worse outcome than not writing at all, exactly the
+    risk DEV_EJABBERD_USER_MANAGEMENT.md's Design section calls out for a shared comm.user. If
+    verification fails partway through (some files written, a later one doesn't check out),
+    rolls back every file this call itself wrote, mirroring save_local_acl's safety net but
+    extended across the whole matching set.
+    """
+    names = find_modules_sharing_comm_user(user)
+    if not names:
+        raise ValueError(f'no local module has comm.user "{user}"')
+
+    originals: dict[str, str] = {}
+    for name in names:
+        _, _, source = get_resolved_comm(name)
+        if source is not None:
+            raise ValueError(
+                f'comm: for "{name}" (comm.user "{user}") comes from shared fragment '
+                f'"{source}" -- edit it there instead'
+            )
+        original = get_config(name)
+        if original is None:
+            raise FileNotFoundError(f"Config file not found for module: {name}")
+        originals[name] = original
+
+    written: list[str] = []
+    try:
+        for name in names:
+            save_config(name, _replace_comm_password(originals[name], new_password))
+            written.append(name)
+
+        for name in names:
+            resolved_user, resolved_password, _ = get_resolved_comm(name)
+            if resolved_user != user or resolved_password != new_password:
+                raise ValueError(f'could not verify the comm.password: edit for "{name}" after writing')
+    except Exception:
+        for name in written:
+            save_config(name, originals[name])
+        raise
+
+    return names
+
+
+def _dump_acl_block(acl: dict) -> list[str]:
+    """Serializes {"acl": acl} via ruamel.yaml into the lines spliced into a module's raw
+    config text by _replace_local_acl_block. This only ever generates a *fresh* acl: block
+    from scratch -- it isn't a round-trip of the file's previous acl: content, so any
+    comments a human had written inside the old block are lost on save (comments elsewhere
+    in the file are untouched, since the splice never rewrites those lines)."""
+    buf = io.StringIO()
+    _ACL_YAML.dump({"acl": acl}, buf)
+    return buf.getvalue().rstrip("\n").splitlines()
+
+
+def _replace_local_acl_block(raw: str, acl: dict | None) -> str:
+    """Replaces (or adds, or removes) a module's top-level "acl:" block in its raw config
+    text, leaving every other line -- other keys, {include ...} directives, comments, blank
+    lines -- byte-for-byte untouched. Only valid to call when the acl: block is known to be
+    defined directly in this file rather than pulled in via {include} (callers must check
+    get_resolved_acl's source is None first -- see DEV_ACL_MATRIX.md, "Editing from the
+    matrix", for why writing through a shared fragment must never happen silently).
+
+    Locates the block the same way _block_source_file does (walk top-level keys, a "acl:"
+    line plus every following blank-or-indented line is the block), except a blank line
+    ends the block here rather than being absorbed into it -- a simplifying assumption
+    (an acl: block with an intentional blank line in the middle of it, e.g. between "mode:"
+    and "allow:", would confuse this). save_local_acl re-resolves the acl: after writing
+    and rolls back on mismatch, which catches this rather than silently corrupting the file.
+    """
+    lines = raw.splitlines()
+    start = end = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line and not line[0].isspace():
+            m = _TOP_LEVEL_KEY_RE.match(line)
+            if m and m.group(1) == "acl":
+                start = i
+                i += 1
+                while i < len(lines) and lines[i] != "" and lines[i][0].isspace():
+                    i += 1
+                end = i
+                break
+        i += 1
+
+    new_block = _dump_acl_block(acl) if acl else []
+
+    if start is not None:
+        result = lines[:start] + new_block + lines[end:]
+    elif new_block:
+        result = lines + ([""] if lines and lines[-1] != "" else []) + new_block
+    else:
+        return raw
+
+    return "\n".join(result) + "\n"
+
+
+def save_local_acl(name: str, acl: dict | None) -> None:
+    """Writes a structured acl: edit (from the matrix's per-target edit form) into a
+    module's own raw config file.
+
+    Splices just the acl: block into the raw text (_replace_local_acl_block) rather than
+    doing a full YAML round-trip of the whole file, since the raw file can contain bare
+    {include ...} lines that aren't valid standalone YAML on their own (see
+    pyobs_config.pre_process_yaml) -- a generic YAML parser can't load it directly.
+
+    Refuses to write if the module's acl: currently comes from a shared fragment; callers
+    must route that edit to the fragment's own file instead (get_resolved_acl's source).
+    After writing, re-resolves the module's acl: and rolls back to the original content if
+    it doesn't match what was requested -- seeing DEV_ACL_MATRIX.md's note on the splice's
+    simplifying assumption, this is the safety net against a silent bad write rather than
+    trying to make the splice logic exhaustively correct up front.
+    """
+    validate_name(name)
+    _, source = get_resolved_acl(name)
+    if source is not None:
+        raise ValueError(f'acl: for "{name}" comes from shared fragment "{source}" -- edit it there instead')
+
+    original = get_config(name)
+    if original is None:
+        raise FileNotFoundError(f"Config file not found for module: {name}")
+
+    save_config(name, _replace_local_acl_block(original, acl))
+
+    resolved, new_source = get_resolved_acl(name)
+    if new_source is not None or (resolved or None) != (acl or None):
+        save_config(name, original)
+        raise ValueError("could not verify the acl: edit after writing -- rolled back, no changes made")
 
 
 # ── ACL matrix ────────────────────────────────────────────────────────────────
@@ -432,7 +906,7 @@ _INTERFACE_NAME_RE = re.compile(r"^I[A-Z]\w*$")
 def _is_interface_name(entry: str) -> bool:
     """Heuristic for telling an interface-name shorthand entry (e.g. "ICamera") in an acl
     allow list apart from a plain method name, without importing pyobs-core's own
-    pyobs.interfaces to check against (see DEVELOPMENT.md, "Interface-name shorthand").
+    pyobs.interfaces to check against (see DEV_ACL_MATRIX.md, "Interface-name shorthand").
     Relies on pyobs's own naming convention: interfaces are always IPascalCase, method
     names are always snake_case, so the two can never collide.
     """
@@ -441,7 +915,7 @@ def _is_interface_name(entry: str) -> bool:
 
 def _acl_cell(acl: dict | None, caller: str) -> dict:
     """Computes one (target, caller) cell's value from the target's resolved acl: block,
-    per the table in DEVELOPMENT.md, "What the matrix shows"."""
+    per the table in DEV_ACL_MATRIX.md, "What the matrix shows"."""
     if not acl:
         return {"kind": "open", "methods": None, "mode": "enforce"}
 
@@ -469,36 +943,52 @@ def _acl_cell(acl: dict | None, caller: str) -> dict:
     return {"kind": kind, "methods": methods, "mode": mode}
 
 
+def resolve_and_validate_acl(name: str) -> tuple[dict | None, str | None, str | None]:
+    """Like get_resolved_acl, but also validates the acl:'s shape (allow must be a mapping,
+    deny must be a list) and catches any resolution error (bad YAML, broken {include}, ...)
+    into a returned message instead of raising. Returns (acl, source, error) -- acl and
+    source are None whenever error is set. Shared by build_acl_matrix (one row's error
+    shouldn't abort the whole fleet-wide scan) and the single-module ACL tab endpoint
+    (api_acl's GET), which need the identical error-handling contract.
+    """
+    try:
+        acl, source = get_resolved_acl(name)
+        if acl is not None:
+            allow = acl.get("allow")
+            deny = acl.get("deny")
+            if allow is not None and not isinstance(allow, dict):
+                raise ValueError(f'acl "allow" must be a mapping of caller -> methods, got {type(allow).__name__}')
+            if deny is not None and not isinstance(deny, list):
+                raise ValueError(f'acl "deny" must be a list of callers, got {type(deny).__name__}')
+        return acl, source, None
+    except Exception as e:
+        return None, None, str(e)
+
+
 def build_acl_matrix() -> dict:
     """Builds the fleet-wide (target x caller) ACL matrix.
 
-    Rows are every module list_modules() returns; columns are the union of every caller
-    name mentioned in any module's resolved acl: block ("allow" keys or "deny" entries) --
-    not the same set as the modules themselves, see DEVELOPMENT.md, "What the matrix
-    shows". A module whose config/acl can't be resolved (bad YAML, broken {include}, ...)
-    is still included as a row, with its "error" set, rather than aborting the whole scan.
+    Rows are every module list_modules() returns; columns are that same full module list
+    *plus* every caller name mentioned in any module's resolved acl: block ("allow" keys or
+    "deny" entries) that isn't itself a managed module (e.g. a human/external caller like
+    "scheduler" if it has no config of its own) -- every module is always a column, whether
+    or not it's ever actually referenced as a caller anywhere, so "could A reach B" is
+    answerable for any pair, not just pairs where B happens to already appear in some acl:
+    block. A module whose config/acl can't be resolved (bad YAML, broken {include}, ...) is
+    still included as a row, with its "error" set, rather than aborting the whole scan.
     """
     targets = list_modules()
     acls: dict[str, dict | None] = {}
     sources: dict[str, str | None] = {}
     errors: dict[str, str] = {}
-    callers: set[str] = set()
+    callers: set[str] = set(targets)
 
     for name in targets:
-        try:
-            acl, source = get_resolved_acl(name)
-            if acl is not None:
-                allow = acl.get("allow")
-                deny = acl.get("deny")
-                if allow is not None and not isinstance(allow, dict):
-                    raise ValueError(f'acl "allow" must be a mapping of caller -> methods, got {type(allow).__name__}')
-                if deny is not None and not isinstance(deny, list):
-                    raise ValueError(f'acl "deny" must be a list of callers, got {type(deny).__name__}')
-        except Exception as e:
-            acl, source = None, None
-            errors[name] = str(e)
+        acl, source, error = resolve_and_validate_acl(name)
         acls[name] = acl
         sources[name] = source
+        if error:
+            errors[name] = error
         if acl:
             allow = acl.get("allow")
             deny = acl.get("deny")
@@ -520,4 +1010,26 @@ def build_acl_matrix() -> dict:
         for name in targets
     ]
 
+    return {"targets": rows, "callers": caller_names}
+
+
+def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
+    """Combines each host's build_acl_matrix()-shaped result into one fleet-wide matrix --
+    see DEV_ACL_MATRIX.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
+    pairs, e.g. [("localhost", build_acl_matrix()), ("MONETS", <that host's own matrix,
+    fetched via the hub proxy>), ...].
+
+    Each host only knows about the callers its own modules' acl: blocks reference, so a
+    row fetched from one host is missing cells for callers that only appear on some other
+    host. Cells are therefore recomputed here against the union of every host's callers,
+    reusing _acl_cell (a pure function of a target's acl: dict + a caller name -- safe to
+    call again outside the host that originally resolved that acl:) rather than trusting
+    each host's own host-local cells.
+    """
+    caller_names = sorted({c for _, matrix in per_host for c in matrix["callers"]})
+    rows = [
+        {**row, "host": host_name, "cells": {c: _acl_cell(row["acl"], c) for c in caller_names}}
+        for host_name, matrix in per_host
+        for row in matrix["targets"]
+    ]
     return {"targets": rows, "callers": caller_names}

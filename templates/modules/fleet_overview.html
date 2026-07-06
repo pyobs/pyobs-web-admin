@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Overview — pyobs Web Admin{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* Without this, a tight mobile viewport wraps cell text (e.g. "511.7 MB" breaking
+     mid-word) instead of properly scrolling horizontally via table-responsive. */
+  #fleet-overview-table th, #fleet-overview-table td { white-space: nowrap; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center flex-wrap gap-2 mb-3 w-100">
+  <h4 class="mb-0 me-auto">Overview</h4>
+</div>
+
+<p class="text-muted small">
+  One row per configured host — running/stopped/total module counts and aggregate CPU/RAM.
+  Deliberately no bulk (or per-module) actions here — click a host's name to go to its own
+  Dashboard for that.
+</p>
+
+{% for host in unreachable_hosts %}
+<div class="alert alert-warning py-2" title="{{ host.error }}">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  Host <strong>{{ host.name }}</strong> unreachable
+  <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" title="{{ host.error }}"></i>
+</div>
+{% endfor %}
+
+<div class="table-responsive border rounded" style="max-width: 700px;">
+<table class="table table-sm table-hover align-middle mb-0" id="fleet-overview-table">
+  <thead>
+    <tr>
+      <th>Host</th>
+      <th class="text-end">Running</th>
+      <th class="text-end">Stopped</th>
+      <th class="text-end">Total</th>
+      <th class="text-end">CPU</th>
+      <th class="text-end">RAM</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for host in hosts %}
+  <tr>
+    <td class="fw-semibold">
+      <a href="{{ host.dashboard_url }}" class="text-decoration-none text-reset">
+        <i class="bi bi-hdd-network me-1 text-muted"></i>{{ host.name }}
+      </a>
+    </td>
+    <td class="text-end">
+      {% if host.running %}<span class="text-success">{{ host.running }}</span>{% else %}0{% endif %}
+    </td>
+    <td class="text-end">
+      {% if host.stopped %}<span class="text-danger">{{ host.stopped }}</span>{% else %}0{% endif %}
+    </td>
+    <td class="text-end">{{ host.total }}</td>
+    <td class="text-end">{{ host.cpu_percent }}%</td>
+    <td class="text-end">{{ host.memory_mb }} MB</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

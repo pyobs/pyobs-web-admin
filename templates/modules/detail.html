@@ -53,8 +53,13 @@
     </button>
   </li>
   <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config" type="button">
+    <button id="tab-btn-config" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config" type="button">
       <i class="bi bi-gear me-1"></i>Config
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-acl" type="button">
+      <i class="bi bi-shield-lock me-1"></i>ACL
     </button>
   </li>
 </ul>
@@ -72,6 +77,15 @@
         <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
+        {% if ejabberd_enabled %}
+        <tr id="stat-ejabberd-row" class="d-none">
+          <th class="text-muted fw-normal pe-4">XMPP</th>
+          <td>
+            <div id="stat-ejabberd"></div>
+            <div id="ejabberd-actions" class="d-flex gap-2 flex-wrap mt-1"></div>
+          </td>
+        </tr>
+        {% endif %}
         <tr><th class="text-muted fw-normal pe-4">Log messages</th>
           <td>
             <div class="d-flex gap-3 flex-wrap">
@@ -134,7 +148,101 @@ Loading…</pre>
     {% endif %}
   </div>
 
+  <!-- ACL Tab -->
+  <div class="tab-pane fade" id="tab-acl">
+    <div id="acl-tab-loading" class="text-muted small">Loading…</div>
+    <div id="acl-tab-error" class="alert alert-danger d-none"></div>
+    <div id="acl-tab-source" class="alert alert-secondary d-none"></div>
+
+    <div id="acl-tab-editor" class="d-none">
+      <div id="acl-tab-save-error" class="alert alert-danger d-none small"></div>
+
+      <div class="mb-3">
+        <label class="form-label small text-muted mb-1 d-block">Mode</label>
+        <div class="btn-group" role="group">
+          <input type="radio" class="btn-check" name="acl-tab-mode" id="acl-tab-mode-enforce" value="enforce" autocomplete="off" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-mode-enforce">Enforce</label>
+          <input type="radio" class="btn-check" name="acl-tab-mode" id="acl-tab-mode-log" value="log" autocomplete="off">
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-mode-log">Log only <span class="text-muted">(not yet enforced)</span></label>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label small text-muted mb-1 d-block">Policy</label>
+        <div class="btn-group" role="group">
+          <input type="radio" class="btn-check" name="acl-tab-policy" id="acl-tab-policy-allow" value="allow" autocomplete="off" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-policy-allow">Allow list <span class="text-muted">— everyone else denied</span></label>
+          <input type="radio" class="btn-check" name="acl-tab-policy" id="acl-tab-policy-deny" value="deny" autocomplete="off">
+          <label class="btn btn-outline-secondary btn-sm" for="acl-tab-policy-deny">Deny list <span class="text-muted">— everyone else all-access</span></label>
+        </div>
+      </div>
+
+      <div id="acl-tab-allow-section">
+        <label class="form-label small text-muted mb-1 d-block">Callers (click to allow)</label>
+        <div id="acl-tab-allow-known"></div>
+        <div id="acl-tab-allow-extra-rows" class="mt-2"></div>
+        <div class="d-flex gap-2 align-items-center mt-2">
+          <input type="text" id="acl-tab-allow-new-caller" class="form-control form-control-sm" style="max-width:220px" placeholder="other caller name (e.g. pyobs-gui)">
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="aclTabAddOtherAllow()">
+            <i class="bi bi-plus-lg me-1"></i>Add other caller
+          </button>
+        </div>
+      </div>
+
+      <div id="acl-tab-deny-section" class="d-none">
+        <label class="form-label small text-muted mb-1 d-block">Callers (click to deny)</label>
+        <div id="acl-tab-deny-known"></div>
+        <div id="acl-tab-deny-extra-rows" class="mt-2"></div>
+        <div class="d-flex gap-2 align-items-center mt-2">
+          <input type="text" id="acl-tab-deny-new-caller" class="form-control form-control-sm" style="max-width:220px" placeholder="other caller name">
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="aclTabAddOtherDeny()">
+            <i class="bi bi-plus-lg me-1"></i>Add other caller
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-3 d-flex gap-2 align-items-center">
+        <button class="btn btn-primary" onclick="saveAclTab()">
+          <i class="bi bi-floppy me-1"></i>Save
+        </button>
+        <button class="btn btn-outline-danger" onclick="removeAclTab()">
+          <i class="bi bi-trash me-1"></i>Remove ACL (open access)
+        </button>
+        <span id="acl-tab-save-status" class="small"></span>
+      </div>
+    </div>
+  </div>
+
 </div>
+
+{% if ejabberd_enabled %}
+<!-- ejabberd write-action confirmation modal (EJABBERD_USER_MANAGEMENT.md) -->
+<div class="modal fade" id="ejabberd-confirm-modal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="ejabberd-confirm-title"></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p id="ejabberd-confirm-body"></p>
+        <div id="ejabberd-confirm-shared" class="alert alert-warning small d-none"></div>
+        <div id="ejabberd-confirm-retype-group" class="d-none">
+          <label class="form-label small">Type <code id="ejabberd-confirm-retype-target"></code> to confirm:</label>
+          <input type="text" id="ejabberd-confirm-retype-input" class="form-control">
+        </div>
+        <div id="ejabberd-confirm-error" class="alert alert-danger d-none small mt-2"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" id="ejabberd-confirm-btn" class="btn"></button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{{ other_modules|json_script:"acl-tab-other-modules-data" }}
 {% endblock %}
 
 {% block scripts %}
@@ -143,6 +251,7 @@ Loading…</pre>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.17/addon/mode/overlay.min.js"></script>
 <script>
 const MODULE = "{{ module_name }}";
+const EJABBERD_ENABLED = {{ ejabberd_enabled|yesno:"true,false" }};
 
 // ── Status ────────────────────────────────────────────────────────────────────
 function fmtUptime(s) {
@@ -182,6 +291,203 @@ async function updateStatus() {
     uptimeRow.classList.add('d-none');
     memRow.classList.add('d-none');
     cpuRow.classList.add('d-none');
+  }
+}
+
+// ── ejabberd ────────────────────────────────────────────────────────────────────
+let ejabberdState = null;  // last-fetched /api/modules/<name>/ejabberd/ response, read by the confirm modal
+
+async function refreshEjabberd() {
+  if (!EJABBERD_ENABLED) return;  // don't even fetch -- feature is off for this fleet
+  const row = document.getElementById('stat-ejabberd-row');
+  const actionsEl = document.getElementById('ejabberd-actions');
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/ejabberd/`);
+    const data = await resp.json();
+    ejabberdState = data;
+    if (!data.comm_user) {
+      row.classList.add('d-none');  // module has no comm.user -- was never expected to connect
+      return;
+    }
+    row.classList.remove('d-none');
+    renderEjabberdActions(data);
+
+    const cell = document.getElementById('stat-ejabberd');
+    const commUser = escapeHtml(data.comm_user);
+    if (data.error) {
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>ejabberd unreachable: ${escapeHtml(data.error)}</span>`;
+      return;
+    }
+    if (data.ban_details) {
+      const reason = data.ban_details.reason ? ` (${escapeHtml(data.ban_details.reason)})` : '';
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-slash-circle me-1"></i>"${commUser}" is banned${reason}</span>`;
+    } else if (!data.registered) {
+      cell.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>"${commUser}" is not a registered XMPP account</span>`;
+    } else if (!data.module_running) {
+      // Not this module's own process -- another module can share the same comm.user (see
+      // api_module_ejabberd), so a live session for that identity isn't necessarily this
+      // module's. Same "nothing meaningful to show" treatment as PID/uptime/memory/CPU,
+      // already blank for a module that isn't running -- but registered/ban_details above
+      // are account-level facts, not session state, so they still show either way.
+      cell.innerHTML = `<span class="text-secondary small">"${commUser}" registered · module not running</span>`;
+    } else if (data.sessions && data.sessions.length > 0) {
+      const s = data.sessions[0];
+      cell.innerHTML = `<span class="text-success"><i class="bi bi-chat-dots-fill me-1"></i>Connected as "${commUser}"</span>
+        <span class="text-secondary small ms-2">${fmtUptime(s.uptime)} · ${escapeHtml(s.ip)} · ${escapeHtml(s.connection)}</span>`;
+    } else {
+      const last = data.last;
+      const lastText = last && last.status !== 'NOT FOUND' ? `last seen ${escapeHtml(last.timestamp)} (${escapeHtml(last.status)})` : 'never connected';
+      cell.innerHTML = `<span class="text-warning"><i class="bi bi-chat-dots me-1"></i>"${commUser}" not connected</span>
+        <span class="text-secondary small ms-2">${lastText}</span>`;
+    }
+  } catch (_) {}
+}
+
+// ── ejabberd write actions (EJABBERD_USER_MANAGEMENT.md) ────────────────────────
+//
+// Tiered confirmation: register/change-password/ban/unban get a single confirm dialog
+// (this app's first destructive-action confirmation of any kind); unregister -- the one
+// irreversible action -- requires retyping the account's bare XMPP username first. A
+// shared_with warning is shown for ban/unregister whenever another module resolves to the
+// same comm.user, since that action affects all of them, not just this module's page.
+
+const EJABBERD_ACTIONS = {
+  register: {
+    label: 'Register', btnClass: 'btn-outline-success',
+    title: 'Register XMPP account',
+    body: user => `Register "${user}" using the password already configured in this module's comm: block?`,
+    endpoint: 'register', retype: false, warnShared: false,
+  },
+  'change-password': {
+    label: 'Reset password', btnClass: 'btn-outline-warning',
+    title: 'Reset XMPP password',
+    body: (user, data) => {
+      const others = (data.shared_with || []).length
+        ? ` This also updates every other module sharing this identity: ${data.shared_with.join(', ')}.`
+        : '';
+      return `Generate a new random password for "${user}" and write it into this module's config${others}`;
+    },
+    endpoint: 'change-password', retype: false, warnShared: false,
+  },
+  ban: {
+    label: 'Ban', btnClass: 'btn-outline-danger',
+    title: 'Ban XMPP account',
+    body: user => `Ban "${user}"? This is reversible via Unban.`,
+    endpoint: 'ban', retype: false, warnShared: true,
+  },
+  unban: {
+    label: 'Unban', btnClass: 'btn-outline-secondary',
+    title: 'Unban XMPP account',
+    body: user => `Unban "${user}", restoring its original password?`,
+    endpoint: 'unban', retype: false, warnShared: false,
+  },
+  unregister: {
+    label: 'Unregister', btnClass: 'btn-outline-danger',
+    title: 'Unregister XMPP account',
+    body: user => `Permanently delete "${user}"'s account -- auth, roster, and vcard data. This cannot be undone.`,
+    endpoint: 'unregister', retype: true, warnShared: true,
+  },
+};
+
+function renderEjabberdActions(data) {
+  const el = document.getElementById('ejabberd-actions');
+  el.innerHTML = '';
+  const addBtn = key => {
+    const cfg = EJABBERD_ACTIONS[key];
+    const btn = document.createElement('button');
+    btn.className = `btn btn-sm ${cfg.btnClass}`;
+    btn.textContent = cfg.label;
+    btn.onclick = () => openEjabberdConfirm(key);
+    el.appendChild(btn);
+  };
+  if (data.error) return;  // can't act on an account we can't currently query
+  if (data.ban_details) {
+    addBtn('unban');
+  } else if (!data.registered) {
+    addBtn('register');
+  } else {
+    addBtn('change-password');
+    addBtn('ban');
+  }
+  if (data.registered) addBtn('unregister');
+}
+
+let ejabberdModal = null;
+let ejabberdPendingAction = null;
+
+function openEjabberdConfirm(actionKey) {
+  const cfg = EJABBERD_ACTIONS[actionKey];
+  const data = ejabberdState;
+  const user = data.comm_user;
+  ejabberdPendingAction = actionKey;
+
+  document.getElementById('ejabberd-confirm-title').textContent = cfg.title;
+  document.getElementById('ejabberd-confirm-body').textContent = cfg.body(user, data);
+  document.getElementById('ejabberd-confirm-error').classList.add('d-none');
+
+  const sharedEl = document.getElementById('ejabberd-confirm-shared');
+  if (cfg.warnShared && data.shared_with && data.shared_with.length) {
+    sharedEl.textContent = `This account is also used by: ${data.shared_with.join(', ')}.`;
+    sharedEl.classList.remove('d-none');
+  } else {
+    sharedEl.classList.add('d-none');
+  }
+
+  const retypeGroup = document.getElementById('ejabberd-confirm-retype-group');
+  const retypeInput = document.getElementById('ejabberd-confirm-retype-input');
+  retypeInput.value = '';
+  if (cfg.retype) {
+    document.getElementById('ejabberd-confirm-retype-target').textContent = user;
+    retypeGroup.classList.remove('d-none');
+  } else {
+    retypeGroup.classList.add('d-none');
+  }
+
+  const confirmBtn = document.getElementById('ejabberd-confirm-btn');
+  confirmBtn.className = `btn ${cfg.btnClass.replace('btn-outline-', 'btn-')}`;
+  confirmBtn.textContent = cfg.label;
+  confirmBtn.disabled = false;
+  confirmBtn.onclick = submitEjabberdConfirm;
+
+  if (!ejabberdModal) ejabberdModal = new bootstrap.Modal(document.getElementById('ejabberd-confirm-modal'));
+  ejabberdModal.show();
+}
+
+async function submitEjabberdConfirm() {
+  const cfg = EJABBERD_ACTIONS[ejabberdPendingAction];
+  const errEl = document.getElementById('ejabberd-confirm-error');
+  errEl.classList.add('d-none');
+
+  if (cfg.retype) {
+    const typed = document.getElementById('ejabberd-confirm-retype-input').value;
+    if (typed !== ejabberdState.comm_user) {
+      errEl.textContent = 'Typed name does not match -- not confirmed.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+  }
+
+  const confirmBtn = document.getElementById('ejabberd-confirm-btn');
+  confirmBtn.disabled = true;
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/ejabberd/${cfg.endpoint}/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken(), 'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errEl.textContent = data.error || 'Action failed.';
+      errEl.classList.remove('d-none');
+      confirmBtn.disabled = false;
+      return;
+    }
+    ejabberdModal.hide();
+    await refreshEjabberd();
+  } catch (e) {
+    errEl.textContent = `Request failed: ${e}`;
+    errEl.classList.remove('d-none');
+    confirmBtn.disabled = false;
   }
 }
 
@@ -445,6 +751,8 @@ updateStatus();
 setInterval(updateStatus, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
+refreshEjabberd();
+setInterval(refreshEjabberd, 10000);
 
 // Start auto-refresh if enabled (default: on)
 if (autoRefreshEl.checked) logTimer = setInterval(fetchLogs, 3000);
@@ -454,5 +762,274 @@ document.querySelector('[data-bs-target="#tab-logs"]').addEventListener('shown.b
 
 // Fetch immediately if starting on the logs tab
 if (location.hash === '#tab-logs') fetchLogs();
+
+// ── ACL tab ───────────────────────────────────────────────────────────────────
+const ACTIVE_HOST = "{{ active_host|default:'localhost' }}";
+const OTHER_MODULES = JSON.parse(document.getElementById('acl-tab-other-modules-data').textContent);
+let aclTabLoaded = false;
+
+function aclTabEscapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function aclTabKnownAllowRowHtml(caller) {
+  return `
+    <div class="d-flex gap-2 align-items-center mb-1 acl-known-allow-row" data-caller="${aclTabEscapeAttr(caller)}">
+      <div class="form-check" style="width:180px">
+        <input class="form-check-input acl-known-check" type="checkbox" onchange="aclTabToggleKnownAllow(this)">
+        <label class="form-check-label">${caller}</label>
+      </div>
+      <select class="form-select form-select-sm acl-known-kind d-none" style="max-width:160px" onchange="aclTabToggleKnownMethods(this)">
+        <option value="all">All methods</option>
+        <option value="methods">Specific methods</option>
+      </select>
+      <input type="text" class="form-control form-control-sm acl-known-methods d-none" placeholder="method1, method2, IInterface">
+    </div>`;
+}
+
+function aclTabKnownDenyRowHtml(caller) {
+  return `
+    <div class="form-check mb-1 acl-known-deny-row" data-caller="${aclTabEscapeAttr(caller)}">
+      <input class="form-check-input acl-known-check" type="checkbox">
+      <label class="form-check-label">${caller}</label>
+    </div>`;
+}
+
+function aclTabAllowRowHtml(caller, value) {
+  const isAll = value === '*';
+  const methods = Array.isArray(value) ? value.join(', ') : '';
+  return `
+    <div class="d-flex gap-2 align-items-center mb-2 acl-allow-row">
+      <input type="text" class="form-control form-control-sm acl-caller" style="max-width:180px" placeholder="caller name" value="${aclTabEscapeAttr(caller)}">
+      <select class="form-select form-select-sm acl-allow-kind" style="max-width:160px" onchange="aclTabToggleAllowMethods(this)">
+        <option value="all" ${isAll ? 'selected' : ''}>All methods</option>
+        <option value="methods" ${isAll ? '' : 'selected'}>Specific methods</option>
+      </select>
+      <input type="text" class="form-control form-control-sm acl-methods" placeholder="method1, method2, IInterface" value="${aclTabEscapeAttr(methods)}" ${isAll ? 'disabled' : ''}>
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.acl-allow-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`;
+}
+
+function aclTabDenyRowHtml(caller) {
+  return `
+    <div class="d-flex gap-2 align-items-center mb-2 acl-deny-row">
+      <input type="text" class="form-control form-control-sm acl-caller" style="max-width:220px" placeholder="caller name" value="${aclTabEscapeAttr(caller)}">
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.acl-deny-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`;
+}
+
+function aclTabToggleKnownAllow(checkbox) {
+  const row = checkbox.closest('.acl-known-allow-row');
+  const show = checkbox.checked;
+  row.querySelector('.acl-known-kind').classList.toggle('d-none', !show);
+  row.querySelector('.acl-known-methods').classList.toggle('d-none', !show || row.querySelector('.acl-known-kind').value === 'all');
+}
+
+function aclTabToggleKnownMethods(select) {
+  const row = select.closest('.acl-known-allow-row');
+  row.querySelector('.acl-known-methods').classList.toggle('d-none', select.value === 'all');
+}
+
+function aclTabToggleAllowMethods(select) {
+  const input = select.closest('.acl-allow-row').querySelector('.acl-methods');
+  input.disabled = select.value === 'all';
+  if (select.value === 'all') input.value = '';
+}
+
+function aclTabTogglePolicy() {
+  const isAllow = document.getElementById('acl-tab-policy-allow').checked;
+  document.getElementById('acl-tab-allow-section').classList.toggle('d-none', !isAllow);
+  document.getElementById('acl-tab-deny-section').classList.toggle('d-none', isAllow);
+}
+document.querySelectorAll('input[name="acl-tab-policy"]').forEach(el => el.addEventListener('change', aclTabTogglePolicy));
+
+function aclTabAddOtherAllow() {
+  const input = document.getElementById('acl-tab-allow-new-caller');
+  const caller = input.value.trim();
+  if (!caller) return;
+  document.getElementById('acl-tab-allow-extra-rows').insertAdjacentHTML('beforeend', aclTabAllowRowHtml(caller, '*'));
+  input.value = '';
+}
+
+function aclTabAddOtherDeny() {
+  const input = document.getElementById('acl-tab-deny-new-caller');
+  const caller = input.value.trim();
+  if (!caller) return;
+  document.getElementById('acl-tab-deny-extra-rows').insertAdjacentHTML('beforeend', aclTabDenyRowHtml(caller));
+  input.value = '';
+}
+
+// Known-module rows are built once, up front -- OTHER_MODULES doesn't change while the
+// page is open, only which ones are checked (and with what methods) does.
+document.getElementById('acl-tab-allow-known').innerHTML = OTHER_MODULES.map(aclTabKnownAllowRowHtml).join('');
+document.getElementById('acl-tab-deny-known').innerHTML = OTHER_MODULES.map(aclTabKnownDenyRowHtml).join('');
+
+function populateAclTab(data) {
+  document.getElementById('acl-tab-loading').classList.add('d-none');
+  document.getElementById('acl-tab-error').classList.add('d-none');
+  document.getElementById('acl-tab-source').classList.add('d-none');
+  document.getElementById('acl-tab-editor').classList.add('d-none');
+
+  if (data.error) {
+    const box = document.getElementById('acl-tab-error');
+    box.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>This module's acl: block failed to parse: ${data.error} — fix the raw YAML in the <a href="javascript:void(0)" class="alert-link" onclick="document.getElementById('tab-btn-config').click()">Config</a> tab.`;
+    box.classList.remove('d-none');
+    return;
+  }
+
+  if (data.source) {
+    const sharedUrl = ACTIVE_HOST === 'localhost' ? `/shared/${data.source}/` : `/set-host/${ACTIVE_HOST}/?next=/shared/${data.source}/`;
+    const box = document.getElementById('acl-tab-source');
+    box.innerHTML = `<i class="bi bi-file-earmark-text me-1"></i>This module's acl: block comes from shared fragment
+      <strong>${data.source}</strong> — editing it here would also change every other module that includes it.
+      <a href="${sharedUrl}" class="alert-link">Edit the shared fragment instead</a>.`;
+    box.classList.remove('d-none');
+    return;
+  }
+
+  document.getElementById('acl-tab-editor').classList.remove('d-none');
+
+  const acl = data.acl;
+  const mode = (acl && acl.mode) || 'enforce';
+  document.getElementById(`acl-tab-mode-${mode}`).checked = true;
+
+  document.querySelectorAll('.acl-known-allow-row').forEach(row => {
+    row.querySelector('.acl-known-check').checked = false;
+    row.querySelector('.acl-known-kind').value = 'all';
+    row.querySelector('.acl-known-methods').value = '';
+    aclTabToggleKnownAllow(row.querySelector('.acl-known-check'));
+  });
+  document.querySelectorAll('.acl-known-deny-row').forEach(row => {
+    row.querySelector('.acl-known-check').checked = false;
+  });
+  document.getElementById('acl-tab-allow-extra-rows').innerHTML = '';
+  document.getElementById('acl-tab-deny-extra-rows').innerHTML = '';
+
+  const knownSet = new Set(OTHER_MODULES);
+
+  if (acl && acl.deny) {
+    document.getElementById('acl-tab-policy-deny').checked = true;
+    acl.deny.forEach(caller => {
+      if (knownSet.has(caller)) {
+        document.querySelector(`.acl-known-deny-row[data-caller="${caller}"] .acl-known-check`).checked = true;
+      } else {
+        document.getElementById('acl-tab-deny-extra-rows').insertAdjacentHTML('beforeend', aclTabDenyRowHtml(caller));
+      }
+    });
+  } else {
+    document.getElementById('acl-tab-policy-allow').checked = true;
+    if (acl && acl.allow) {
+      Object.entries(acl.allow).forEach(([caller, value]) => {
+        if (knownSet.has(caller)) {
+          const row = document.querySelector(`.acl-known-allow-row[data-caller="${caller}"]`);
+          row.querySelector('.acl-known-check').checked = true;
+          const isAll = value === '*';
+          row.querySelector('.acl-known-kind').value = isAll ? 'all' : 'methods';
+          row.querySelector('.acl-known-methods').value = Array.isArray(value) ? value.join(', ') : '';
+          aclTabToggleKnownAllow(row.querySelector('.acl-known-check'));
+        } else {
+          document.getElementById('acl-tab-allow-extra-rows').insertAdjacentHTML('beforeend', aclTabAllowRowHtml(caller, value));
+        }
+      });
+    }
+  }
+  aclTabTogglePolicy();
+}
+
+async function fetchAclTab() {
+  if (aclTabLoaded) return;
+  aclTabLoaded = true;
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/acl/`);
+    const data = await resp.json();
+    populateAclTab(data);
+  } catch (e) {
+    document.getElementById('acl-tab-loading').classList.add('d-none');
+    const box = document.getElementById('acl-tab-error');
+    box.textContent = `Request failed: ${e}`;
+    box.classList.remove('d-none');
+  }
+}
+
+function collectAclTab() {
+  const mode = document.querySelector('input[name="acl-tab-mode"]:checked').value;
+  const policy = document.querySelector('input[name="acl-tab-policy"]:checked').value;
+  const result = {};
+  if (mode === 'log') result.mode = 'log';
+
+  if (policy === 'allow') {
+    const allow = {};
+    document.querySelectorAll('.acl-known-allow-row').forEach(row => {
+      if (!row.querySelector('.acl-known-check').checked) return;
+      const caller = row.dataset.caller;
+      const kind = row.querySelector('.acl-known-kind').value;
+      allow[caller] = kind === 'all' ? '*' : row.querySelector('.acl-known-methods').value.split(',').map(m => m.trim()).filter(Boolean);
+    });
+    document.querySelectorAll('#acl-tab-allow-extra-rows .acl-allow-row').forEach(row => {
+      const caller = row.querySelector('.acl-caller').value.trim();
+      if (!caller) return;
+      const kind = row.querySelector('.acl-allow-kind').value;
+      allow[caller] = kind === 'all' ? '*' : row.querySelector('.acl-methods').value.split(',').map(m => m.trim()).filter(Boolean);
+    });
+    if (Object.keys(allow).length === 0) return null;
+    result.allow = allow;
+  } else {
+    const deny = [];
+    document.querySelectorAll('.acl-known-deny-row').forEach(row => {
+      if (row.querySelector('.acl-known-check').checked) deny.push(row.dataset.caller);
+    });
+    document.querySelectorAll('#acl-tab-deny-extra-rows .acl-deny-row').forEach(row => {
+      const caller = row.querySelector('.acl-caller').value.trim();
+      if (caller) deny.push(caller);
+    });
+    if (deny.length === 0) return null;
+    result.deny = deny;
+  }
+  return result;
+}
+
+async function submitAclTab(acl) {
+  const status = document.getElementById('acl-tab-save-status');
+  const errBox = document.getElementById('acl-tab-save-error');
+  errBox.classList.add('d-none');
+  try {
+    const resp = await fetch(`/api/modules/${MODULE}/acl/`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
+      body: JSON.stringify({acl, host: ACTIVE_HOST}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errBox.textContent = data.error || 'Save failed.';
+      errBox.classList.remove('d-none');
+      return;
+    }
+    status.textContent = 'Saved!';
+    status.className = 'small text-success';
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  } catch (e) {
+    errBox.textContent = `Request failed: ${e}`;
+    errBox.classList.remove('d-none');
+  }
+}
+
+function saveAclTab() {
+  const acl = collectAclTab();
+  if (acl === null) {
+    const errBox = document.getElementById('acl-tab-save-error');
+    errBox.textContent = 'Allow or deny at least one caller, or use "Remove ACL" to clear the policy entirely.';
+    errBox.classList.remove('d-none');
+    return;
+  }
+  submitAclTab(acl);
+}
+
+function removeAclTab() {
+  if (!confirm(`Remove the acl: block for "${MODULE}" entirely? This opens it to every caller.`)) return;
+  submitAclTab(null).then(() => { aclTabLoaded = false; fetchAclTab(); });
+}
+
+document.querySelector('[data-bs-target="#tab-acl"]').addEventListener('shown.bs.tab', fetchAclTab);
+if (location.hash === '#tab-acl') fetchAclTab();
 </script>
 {% endblock %}

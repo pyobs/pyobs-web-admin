@@ -58,6 +58,14 @@
       <div class="text-secondary small">CPU</div>
     </div>
   </div>
+  {% if ejabberd_enabled %}
+  <div class="col">
+    <div class="card border-secondary text-center py-2" id="ejabberd-tile" title="">
+      <div class="fs-3 fw-bold" id="stat-ejabberd">—</div>
+      <div class="text-secondary small">XMPP connected</div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <table class="table table-hover align-middle mb-0" id="module-grid">
@@ -84,7 +92,12 @@
   <tbody>
   {% for mod in modules %}
   <tr data-module-row="{{ mod }}">
-    <td class="text-nowrap" style="width:1%"><span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span></td>
+    <td class="text-nowrap" style="width:1%">
+      <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
+      {% if ejabberd_enabled %}
+      <i class="bi xmpp-indicator d-none ms-1" data-module="{{ mod }}"></i>
+      {% endif %}
+    </td>
     <td class="fw-semibold"><a href="{% url 'module_detail' mod %}" class="text-decoration-none text-reset">{{ mod }}</a></td>
     <td class="text-secondary small text-nowrap module-ram d-none d-md-table-cell" data-module="{{ mod }}"></td>
     <td class="text-secondary small text-nowrap module-cpu d-none d-md-table-cell" data-module="{{ mod }}"></td>
@@ -125,7 +138,7 @@
 @media (max-width: 767.98px) {
   .status-badge { width: .65rem; height: .65rem; padding: 0; font-size: 0; vertical-align: middle; }
   .module-thead { display: none; }
-  #stat-total, #stat-running, #stat-stopped, #stat-ram, #stat-cpu { font-size: 1.1rem !important; }
+  #stat-total, #stat-running, #stat-stopped, #stat-ram, #stat-cpu, #stat-ejabberd { font-size: 1.1rem !important; }
 }
 </style>
 <script>
@@ -239,6 +252,8 @@ async function refreshAllStatuses() {
         row.dataset.sortRam = m.stats ? m.stats.memory_mb : -1;
         row.dataset.sortCpu = m.stats ? m.stats.cpu_percent : -1;
         row.dataset.sortUptime = m.stats ? m.stats.uptime_seconds : -1;
+        row.dataset.commUser = m.comm_user || '';
+        row.dataset.moduleStatus = m.status;
         const isRunning = m.status === 'running';
         row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning);
         row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning);
@@ -327,9 +342,80 @@ async function refreshLogStats() {
   } catch (_) {}
 }
 
+async function refreshEjabberd() {
+  const tile = document.getElementById('ejabberd-tile');
+  if (!tile) return;  // ejabberd_enabled was false server-side -- don't even fetch
+  try {
+    const resp = await fetch("{% url 'api_ejabberd_summary' %}");
+    const data = await resp.json();
+    const statEl = document.getElementById('stat-ejabberd');
+    if (data.error) {
+      statEl.textContent = '?';
+      tile.title = `ejabberd unreachable: ${data.error}`;
+      tile.className = 'card border-danger text-center py-2';
+      return;
+    }
+    tile.className = 'card border-secondary text-center py-2';
+
+    // bare JID local-parts currently connected, e.g. "camera@localhost/pyobs" -> "camera"
+    const connected = new Set(data.connected.map(s => s.jid.split('@')[0]));
+
+    // The tile counts *this installation's own* modules, not data.registered_count/
+    // online_count -- those are ejabberd's fleet-wide account totals (e.g. 6 registered
+    // accounts server-wide, most of them belonging to other modules/roles this instance
+    // doesn't manage at all), which is a meaningless denominator on a per-installation
+    // dashboard. Tallied from the same rows/logic that drives each row's own indicator, so
+    // the tile and the indicators can never disagree with each other. "Expected" (the
+    // denominator) is a stable, config-derived count -- has a comm_user and isn't
+    // deactivated -- independent of whether the module happens to be running right now, so
+    // starting/stopping a module doesn't change what it's "supposed" to add up to; only the
+    // numerator (actually connected) reflects live state.
+    let expected = 0, connectedCount = 0;
+
+    document.querySelectorAll('tr[data-module-row]').forEach(row => {
+      const commUser = row.dataset.commUser;
+      const indicator = row.querySelector('.xmpp-indicator');
+      // Deactivated modules (name starts with "_") are excluded, matching the existing
+      // Stopped-tile convention below, which already skips them the same way.
+      const deactivated = row.dataset.moduleRow.startsWith('_');
+      if (commUser && !deactivated) expected++;
+      // Gate the *indicator* on this module's own running status, not just whether
+      // commUser's bare JID happens to be connected -- two modules can share the same
+      // comm.user (e.g. a "_test" copy reusing a real module's identity), so a stopped
+      // module must never be shown as "connected" just because some other, currently-
+      // running module holds that identity's live session. Same "nothing meaningful to
+      // show" treatment as RAM/CPU/uptime, already blank for a module that isn't running.
+      if (!commUser || row.dataset.moduleStatus !== 'running') {
+        indicator.classList.add('d-none');
+        return;
+      }
+      indicator.classList.remove('d-none');
+      if (connected.has(commUser)) {
+        if (!deactivated) connectedCount++;
+        indicator.className = 'bi bi-chat-dots-fill xmpp-indicator ms-1 text-success';
+        indicator.title = `XMPP connected as "${commUser}"`;
+      } else {
+        indicator.className = 'bi bi-chat-dots xmpp-indicator ms-1 text-warning';
+        indicator.title = `XMPP not connected (expected identity: "${commUser}")`;
+      }
+    });
+
+    statEl.textContent = `${connectedCount} / ${expected}`;
+    tile.title = `${connectedCount} of ${expected} of this installation's own modules are XMPP-connected · ${data.node_status}`;
+  } catch (_) {}
+}
+
+// refreshEjabberd cross-references each row's data-comm-user, which refreshAllStatuses
+// sets -- sequenced, not both fired independently, so there's no race where the ejabberd
+// fetch resolves first and finds every row's comm_user still unset.
+async function refreshStatusesThenEjabberd() {
+  await refreshAllStatuses();
+  await refreshEjabberd();
+}
+
 updateSortHeaders();
-refreshAllStatuses();
-setInterval(refreshAllStatuses, 10000);
+refreshStatusesThenEjabberd();
+setInterval(refreshStatusesThenEjabberd, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
 </script>

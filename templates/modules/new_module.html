@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}New module — pyobs Web Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-2 mb-3">
+  <h4 class="mb-0">New module</h4>
+</div>
+
+<p class="text-muted small" style="max-width: 500px">
+  Creates a new <code>&lt;name&gt;.yaml</code> config file in <code>PYOBS_CONFIG_DIR</code>
+  with a minimal starter (just a <code>class:</code> key) and takes you straight to its
+  Config tab to fill in the rest.
+</p>
+
+<div class="border rounded p-3 bg-body-tertiary" style="max-width: 500px">
+  <label for="new-module-name" class="form-label small text-muted mb-1">Module name</label>
+  <div class="d-flex gap-2">
+    <input type="text" id="new-module-name" class="form-control" placeholder="e.g. camera2" autofocus>
+    <button type="button" class="btn btn-success" onclick="createModule()">
+      <i class="bi bi-plus-lg me-1"></i>Create
+    </button>
+  </div>
+  <div id="new-module-error" class="alert alert-danger py-2 mt-2 mb-0 small d-none"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const nameInput = document.getElementById('new-module-name');
+const errEl = document.getElementById('new-module-error');
+
+async function createModule() {
+  const name = nameInput.value.trim();
+  errEl.classList.add('d-none');
+  if (!name) {
+    errEl.textContent = 'Name is required.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+  try {
+    const resp = await fetch("{% url 'api_create_module' %}", {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
+      body: JSON.stringify({name}),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      errEl.textContent = data.error || 'Failed to create module.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    window.location.href = `/modules/${encodeURIComponent(data.name)}/#tab-config`;
+  } catch (e) {
+    errEl.textContent = `Request failed: ${e}`;
+    errEl.classList.remove('d-none');
+  }
+}
+
+nameInput.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') createModule();
+});
+</script>
+{% endblock %}

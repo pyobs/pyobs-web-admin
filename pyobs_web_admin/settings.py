@@ -70,6 +70,30 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"
 PYOBS_LOG_LEVEL = "info"
 
+# Where module logs live -- see DEV_JOURNALD_LOGS.md. "file": pyobs writes to PYOBS_LOG_DIR,
+# read back with tail. "journald": pyobs is started with --syslog instead of --log-file,
+# read back with journalctl. Fleet-wide switch, not per-module -- see that doc's Design
+# section for why.
+#
+# None (the default): auto-detect from pyobsd's own config file instead of requiring this
+# set a second time -- pyobsd (pyobs-core's daemon manager) already reads its own global
+# config (~/.config/pyobs.yaml, /etc/pyobs.yaml, or /opt/pyobs/storage/pyobs.yaml, first
+# found wins) for a "pyobsd: syslog: true/false" key that decides whether *it* starts
+# modules with --syslog. Reading that same file here means this can never silently drift
+# out of sync with what pyobsd actually does. Set explicitly ("file" or "journald") to
+# override auto-detection.
+PYOBS_LOG_BACKEND = None
+
+# ejabberd integration -- see DEV_EJABBERD_INTEGRATION.md. Off by default: not every fleet has
+# ejabberd co-located. EJABBERD_HOST names whichever host in HUB_HOSTS (or "localhost")
+# actually runs it -- every other host proxies through to that one rather than talking to
+# ejabberd's HTTP API directly, which stays loopback-only wherever it's configured.
+EJABBERD_ENABLED = False
+EJABBERD_HOST = "localhost"
+EJABBERD_DOMAIN = ""
+EJABBERD_API_URL = "http://127.0.0.1:5281/api"
+EJABBERDCTL = "ejabberdctl"
+
 try:
     from pyobs_web_admin.local_settings import *  # noqa: F401,F403
 except ImportError:

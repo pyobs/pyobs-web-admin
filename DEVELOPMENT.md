@@ -1,110 +1,131 @@
-# pyobs-web-admin: ACL matrix page — v0.5 (2026-07-03, 13:05)
+# pyobs-web-admin: development index
 
 ## Status
 
-Design settled, implementation in progress — see **Progress log** below for exactly what's done and what's next; that section is kept current so work can resume from a different machine without re-deriving state from this conversation. v0.2 added the groups/profiles concept; v0.3 added interface-name shorthand handling and the live-XMPP-discovery idea; v0.4 decided against XMPP discovery (custom wire protocol, would need real `pyobs-core` dependency) in favor of literal/badged shorthand display; v0.5 starts implementing the Work Plan below, in order.
+Meta/index doc, not a feature doc itself. Points at each feature's own design doc and
+collects ideas that haven't been fleshed out into one yet.
 
-## Progress log
+## How this works
 
-Work Plan items are implemented top-to-bottom; check the item list at the bottom for the authoritative state, this log just narrates it.
+Each non-trivial feature gets its own `FEATURE_NAME.md` at the repo root, following the
+shape `DEV_ACL_MATRIX.md`/`DEV_EJABBERD_INTEGRATION.md` already use: **Status** (one-paragraph
+current state, updated as work progresses) → **Motivation** → **Current state** (what's true
+in the codebase before this feature) → **Design** → **Open questions** → **Work Plan**
+(checkboxes, narrated by a **Progress log** as items land). Code comments referencing "the
+design doc" should name the specific file (`DEV_ACL_MATRIX.md`, not `DEVELOPMENT.md`) so they
+keep pointing at the right document as more of these accumulate.
 
-- **Done — Work Plan items 1–2.** `pyyaml>=6.0` added to `pyproject.toml` (`uv sync` run, `uv.lock` updated). `pre_process_yaml`/`include_parts`/`reload_anchors`/`replace_aliases` vendored verbatim into `modules/pyobs_config.py`, with a header comment recording the exact `pyobs-core` commit/version synced against. Unit tests in `modules/tests.py` (`IncludePartsTests`, `ReloadAnchorsTests`, `PreProcessYamlTests`) port `pyobs-core`'s own fixtures from `tests/utils/test_config.py` plus one ACL-specific case (`test_acl_block_via_include`). Uses plain `unittest.TestCase`, not Django's `TestCase` — this app has no `DATABASES` configured (sessions are signed-cookie based), so DB-wrapped test cases aren't appropriate here. Run with `python manage.py test modules` — 17/17 passing as of this entry.
-- **Done — Work Plan item 3.** `modules/services.py`: `get_resolved_acl(name) -> tuple[dict | None, str | None]` returns the module's effective `acl:` block (via `pyobs_config.pre_process_yaml` + `yaml.safe_load`) and its provenance. Provenance detection (`_acl_source_file`, private helper) only recognizes the two patterns `pyobs-web-admin`'s own editor can produce — a bare top-level `{include x.shared.yaml}` whose target defines `acl:` itself, or an `acl:` key whose entire value is one `{include x.shared.yaml}` — and conservatively falls back to reporting "own file" for anything more deeply nested (documented as a known simplifying assumption in the function's docstring, not silently). Tests: `GetResolvedAclTests` in `modules/tests.py`, using `django.test.override_settings` to point `PYOBS_CONFIG_DIR` at a temp dir (safe with plain `unittest.TestCase`, no DB involved). `python manage.py test modules` — 22/22 passing as of this entry.
-- **Done — Work Plan items 4–5.** `modules/services.py`: `build_acl_matrix() -> dict` returns `{"targets": [...], "callers": [...]}` — rows are every `list_modules()` entry (with resolved `acl`, `source`, an `open` flag, an `error` slot), columns are the sorted union of every caller name mentioned in any target's `allow` keys or `deny` list (via `get_resolved_acl`), not limited to modules this installation itself runs. Per-`(target, caller)` cell values (`_acl_cell`) follow the table in "What the matrix shows": `open`/`all`/`methods`/`denied`, each carrying `mode` (`enforce`/`log`). Interface-name shorthand entries (item 5) are tagged `is_interface: True` per method-list entry via `_is_interface_name` — a regex heuristic (`^I[A-Z]\w*$`) rather than importing `pyobs-core`, since pyobs's own naming convention (interfaces `IPascalCase`, methods `snake_case`) makes the two patterns non-overlapping; the template layer (not yet built) is responsible for actually badging it. A malformed `acl:` block (bad YAML, non-mapping `allow`, non-list `deny`, broken `{include}`) is caught per-target and recorded in that row's `error` field rather than aborting the whole scan — validated by `test_broken_config_reported_as_error_not_crash`. Tests: `BuildAclMatrixTests` in `modules/tests.py`. `python manage.py test modules` — 28/28 passing as of this entry.
-- **Next — Work Plan item 6.** New view + template + URL entry (`modules/urls.py`) for the matrix page itself — nothing user-facing exists yet, everything so far is `services.py` plumbing only.
+An idea starts as a one-line bullet under **Ideas** below. When someone's ready to actually
+work on it, it gets promoted to its own doc (even a short v0.1 sketch is enough to start —
+see `DEV_EJABBERD_INTEGRATION.md`'s early versions) and gets a line in **Feature docs** instead,
+linking back here. Ideas don't need to be fully thought through to get listed — half-formed
+is fine, that's what the Design section of the eventual doc is for.
 
-## Motivation
+## Feature docs
 
-`pyobs-core` 2.0 adds per-module access control (`acl:` blocks in each module's own YAML config — see `pyobs-core`'s `DEVELOPMENT.md`, [Access Control (ACLs)](https://github.com/pyobs/pyobs-core/blob/develop/DEVELOPMENT.md#access-control-acls)). That design deliberately keeps ACL storage and enforcement per-module: a module's reachability is legible from its own config file, and the runtime check (`Module.execute()`) never depends on fleet-wide state. The trade-off, raised from the `pyobs-core` side: once a fleet has a dozen-plus modules each with their own `acl:` block, "who can reach the telescope, and with what" is scattered across a dozen files with no single place to read it back.
+- [DEV_ACL_MATRIX.md](DEV_ACL_MATRIX.md) — fleet-wide ACL matrix page: view every module's `acl:`
+  policy in one table, edit it via a structured form (matrix modal or a per-module tab),
+  aggregated across hub hosts. **Core (view/edit/hub-aggregation) shipped.** Groups/profiles
+  (named caller-list reuse) was fully designed and implemented, then reverted at explicit
+  request — see [DEV_ACL_GROUPS.md](DEV_ACL_GROUPS.md), moved out of this doc entirely.
+- [DEV_EJABBERD_INTEGRATION.md](DEV_EJABBERD_INTEGRATION.md) — read-only visibility into ejabberd's
+  own state (registered/connected users, per-module session info) on the dashboard and
+  module pages, closing the "process running ≠ XMPP connected" and "config vs. reality" gaps.
+  **Shipped, all 7 Work Plan items done and verified against a live instance** (including
+  the `mod_http_api` config and its security model).
+- [DEV_JOURNALD_LOGS.md](DEV_JOURNALD_LOGS.md) — one switch (`PYOBS_LOG_BACKEND`) that both starts
+  pyobs modules logging into the systemd journal (`pyobs --syslog`, already supported
+  upstream) instead of a flat file, and reads them back from there for the existing log
+  viewer. **Implemented and verified live end-to-end.** Only one deploy-time question left
+  open (whether a genuinely group-less service account needs an explicit `journalctl`
+  permission grant), see that doc's Status. `PYOBS_LOG_BACKEND` now defaults to auto-detecting
+  from `pyobsd`'s own config file (`pyobs-core`'s daemon manager) instead of requiring it set
+  a second time — an explicit setting still overrides.
+- [DEV_EJABBERD_USER_MANAGEMENT.md](DEV_EJABBERD_USER_MANAGEMENT.md) — register/reset-password/ban/
+  unregister XMPP accounts for a module's `comm.user` from pyobs-web-admin, closing the
+  write-side gap `DEV_EJABBERD_INTEGRATION.md` deliberately left open. **Implemented and
+  verified live end-to-end** (full register → reset-password → ban → unban → unregister
+  round trip against a real ejabberd instance, using a disposable test account and a scratch
+  module config, never a real one). `ejabberdctl`-only transport needed no ejabberd-side ACL
+  change; config write-back handles a `comm.user` shared across modules (confirmed against a
+  copy of this box's real config). Hub-mode delegation is code-complete but not yet driven
+  against a real two-instance pair the way the read path was. Only `README.md` is left.
+  Also shipped a fleet-wide **Users page** (`/xmpp-users/`) on top of this -- every
+  registered account across all hub hosts, cross-referenced against every module's
+  `comm.user`, with a running-status dot disambiguating which module owns a shared identity's
+  live session, plus write-action buttons: register is per-module (uses that module's own
+  `comm.password:` -- two modules sharing an identity can have different passwords before
+  either is registered, verified live), reset-password/ban/unregister are row-level and
+  bare-username-scoped (no owning module required, so accounts like `admin` are actionable
+  too) via new endpoints separate from the module-scoped ones. Also a standalone manual
+  "register account" form (username + password typed directly, no config to source from) for
+  a module running entirely outside this fleet. Plus a **Kick** action --
+  `ejabberd.kick_session` (not `kick_user`, which takes no reason at all) with a fixed,
+  greppable reason (`"Kicked via pyobs-web-admin"`), so the module side can distinguish an
+  intentional admin kick from any other disconnect. Verified live against a real running
+  `camera` module, twice, including confirming a second Claude session's pyobs-core change
+  that (a) shuts the module down instead of reconnecting when the XMPP stream error is
+  `conflict` specifically (a genuine identity takeover, distinct from e.g. `system-shutdown`,
+  which should still retry), and (b) now logs the actual kick reason text instead of a
+  hardcoded message. UI: no modals anywhere on the page (inline expand-in-place confirms and
+  an always-visible register form instead, for mobile-friendliness), collapsed accordion-style
+  rows (any number open at once, plus an Expand-all toggle) rather than a wide table.
+- **Two dashboards** (no separate design doc — small enough to build directly from the idea
+  below plus a short back-and-forth on scope). Today's Dashboard (`/`) stays exactly as it
+  was, a per-host operational control surface (Start All/Stop All, per-module quick actions).
+  New: a fleet-wide **Overview** page (`/overview/`, sidebar entry above Logs/ACL Matrix/Users)
+  — one row per configured host (aggregated the same way as `acl_matrix`/`all_logs`/
+  `xmpp_users`: every `HUB_HOSTS` entry queried via the existing `/api/statuses/` endpoint,
+  unreachable hosts shown as a warning banner and excluded from the table rather than shown
+  with an error row), with running/stopped/total counts and aggregate CPU/RAM per host
+  (`views._host_summary`, summing each module's own `get_module_stats`), and the host's name
+  linking into *that host's own* per-host Dashboard (`_cross_host_url`, generalized to accept
+  no `arg` for URLs like `dashboard` that take none). Deliberately **no bulk or per-module
+  actions at all** on this page, not even individual ones — it's a pure summary, exactly the
+  footgun-avoidance the idea below was about; anyone wanting to act on a module goes to that
+  host's own Dashboard via the row's link. Verified live against the real fleet (one
+  unreachable `HUB_HOSTS` entry, `MONETS`, correctly banner'd and excluded; `localhost`'s real
+  counts confirmed correct) and at a 390px mobile viewport (needed one fix: `white-space:
+  nowrap` on the table cells, since without it a tight viewport wrapped cell text like
+  "511.7 MB" mid-word instead of properly triggering `table-responsive`'s horizontal scroll —
+  confirmed fixed by scrolling the container programmatically and screenshotting the RAM
+  column coming into view). Also moved Dashboard's own sidebar link to sit below the Hosts
+  section (previously listed above it as if global, despite the view itself always being
+  per-host — the original mismatch that prompted this whole idea).
+- **New module button.** `services.create_module(name)` — the one path allowed to write a
+  `.yaml` file that doesn't exist yet (unlike `save_config`, which explicitly refuses to,
+  `raise FileNotFoundError`), writing a minimal starter (`# class: pyobs.modules.<package>.
+  <ClassName> -- ...` comment + a bare `class:` key). Surfaces as a small "+" icon next to the
+  sidebar's "Modules" header, linking to a dedicated page (`/modules/new/`, not a modal — this
+  app's established mobile-friendliness convention) with a single name input; on success,
+  navigates straight to the new module's own Config tab (`#tab-config`) to fill in the rest.
+  New endpoint `POST /api/modules/create/` follows the session's active host exactly like
+  `api_config` (proxies to a remote host's own identical endpoint if one is active, since
+  hub-token-authenticated requests execute locally there with no active-host session of their
+  own — same pattern, no special-casing needed). `_get_module_or_404`-style validation reuses
+  the existing `validate_name` regex; refuses (409) if the name already exists rather than
+  clobbering it. Unit tests in `modules/tests.py` (`CreateModuleTests`): starter content,
+  invalid-name rejection, already-exists rejection (confirms the existing file survives
+  untouched), and config-dir-auto-created-if-missing. Verified live end-to-end against a
+  scratch `PYOBS_CONFIG_DIR`: clicked the sidebar "+", typed a name, landed on the new module's
+  Config tab with the starter YAML on disk; separately confirmed both error paths (duplicate
+  name, invalid name) render inline, and checked the form page at a 390px mobile viewport
+  (clean, no overflow).
 
-This is a visibility/authoring problem, not an enforcement one, and `pyobs-web-admin` is the right place to solve it — it already owns exactly this kind of fleet-wide, config-editing surface (dashboard across all modules, hub mode across multiple hosts, per-module Config tab).
+## Ideas (not yet designed)
 
-## Current state (checked against this repo before implementation started; see Progress log above for what's changed since)
+None currently.
 
-- `modules/services.py`'s `get_config(name)`/`save_config(name, content)` and `get_shared_config`/`save_shared_config` treat config files as **opaque text** — read and written as raw strings, no YAML parsing anywhere in this repo. `pyproject.toml` had no `pyyaml` (or any YAML library) dependency — now added, see Progress log.
-- `*.shared.yaml` fragments (`services.list_shared_configs`, matched via `*.shared.yaml` glob) and `{include}` references are a first-class *editing* concept (their own sidebar section, own editor) but `{include}` resolution itself doesn't happen server-side — the Config tab's "included shared configs are shown as clickable links" is a display affordance over the raw text, not an actual merge.
-- `pyobs-core`'s real `{include}` resolution lives in `pyobs.utils.config.pre_process_yaml` (`pyobs-core/pyobs/utils/config.py`) — regex-driven, recursive, handles nested `{include file key}` and YAML anchors/aliases across included files. It depends only on `os`, `re`, `yaml`, `io.StringIO`, `typing` — nothing else from `pyobs-core`. That matters here because this repo's README explicitly advertises "No pyobs-core dependency — communicates with pyobs directly via subprocess," so reproducing this logic has to either vendor that one function or take a very narrow dependency, not pull in all of `pyobs-core`.
-- `list_modules()` enumerates module names from config filenames in `PYOBS_CONFIG_DIR` (`*.yaml`, excluding `*.shared.yaml`). This is the existing source of truth for "which modules does this installation manage," reused below.
+## Wide (not per-feature) conventions worth knowing before touching any feature doc
 
-## Design
-
-### What the matrix shows
-
-One page, one table: rows = target modules (from `list_modules()`), columns = **callers**, cells = what that caller may do on that target.
-
-**Callers are not the same set as `list_modules()`.** An `acl:` block's `allow`/`deny` entries are just caller-name strings — they don't have to correspond to a module this installation runs or even manages (a caller could be `pyobs-gui`'s or `pyobs-web-client`'s own connecting identity, an ad hoc script's JID, or a module living on a different host under hub mode). The column set is the **union of every caller name that appears in any module's resolved `acl:` block**, harvested by scanning all modules — not assumed equal to the row set. A caller name that matches a known module gets linked to that module's own page; one that doesn't is still shown, just without a link.
-
-Cell values, derived per (target, caller) pair from the target's resolved `acl:`:
-
-| Target's `acl:` | Cell |
-|---|---|
-| no `acl:` key | **open** — every caller, including ones with no row/column presence elsewhere |
-| `allow: {caller: "*"}` | **all methods** |
-| `allow: {caller: [m1, m2]}` | **m1, m2** |
-| `allow: {...}`, caller not listed | **denied** |
-| `deny: [caller, ...]`, caller listed | **denied** |
-| `deny: [...]`, caller not listed | **all methods** |
-| any of the above with `mode: log` | same computed value, visually flagged (e.g. a badge) as **not yet enforced** |
-
-"Open" targets (no `acl:` at all) are worth surfacing prominently rather than just leaving blank — the matrix's main value is spotting modules that *should* have a policy and don't, not just displaying ones that already do.
-
-> **Call-out:** an `allow` entry may itself be an interface name (e.g. `ICamera`) rather than a method name — `pyobs-core` expands this at runtime into that interface's full method list (see below). The matrix does **not** perform this expansion; it shows the entry as-is, badged to distinguish it from a plain method name (e.g. `ICamera (interface)`). See "Interface-name shorthand" below for why, and for a possible way to close this gap later.
-
-### Resolving `{include}` correctly
-
-The matrix has to read each module's **effective** config, not its literal file content — an `acl:` block that lives in a `*.shared.yaml` fragment and is pulled in via `{include acl.shared.yaml}` must show up for every module that includes it. Vendor `pre_process_yaml` (or a trimmed subset covering just `{include}`, if the anchor/alias handling turns out unnecessary for `acl:` blocks specifically) rather than reimplementing `{include}` parsing independently — two independent implementations of the same include syntax drifting apart is a worse outcome than one vendored copy with a comment noting its origin (`pyobs-core/pyobs/utils/config.py`) and a `pyobs-core` version it was last synced against, re-checked whenever `pyobs-core`'s version bumps.
-
-Add `pyyaml` as a real dependency of this repo — required either way (vendoring `pre_process_yaml` still needs it), and matches what `pyobs-core` already depends on.
-
-### Interface-name shorthand: static display vs. live XMPP discovery
-
-`Module.__init__` (`pyobs-core/pyobs/modules/module.py`) expands interface names in `allow` entries into that interface's full method list via `_get_interfaces_and_methods()`, which does `isinstance(self, interface)` against the module's **actual runtime class** — a class that can live in `pyobs-core` itself or in any device-driver package (`pyobs-sbig`, `pyobs-fli`, `pyobs-alpaca`, ...). Reproducing that expansion statically would mean importing the concrete class named in every module's `class:` key, i.e. potentially every device package present in the fleet, installed into `pyobs-web-admin`'s own venv — a far bigger dependency footprint than the one vendored `{include}` function, and it reintroduces the coupling the "no `pyobs-core` dependency" design principle exists to avoid. First cut, therefore: show interface-name shorthand as a literal, badged cell value rather than expanding it (see call-out above) — the matrix's job is to surface configured policy, not simulate `Module.execute()`'s runtime resolution bit-for-bit.
-
-**Idea raised: a dedicated XMPP account for `pyobs-web-admin`.** `Comm.get_interfaces(client)` (`pyobs-core/pyobs/comm/comm.py`, implemented in `pyobs/comm/xmpp/xmppcomm.py` over `slixmpp`) asks a *running* module, live, which interfaces it implements — this is XMPP disco-based, resolved by the module itself (which already has its own class and `pyobs-core` loaded) and returned as interface **names** over the wire, so the querying side never needs to import any device-driver class at all. Paired with a small vendored, `pyobs-core`-only static table of interface name → method names (built from `pyobs.interfaces`, which unlike device drivers is small, stable, and has no hardware coupling), this would let the matrix expand interface-name shorthand into real method lists without ever importing a device package — closing the gap the static approach above can't.
-
-**Decided: not pursuing this.** `get_interfaces` isn't standard XEP-0030 disco — it rides on `pyobs-core`'s own bespoke stanzas (`pyobs:event`, `pyobs:state`) and a custom `rpc.py`/`serializer.py` protocol for dataclasses and interface schemas. A "thin, vendored XMPP client" would mean reimplementing that custom wire protocol too, which is a much bigger and more drift-prone undertaking than the one `pre_process_yaml` function — doing this properly means using `pyobs-core`'s actual `XmppComm`, i.e. taking the real dependency, not a narrow one. That also adds a live network dependency (XMPP server reachability, credentials, an async session) to what is otherwise a fast, file-based page, and only works for modules that happen to be running at query time. Weighed against what it buys — expanding a cosmetic shorthand into a method list — that's disproportionate, and it breaks the README's explicit "no `pyobs-core` dependency" claim for a non-essential feature. Staying with the narrow vendor approach and literal/badged shorthand display (see call-out and cell-rendering item above) for the foreseeable future; revisit only if some other feature creates independent justification for a full `pyobs-core` dependency.
-
-### Editing from the matrix
-
-A cell edit has to land in the file the rule actually came from, which is not always the target module's own file:
-
-- If the target's `acl:` block is **not** behind an `{include}`, edit and save directly via the existing `save_config` path — this is the common case and needs no new semantics.
-- If the target's `acl:` block **is** pulled in from a shared fragment, editing it in place would silently change every other module that includes the same fragment. The matrix must show this ("this rule comes from `acl.shared.yaml`, included by 4 modules") and either open the shared fragment's own editor (existing `shared_detail` view) for the edit, or require an explicit "detach into this module's own config" action before allowing an inline edit — not silently write through to a file whose blast radius is bigger than the one row being edited.
-
-### Groups (a.k.a. profiles)
-
-`acl:` entries are just caller-name strings, and the same clusters of callers tend to recur across many modules' `allow`/`deny` lists (e.g. "the set of ops scripts," "the GUI's identities"). Editing each occurrence by hand doesn't scale past a handful of modules, but this abstraction has to live entirely in `pyobs-web-admin` — `pyobs-core` and the config file format have no concept of a group and never should, since that would reintroduce the fleet-wide state the underlying ACL design deliberately avoids.
-
-**Definition and storage.** A group is a name mapped to a list of caller identities, defined and stored only in `pyobs-web-admin` — not in `PYOBS_CONFIG_DIR`, not in any `*.yaml` or `*.shared.yaml` file. This repo has no database today; a group store is new persisted state, likely the smallest thing that works (a JSON/YAML file under app-local storage) rather than pulling in a full DB for this alone. Exact storage mechanism is deferred to implementation.
-
-**Expansion is one-shot, not a live binding.** Assigning a group to a target's `allow`/`deny` entry expands it into a literal caller list at save time, written into the module's own config (or shared fragment, per the existing editing rules above). The file on disk always contains plain caller strings — no group reference — so it stays legible to `pyobs-core` and to anyone reading it by hand, matching the doc's existing principle that the config file is the source of truth. Consequently, editing a group's membership later does **not** retroactively rewrite files that already used it. `pyobs-web-admin` should record, per expanded rule, which group and which membership snapshot produced it, and offer an explicit **"re-apply group"** action on affected rules — the same shape as the shared-fragment "detach" action already described above, not automatic propagation.
-
-**Drift detection, not recovery.** Since ACL edits are assumed to happen only through `pyobs-web-admin`, it can record a hash of each `acl:` block's content at the time it last wrote it. If a later load finds the live file's hash doesn't match, warn the admin that the block changed outside `pyobs-web-admin` (so any tracked group-provenance for that rule may be stale) — no attempt to auto-reconcile. Reconstructing "which parts of a hand-edited flat list came from which group" isn't well-defined, so the right move is to surface the drift and let the admin decide whether to keep the manual edit or re-apply a group, not to guess a resolution.
-
-**Recovering candidate groups from existing configs.** Since real fleets will already have `acl:` blocks with no group concept behind them, offer a one-time (or on-demand) "suggest groups" pass over the matrix data: for each target, bucket its callers by identical permission value (same method list, or both granted `"*"`), then across all targets look for caller-sets that recur identically in two or more targets. Each recurring set is shown as an unnamed candidate ("these 3 callers grant identical permissions in 4 targets — name this group?") for the admin to confirm and name; nothing is created or rewritten automatically. Start with exact-set matching only, not subset/fuzzy matching — real groups will have one-off exceptions (an extra method granted to one member, a module that additionally denies one) that exact matching will miss, but loosening the match risks suggesting bogus groups on fleets with few targets, which is the worse failure mode for a tool whose only job is to propose candidates a human still has to confirm.
-
-### Hub mode interaction
-
-Hub mode already proxies dashboard/config/log actions to remote hosts transparently. The matrix should do the same — aggregate across every configured host, not just the local one — since ACL policy for a real multi-host fleet is exactly the kind of thing that's easy to get wrong on one host and forget on another. This falls out of reusing the existing hub-proxying mechanism rather than needing new cross-host plumbing, but is worth calling out explicitly as a requirement, not an incidental nice-to-have.
-
-## Open questions
-
-- Exact UI treatment for "open" targets and `mode: log` rules (color/badge choice) — a UI/visual-design decision, not an architectural one, deferred to implementation.
-- Whether to offer the "detach from shared fragment into this module's own config" action as a one-click automatic rewrite, or just point the admin at the shared fragment's editor and let them decide by hand. Leaning toward the latter for a first version — automatically rewriting a shared `{include}` into a module-local override is a bigger, riskier piece of config surgery than this feature needs to solve on day one.
-- Exact storage mechanism for the group store (JSON/YAML file vs. a small DB table) — deferred, not architecturally significant either way as long as it stays local to `pyobs-web-admin`.
-- Whether "suggest groups" is a one-time first-run action or something re-run on demand as configs evolve — leaning toward on-demand, since new recurring caller-sets can appear at any point as modules are added.
-
-## Work Plan
-
-- [x] Add `pyyaml` to `pyproject.toml`.
-- [x] Vendor (or reimplement, scoped to just `{include}`) `pre_process_yaml`-equivalent resolution; unit-test against `pyobs-core`'s own test fixtures for `{include}` if available, to catch drift early. → `modules/pyobs_config.py`, tests in `modules/tests.py`.
-- [x] `services.py`: a function that, for a given module name, returns its resolved `acl:` block (`dict | None`) plus, if present, which file it actually came from (the module's own config, or a named shared fragment). → `services.get_resolved_acl`.
-- [x] `services.py`: a fleet-wide scan building the (target × caller) matrix data structure described above, including the "callers not in `list_modules()`" case. → `services.build_acl_matrix`.
-- [x] Cell rendering: show interface-name shorthand entries (e.g. `ICamera`) as a literal, badged value, not expanded into method names. → data side done (`_acl_cell`/`_is_interface_name` tag each method entry with `is_interface`); template-side badge still pending, bundled into the next item.
-- [ ] New view + template + URL entry (`modules/urls.py`) for the matrix page, following the existing dashboard/module_detail pattern.
-- [ ] Editing: direct save for module-local `acl:` blocks; shared-fragment case routes to (or at minimum clearly links to) the existing `shared_detail` editor rather than writing through silently.
-- [ ] Hub mode: confirm the matrix aggregates across configured remote hosts using the existing proxying mechanism.
-- [ ] Groups: local store for name → caller-list definitions.
-- [ ] Groups: expand-on-save into literal `allow`/`deny` entries; record per-rule group + membership snapshot for later re-apply.
-- [ ] Groups: per-`acl:`-block content hash, checked on load; surface a warning (no auto-recovery) when it doesn't match the last write.
-- [ ] Groups: "suggest groups" pass — bucket callers by identical permission value per target, find exact-match recurring sets across targets, present as unnamed candidates for the admin to confirm/name.
+- No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).
+  Any feature needing persisted app-local state (not `pyobs` config, not session data) needs
+  its own storage decision, documented in that feature's own doc (see `DEV_ACL_GROUPS.md` for one
+  such call already made: a flat JSON file, not a new DB dependency).
+- Hub mode (`HUB_HOSTS` in settings, `modules/proxy.py`) is normally "one active host at a
+  time" (dashboard/config/logs switch to whichever host the sidebar has selected) — a feature
+  that instead needs to aggregate *every* host on one page (like the ACL matrix) is the
+  exception, not the default, and should call that out explicitly in its own doc rather than
+  assume the reader already knows which model applies.
+- Tests live in `modules/tests.py`, plain `unittest.TestCase` (not Django's `TestCase` —
+  there's no database to wrap transactions around). Run with `python manage.py test modules`.

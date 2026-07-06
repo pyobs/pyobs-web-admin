@@ -40,6 +40,15 @@
     .status-dot.stopped { background: #dc3545; }
     .status-dot.unknown { background: #495057; }
 
+    /* A flex item's default min-width is auto (its content's own min-content size), not 0 --
+       so without this, .main-content refuses to shrink below whatever its widest child
+       needs (e.g. a wide ACL matrix table) and grows past the viewport instead, defeating
+       table-responsive's own internal horizontal scroll and causing real page-level
+       horizontal overflow on mobile. Confirmed live: without this, a wide matrix pushed
+       body's scrollWidth to 523px on a 390px viewport; with it, table-responsive scrolls
+       internally as intended and body stays at 390px. */
+    .main-content { min-width: 0; }
+
     /* ── Desktop layout ──────────────────────────────────────────────────────── */
     @media (min-width: 992px) {
       body { overflow: hidden; }
@@ -116,6 +125,27 @@
 
     <div class="p-2 flex-grow-1 overflow-auto">
 
+      <div class="px-2 py-2">
+        <a href="{% url 'fleet_overview' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_fleet_overview %}active{% endif %}">
+          <i class="bi bi-globe" style="font-size:0.8rem"></i>
+          Overview
+        </a>
+        <a href="{% url 'all_logs' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_all_logs %}active{% endif %}">
+          <i class="bi bi-journal-text" style="font-size:0.8rem"></i>
+          Logs
+        </a>
+        <a href="{% url 'acl_matrix' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_acl_matrix %}active{% endif %}">
+          <i class="bi bi-shield-lock" style="font-size:0.8rem"></i>
+          ACL Matrix
+        </a>
+        {% if ejabberd_enabled %}
+        <a href="{% url 'xmpp_users' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_xmpp_users %}active{% endif %}">
+          <i class="bi bi-people-fill" style="font-size:0.8rem"></i>
+          Users
+        </a>
+        {% endif %}
+      </div>
+
       {% if hub_hosts|length > 1 %}
       <div class="px-2 pb-1">
         <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Hosts</span>
@@ -131,14 +161,17 @@
       {% endif %}
 
       <div class="px-2 py-2">
-        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared %}active{% endif %}">
+        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs and not active_xmpp_users and not active_fleet_overview and not active_new_module %}active{% endif %}">
           <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
           Dashboard
         </a>
       </div>
 
-      <div class="px-2 pb-1">
+      <div class="px-2 pb-1 d-flex align-items-center justify-content-between">
         <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Modules</span>
+        <a href="{% url 'new_module' %}" class="btn btn-sm btn-outline-secondary py-0 px-1 {% if active_new_module %}active{% endif %}" title="New module">
+          <i class="bi bi-plus-lg" style="font-size:0.7rem"></i>
+        </a>
       </div>
 
       {% for mod in sidebar_modules %}
