@@ -30,8 +30,8 @@ Design docs
 ***********
 
 Non-trivial features get a short design document at the repository root before
-implementation (``ACL_MATRIX.md``, ``EJABBERD_INTEGRATION.md``,
-``EJABBERD_USER_MANAGEMENT.md``, ``JOURNALD_LOGS.md``), each following the same shape:
+implementation (``DEV_ACL_MATRIX.md``, ``DEV_EJABBERD_INTEGRATION.md``,
+``DEV_EJABBERD_USER_MANAGEMENT.md``, ``DEV_JOURNALD_LOGS.md``), each following the same shape:
 Status, Motivation, Current state, Design, Open questions, Work Plan. ``DEVELOPMENT.md`` is
 the index pointing at each one plus a running list of not-yet-designed ideas. These are
 implementation journals aimed at whoever picks the feature back up, not end-user

@@ -1,6 +1,6 @@
 # Vendored from pyobs-core (pyobs/utils/config.py), unmodified, so this repo can resolve
 # {include} the same way pyobs-core does without depending on pyobs-core itself (see
-# ACL_MATRIX.md, "Resolving {include} correctly"). Only pulls in os/re/yaml/io/typing.
+# DEV_ACL_MATRIX.md, "Resolving {include} correctly"). Only pulls in os/re/yaml/io/typing.
 #
 # Synced against pyobs-core @ 940f39469240e7ceed64a47020ae74c2790a5e70 (2026-06-04, v2.0.0.dev10).
 # Re-check this file against pyobs-core's version whenever pyobs-core's ACL/include syntax changes.

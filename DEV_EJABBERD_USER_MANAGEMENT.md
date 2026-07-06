@@ -15,11 +15,11 @@ scope — see `DEVELOPMENT.md`) and the fleet-wide **Users** page are documented
 too, though neither was part of this doc's own Work Plan. Not yet exercised live: a genuine
 two-instance hub/spoke pair for the write actions specifically (the delegation code mirrors the
 read path's already-verified shape, but hasn't itself been driven end-to-end across two real
-instances the way `EJABBERD_INTEGRATION.md`'s reads were).
+instances the way `DEV_EJABBERD_INTEGRATION.md`'s reads were).
 
 ## Motivation
 
-`EJABBERD_INTEGRATION.md` gave this app read-only visibility into ejabberd (who's registered,
+`DEV_EJABBERD_INTEGRATION.md` gave this app read-only visibility into ejabberd (who's registered,
 who's connected, last-seen) and explicitly scoped write actions out of that doc: "much higher
 blast radius than a read-only status view — accidentally locking out a production XMPP account
 mid-observation." This doc is that deferred follow-up.
@@ -36,10 +36,10 @@ specific loop: register/reset/remove an XMPP account without leaving this app.
 - `modules/ejabberd.py` has one function per **read** command only
   (`status`/`stats`/`connected_users_info`/`registered_users`/`user_sessions_info`/`get_last`/
   `check_account`), each branching on `_use_http()` between `mod_http_api` (HTTP, ~0.01s/call)
-  and an `ejabberdctl` subprocess fallback (~0.5–0.6s/call) — see `EJABBERD_INTEGRATION.md`,
+  and an `ejabberdctl` subprocess fallback (~0.5–0.6s/call) — see `DEV_EJABBERD_INTEGRATION.md`,
   Data layer. No write functions exist yet; confirmed by reading the file directly.
 - ejabberd's own `api_permissions` config (the loopback-only `mod_http_api` grant
-  `EJABBERD_INTEGRATION.md` documents and verified live) whitelists exactly seven read commands
+  `DEV_EJABBERD_INTEGRATION.md` documents and verified live) whitelists exactly seven read commands
   in its `what:` list — `register`/`unregister`/`change_password`/`ban_account`/`unban_account`
   are not in it. **Doesn't matter for this doc's settled design** — see Design's Transport
   decision: writes go through `ejabberdctl`, not `mod_http_api`, and that same config already
@@ -65,7 +65,7 @@ Run against the real instance via `ejabberdctl` (never `mod_http_api`, per the T
 decision), using a disposable account (`docverifytest99`) created and fully removed for this
 purpose — `registered_users localhost` confirmed back to exactly the original six real
 accounts (`admin`/`camera`/`mastermind`/`observer`/`scheduler`/`telescope`) afterward, no
-residue. This directly follows `EJABBERD_INTEGRATION.md`'s own precedent (its "Credential layer
+residue. This directly follows `DEV_EJABBERD_INTEGRATION.md`'s own precedent (its "Credential layer
 investigation" did the same register-test-unregister dance for the same reason) and its own
 warning against trusting a command's help text or docs over its actual behavior (the
 trailing-tab bug).
@@ -107,7 +107,7 @@ different mechanism than assumed.
   `stop_module`/`deactivate_module`/etc. all execute immediately on click, no confirm dialog.
   Whatever this doc lands on (see Design's Confirmation UX decision) is the first of its kind
   here, not a copy of an established convention.
-- **A real fact this doc's config-write-back decision depends on:** `EJABBERD_INTEGRATION.md`'s
+- **A real fact this doc's config-write-back decision depends on:** `DEV_EJABBERD_INTEGRATION.md`'s
   own "third bug" documents that two modules in this exact fleet already share one `comm.user`
   (`_test` and `camera` both resolve to `"camera"`) — not a hypothetical edge case, a confirmed
   real configuration. Any action that changes or removes an account has to account for this.
@@ -156,7 +156,7 @@ path, never `mod_http_api` — unlike the read path, where the ~50–60x latency
 favored HTTP, a write's cost here is dominated by the human clicking a confirmation dialog, not
 command latency. This also means **no ejabberd-side `api_permissions` change is needed at all**
 (see Current state) — a real simplification over the original `mod_http_api` setup, and one
-fewer deploy-time step for this feature than `EJABBERD_INTEGRATION.md` needed.
+fewer deploy-time step for this feature than `DEV_EJABBERD_INTEGRATION.md` needed.
 
 **A real deploy-time wrinkle, hit on this box:** running `ejabberdctl` directly as the account
 `pyobs-web-admin` runs under fails (`"can only be run by root or the user ejabberd"`), which
@@ -180,7 +180,7 @@ every write action here, not just password changes** — `register`/`change_pass
 `ban_account`/`unban_account`/`unregister` on a `comm.user` shared by more than one module
 affects *all* of them, not just whichever module's page the action was triggered from. Before
 executing any write, resolve **every** module whose `comm.user` matches the target username
-(reusing `get_comm_user` across `list_modules()`, the same way `EJABBERD_INTEGRATION.md`'s own
+(reusing `get_comm_user` across `list_modules()`, the same way `DEV_EJABBERD_INTEGRATION.md`'s own
 dashboard tile already has to reason about shared identities) and:
 
 - `change_password`: write the new password into **every** matching module's config, not just
@@ -195,7 +195,7 @@ dashboard tile already has to reason about shared identities) and:
 
 ### Where it surfaces
 
-The module detail page's existing ejabberd block (Overview tab, `EJABBERD_INTEGRATION.md`'s
+The module detail page's existing ejabberd block (Overview tab, `DEV_EJABBERD_INTEGRATION.md`'s
 Work Plan item 7) is the natural home — a "Register" action when `check_account` is false,
 "Reset password" / "Ban" / "Unregister" when true. No new page needed.
 
@@ -210,7 +210,7 @@ is out of scope. The tiered confirmation above is the safety net, not access con
 This feature manages the account for a `comm.user` a module's config *already* declares. It
 does not create a new `comm:` block for a module that has none (e.g. `HttpFileCache`) — that
 would mean writing a new config section, not just a password, which is a different and larger
-scope than "manage an existing identity." Matches `EJABBERD_INTEGRATION.md`'s own read-only
+scope than "manage an existing identity." Matches `DEV_EJABBERD_INTEGRATION.md`'s own read-only
 doc, which never writes config either.
 
 ### Hub-mode delegation
@@ -321,9 +321,9 @@ Revisit this section if implementation surfaces something the design didn't anti
 - [x] Hub-mode delegation for the write actions, mirroring the existing read delegation
   (`_ejabberd_host_config`/proxy pattern) — code-complete and structurally identical to the
   already-verified read path, but not itself driven end-to-end against a real two-instance
-  hub/spoke pair the way the read path was in `EJABBERD_INTEGRATION.md`. Worth doing before
+  hub/spoke pair the way the read path was in `DEV_EJABBERD_INTEGRATION.md`. Worth doing before
   fully trusting this in a real multi-host fleet.
 - [x] `README.md`: document once implemented and verified live, not before — matches this
   repo's existing practice of not documenting a setting/feature before it's actually consumed
-  (see `EJABBERD_INTEGRATION.md`'s Progress log, and `JOURNALD_LOGS.md`'s Work Plan, for the
+  (see `DEV_EJABBERD_INTEGRATION.md`'s Progress log, and `DEV_JOURNALD_LOGS.md`'s Work Plan, for the
   same reasoning applied there).

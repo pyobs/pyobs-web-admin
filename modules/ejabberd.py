@@ -5,7 +5,7 @@ from django.conf import settings
 
 # Fields returned by ejabberdctl's connected_users_info/user_sessions_info, in order --
 # connected_users_info's raw text has "jid" as an extra leading field these two commands
-# otherwise share (see EJABBERD_INTEGRATION.md, Data layer). The HTTP API returns the same
+# otherwise share (see DEV_EJABBERD_INTEGRATION.md, Data layer). The HTTP API returns the same
 # fields as JSON keys directly; this is only used to normalize the ejabberdctl fallback into
 # the same shape.
 _SESSION_FIELDS = ["connection", "ip", "port", "priority", "node", "uptime", "status", "resource", "statustext"]
@@ -14,7 +14,7 @@ _SESSION_INT_FIELDS = ("port", "priority", "uptime")
 
 def _use_http() -> bool:
     """ejabberdctl is a documented fallback for hosts that haven't set up mod_http_api yet
-    (see EJABBERD_INTEGRATION.md) -- not a fallback for any HTTP failure, which should
+    (see DEV_EJABBERD_INTEGRATION.md) -- not a fallback for any HTTP failure, which should
     surface as a real error rather than being silently masked by a slower, different path."""
     return bool(getattr(settings, "EJABBERD_API_URL", ""))
 
@@ -66,7 +66,7 @@ def status() -> str:
 
 def stats(name: str) -> int:
     """name is one of "registeredusers", "onlineusers", "uptimeseconds" (see
-    EJABBERD_INTEGRATION.md, Data layer)."""
+    DEV_EJABBERD_INTEGRATION.md, Data layer)."""
     if _use_http():
         return int(_http_call("stats", {"name": name}))
     return int(_ctl_call("stats", name).strip())
@@ -106,7 +106,7 @@ def get_last(user: str) -> dict:
 
 def check_account(user: str) -> bool:
     """True if user is a registered account on EJABBERD_DOMAIN. The HTTP API and
-    ejabberdctl signal this two different ways (see EJABBERD_INTEGRATION.md, Data layer):
+    ejabberdctl signal this two different ways (see DEV_EJABBERD_INTEGRATION.md, Data layer):
     HTTP always returns 200 with a bare 0/1 body; ejabberdctl instead uses its process exit
     code (0/1), with no reliable stdout content to parse either way."""
     domain = settings.EJABBERD_DOMAIN
@@ -117,7 +117,7 @@ def check_account(user: str) -> bool:
 
 # ── Write commands -- ejabberdctl only, never mod_http_api ───────────────────
 #
-# See EJABBERD_USER_MANAGEMENT.md, Design "Transport": a write's cost is dominated by a
+# See DEV_EJABBERD_USER_MANAGEMENT.md, Design "Transport": a write's cost is dominated by a
 # human clicking a confirmation dialog, not command latency, so there's no reason to widen
 # the loopback mod_http_api ACL just for these -- every one of them stays on the ejabberdctl
 # subprocess path unconditionally, no _use_http() branch.
@@ -163,7 +163,7 @@ def ban_account(user: str, reason: str) -> None:
     """Puts user into ejabberd's account-disabled state on EJABBERD_DOMAIN, recording reason
     -- reversible via unban_account, which restores the account's original password (verified
     live; not a "swap in a random password" as ejabberd's own docs might suggest -- see
-    EJABBERD_USER_MANAGEMENT.md's Current state). Note check_password must never be used to
+    DEV_EJABBERD_USER_MANAGEMENT.md's Current state). Note check_password must never be used to
     detect this state (it throws an unhandled exception against a banned account) -- use
     get_ban_details instead."""
     domain = settings.EJABBERD_DOMAIN
@@ -197,7 +197,7 @@ def get_ban_details(user: str) -> dict | None:
     """Returns a dict of ban details (reason/bandate/lastdate/lastreason) if user is
     currently banned on EJABBERD_DOMAIN, or None if not. The safe way to check ban status --
     check_password throws an unhandled exception against a banned account instead of
-    returning a clean answer (verified live, see EJABBERD_USER_MANAGEMENT.md's "Verified
+    returning a clean answer (verified live, see DEV_EJABBERD_USER_MANAGEMENT.md's "Verified
     live"). Read-only, but ejabberdctl-only like the write commands above rather than
     mod_http_api, since it exists purely to support them and isn't in the existing
     mod_http_api whitelist either."""
@@ -215,7 +215,7 @@ def get_ban_details(user: str) -> dict | None:
 
 def kick_session(user: str, resource: str, reason: str) -> None:
     """Force-disconnects one specific session of user (identified by its XMPP resource,
-    always "pyobs" for a pyobs module -- confirmed live, see EJABBERD_INTEGRATION.md's Data
+    always "pyobs" for a pyobs module -- confirmed live, see DEV_EJABBERD_INTEGRATION.md's Data
     layer) on EJABBERD_DOMAIN, recording reason in the disconnect message. Doesn't touch the
     account itself (still registered, same password), unlike ban/unregister.
 

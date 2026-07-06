@@ -270,7 +270,7 @@ class GetCommUserTests(unittest.TestCase):
 
     def test_no_comm_block_returns_none(self):
         """Confirmed real example: HttpFileCache has no comm: block at all -- this is the
-        signal EJABBERD_INTEGRATION.md uses to skip modules that were never expected to
+        signal DEV_EJABBERD_INTEGRATION.md uses to skip modules that were never expected to
         have an XMPP identity, not an error."""
         self._write("filecache", "class: pyobs.modules.utils.HttpFileCache\n")
         self.assertIsNone(services.get_comm_user("filecache"))
@@ -316,7 +316,7 @@ class GetCommUserTests(unittest.TestCase):
 
     def test_resolved_comm_via_bare_top_level_include_has_source(self):
         """comm: key itself doesn't appear in the module's own file -- the whole block, key
-        included, comes from a bare top-level {include} -- EJABBERD_USER_MANAGEMENT.md's
+        included, comes from a bare top-level {include} -- DEV_EJABBERD_USER_MANAGEMENT.md's
         config write-back must refuse to edit comm.password: in this case, the same way
         save_local_acl already refuses for acl:."""
         self._write("comm.shared", "comm:\n  user: camera\n  password: pyobs\n")
@@ -609,7 +609,7 @@ class SaveCommPasswordTests(unittest.TestCase):
         self.assertIn("user: telescope", raw)
 
     def test_updates_every_module_sharing_the_same_comm_user(self):
-        """EJABBERD_INTEGRATION.md's own real-world case: a _test copy reusing a real
+        """DEV_EJABBERD_INTEGRATION.md's own real-world case: a _test copy reusing a real
         module's identity. A password change must not leave one of them stale."""
         self._write("camera", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
         self._write("_test", "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n  password: old\n")
@@ -719,7 +719,7 @@ class MergeAclMatricesTests(unittest.TestCase):
 # ── ejabberd ──────────────────────────────────────────────────────────────────
 #
 # Fixtures below are the exact responses captured against a real, running ejabberd 24.12-4
-# instance during EJABBERD_INTEGRATION.md's design phase (see that doc's Data layer), not
+# instance during DEV_EJABBERD_INTEGRATION.md's design phase (see that doc's Data layer), not
 # invented shapes -- both the HTTP (mod_http_api) and ejabberdctl paths are covered since
 # ejabberdctl is a real fallback, not dead code (see modules/ejabberd.py, _use_http).
 
@@ -801,7 +801,7 @@ class EjabberdHttpTests(unittest.TestCase):
 class EjabberdCtlFallbackTests(unittest.TestCase):
     """EJABBERD_API_URL empty -> ejabberdctl subprocess path. Raw stdout fixtures are the
     exact text captured from the live instance, including the trailing-tab empty
-    statustext field confirmed via `cat -A` (see EJABBERD_INTEGRATION.md, Data layer)."""
+    statustext field confirmed via `cat -A` (see DEV_EJABBERD_INTEGRATION.md, Data layer)."""
 
     def setUp(self):
         self._settings = override_settings(EJABBERD_API_URL="", EJABBERDCTL="ejabberdctl", EJABBERD_DOMAIN="localhost")
@@ -897,7 +897,7 @@ class EjabberdCtlFallbackTests(unittest.TestCase):
 #
 # Fixtures are the exact stdout/returncode captured live against a real ejabberd 24.12-4
 # instance, using a disposable test account created and fully removed afterward -- see
-# EJABBERD_USER_MANAGEMENT.md's "Verified live" table. Not mod_http_api -- these commands
+# DEV_EJABBERD_USER_MANAGEMENT.md's "Verified live" table. Not mod_http_api -- these commands
 # are ejabberdctl-only by design (see that doc's Transport decision), so EJABBERD_API_URL is
 # irrelevant here; still set to "" to make that explicit rather than rely on the default.
 
@@ -1032,7 +1032,7 @@ class EjabberdPathSelectionTests(unittest.TestCase):
         self.assertFalse(ejabberd._use_http())
 
 
-# ── pyobsd config auto-detection (see JOURNALD_LOGS.md) ──────────────────────────
+# ── pyobsd config auto-detection (see DEV_JOURNALD_LOGS.md) ──────────────────────────
 
 class PyobsdAutoDetectTests(unittest.TestCase):
     """_log_backend()'s auto-detection reads the same global config file pyobsd itself
@@ -1102,12 +1102,12 @@ class PyobsdAutoDetectTests(unittest.TestCase):
         self.assertEqual(services._log_backend(), "journald")
 
 
-# ── journald log backend (see JOURNALD_LOGS.md) ─────────────────────────────────
+# ── journald log backend (see DEV_JOURNALD_LOGS.md) ─────────────────────────────────
 
 class StartModuleLogBackendTests(unittest.TestCase):
     """start_module()'s only journald-related job is choosing --syslog vs --log-file --
     everything else (pid file, --log-level, config arg) is unchanged either way, per
-    JOURNALD_LOGS.md's Design, "What doesn't change"."""
+    DEV_JOURNALD_LOGS.md's Design, "What doesn't change"."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1170,7 +1170,7 @@ class StartModuleLogBackendTests(unittest.TestCase):
 class LogBackendJournaldTests(unittest.TestCase):
     """Fixtures are real `journalctl -o json` lines, captured by instantiating the exact
     handler class pyobs/application.py builds and emitting real records through it (see
-    JOURNALD_LOGS.md, Design) -- an invented JSON shape would have missed the real surprise
+    DEV_JOURNALD_LOGS.md, Design) -- an invented JSON shape would have missed the real surprise
     these caught: pyobs journals CRITICAL as PRIORITY 0, not the naively-expected 2."""
 
     _DEBUG_ENTRY = (

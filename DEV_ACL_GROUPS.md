@@ -8,7 +8,7 @@ page, and expand-on-save wiring into both ACL editing surfaces (the matrix's per
 and `module_detail`'s ACL tab) — and then reverted (`git revert`, not a history rewrite,
 since the commits were already pushed) after using it. No specific reason was given beyond
 not liking it; this doc exists so the design work and the implementation experience aren't
-lost if Groups comes up again later. `ACL_MATRIX.md` itself has no remaining trace of this
+lost if Groups comes up again later. `DEV_ACL_MATRIX.md` itself has no remaining trace of this
 feature — Work Plan items 9–12 are back to their original "Deferred — later" wording, and
 this doc is the complete record instead.
 
@@ -61,7 +61,7 @@ whereas one JSON blob holding *every* group risks losing all of them at once.
 
 ### Alternate storage option: ejabberd shared-roster groups — considered, not used
 
-Raised after `EJABBERD_INTEGRATION.md` shipped: ejabberd's `mod_shared_roster` has its own
+Raised after `DEV_EJABBERD_INTEGRATION.md` shipped: ejabberd's `mod_shared_roster` has its own
 group concept — a name mapped to a list of JIDs, queryable via the same HTTP API
 (`srg_list`/`srg_get_info`/`srg_get_members`-family commands) `modules/ejabberd.py` already
 wraps for other things. Since the caller-identity space is already shared 1:1 with XMPP JID
@@ -94,7 +94,7 @@ technically the ACL-relevant identity *is* the JID local-part, and a module's `c
 in principle differ from its own module name. Rejected for consistency, not correctness: this
 whole feature area already treats module names as the caller-identity proxy throughout — the
 ACL matrix's own caller columns and `module_detail`'s ACL tab checkboxes both already work
-this way, and `ACL_MATRIX.md`'s own Design section is explicit that "callers are just
+this way, and `DEV_ACL_MATRIX.md`'s own Design section is explicit that "callers are just
 caller-name strings," not something requiring XMPP resolution. Introducing JID resolution
 just for Groups would have been a new, inconsistent identity model bolted onto one corner of
 a feature that already has an established one everywhere else.
