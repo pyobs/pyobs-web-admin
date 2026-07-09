@@ -180,15 +180,60 @@ def list_pyobs_packages() -> list[dict]:
     )
 
 
-def _pypi_latest_version(name: str) -> str | None:
-    """None on any failure (package not on PyPI, network error, timeout, ...) -- this only
-    ever feeds a display column, never something worth failing the whole page load over."""
+def _is_prerelease(version: str) -> bool:
+    try:
+        return Version(version).is_prerelease
+    except InvalidVersion:
+        return False
+
+
+def _select_latest_version(available: list[str], installed: str) -> str | None:
+    """Picks the version _pypi_latest_version reports as "latest" for an `installed`
+    version, given every version string PyPI has ever published for the package. Split out
+    as a pure, network-free function so this policy has unit test coverage independent of
+    PyPI's actual current release history for any real package.
+
+    Mirrors pip's own default pre-release policy for `pip install --upgrade <name>` (no
+    version specifier): pre-release candidates are only considered at all if `installed` is
+    itself a pre-release -- confirmed live against a real installation via `pip install
+    --upgrade --dry-run --report`: for an installed "2.0.0.dev10", pip's resolver reports
+    nothing to install at all (not even a "downgrade" to a newer stable "1.54.0") unless
+    --pre is passed, in which case it correctly offers a newer "2.0.0.dev13". Just using
+    PyPI's own info.version (its "latest stable" field) would report "1.54.0" as latest
+    regardless -- wrong in two ways at once: it doesn't surface the real newer prerelease,
+    and (before _is_update_available's own PEP 440 comparison) would make an install that's
+    actually ahead look like it needs a downgrade. update_package's own --pre gate mirrors
+    this exact is_prerelease(installed) check, so the two stay in lockstep -- otherwise the
+    UI could advertise an upgrade pip would then silently decline to perform.
+    """
+    allow_prereleases = _is_prerelease(installed)
+    versions = []
+    for v in available:
+        try:
+            parsed = Version(v)
+        except InvalidVersion:
+            continue
+        if parsed.is_prerelease and not allow_prereleases:
+            continue
+        versions.append(parsed)
+    return str(max(versions)) if versions else None
+
+
+def _pypi_latest_version(name: str, installed: str) -> str | None:
+    """None on any failure (package not on PyPI, network error, timeout, bad data) or if no
+    comparable version was found -- this only ever feeds a display column, never something
+    worth failing the whole page load over. See _select_latest_version for the actual
+    "what counts as latest" policy."""
     try:
         resp = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=5)
         resp.raise_for_status()
-        return resp.json()["info"]["version"]
+        releases = resp.json().get("releases", {})
     except Exception:
         return None
+    # A version with an empty file list has had every upload deleted/yanked -- nothing left
+    # to actually install, so it's not a real candidate.
+    available = [v for v, files in releases.items() if files]
+    return _select_latest_version(available, installed)
 
 
 def _is_update_available(installed: str, latest: str | None) -> bool:
@@ -214,7 +259,7 @@ def get_package_overview() -> list[dict]:
     if not installed:
         return []
     with ThreadPoolExecutor(max_workers=min(8, len(installed))) as pool:
-        latest_versions = list(pool.map(lambda p: _pypi_latest_version(p["name"]), installed))
+        latest_versions = list(pool.map(lambda p: _pypi_latest_version(p["name"], p["version"]), installed))
     return [
         {
             "name": pkg["name"],
@@ -261,20 +306,32 @@ def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict
     return {"hosts": host_names, "packages": rows}
 
 
-def update_package(name: str) -> tuple[bool, str]:
+def update_package(name: str, installed_version: str) -> tuple[bool, str]:
     """Runs `pip install --upgrade <name>` in pyobs's own environment (_pip_exec). Callers
     (api_package_update) must already have checked name against list_pyobs_packages() --
     the prefix check here is just defense in depth, not the primary access control, so that
     this function alone can never be used to pip-install something arbitrary even if a
     caller forgot that check.
+
+    Adds --pre when installed_version is itself a pre/dev release, mirroring the exact same
+    is_prerelease check _select_latest_version uses to decide what "latest" even means for
+    this package -- without it, pip's own resolver leaves an already-installed pre-release
+    alone entirely rather than upgrading it, even to a newer pre-release (verified live, see
+    _select_latest_version's docstring), so Update would silently do nothing for exactly the
+    packages this policy exists to handle. --upgrade-strategy=only-if-needed (pip's own
+    default, made explicit here rather than trusted to stay that way under any local pip.conf)
+    keeps --pre's effect scoped to resolving *this* package -- already-satisfied dependencies
+    aren't re-examined for a newer prerelease of their own just because this install allows
+    prereleases in general.
     """
     if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE):
         return False, f"Refusing to update non-pyobs package: {name!r}"
+    args = [_pip_exec(), "install", "--upgrade", "--upgrade-strategy=only-if-needed", "--no-input"]
+    if _is_prerelease(installed_version):
+        args.append("--pre")
+    args.append(name)
     try:
-        result = subprocess.run(
-            [_pip_exec(), "install", "--upgrade", "--no-input", name],
-            capture_output=True, text=True, timeout=120,
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         return False, "Timed out waiting for pip install to finish"
     except FileNotFoundError:

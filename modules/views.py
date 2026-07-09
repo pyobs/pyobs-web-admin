@@ -693,10 +693,13 @@ def api_package_update(request, name: str):
         return _proxy(host, "POST", f"/api/packages/{name}/update/")
     # Only ever allow updating a package this host actually has installed -- guards against
     # an authenticated admin being tricked (e.g. a crafted link) into pip-installing an
-    # arbitrary package name via this endpoint.
-    if name not in {p["name"] for p in services.list_pyobs_packages()}:
+    # arbitrary package name via this endpoint. Also gives update_package the installed
+    # version it needs to decide whether to allow pre-releases, from the same lookup, rather
+    # than a second pip subprocess call to re-derive it.
+    installed = {p["name"]: p["version"] for p in services.list_pyobs_packages()}
+    if name not in installed:
         return JsonResponse({"ok": False, "error": f"{name!r} is not an installed pyobs-* package"}, status=404)
-    ok, message = services.update_package(name)
+    ok, message = services.update_package(name, installed[name])
     return JsonResponse({"ok": ok, "message": message})
 
 

@@ -1442,3 +1442,54 @@ class TagHostTests(unittest.TestCase):
 
     def test_falls_back_to_prefix_when_no_leading_timestamp(self):
         self.assertEqual(_tag_host("no timestamp here", "spoke1"), "[spoke1] no timestamp here")
+
+
+# ── Package version selection (Packages page) ──────────────────────────────────
+
+class SelectLatestVersionTests(unittest.TestCase):
+    # Regression coverage for a real production case: a host had pyobs-core installed as
+    # "2.0.0.dev11" (an in-progress pre-release of an unreleased 2.0.0), while PyPI's
+    # info.version -- "the latest stable release" -- was "1.54.0". The original
+    # implementation compared against info.version directly, which (1) never surfaces a
+    # newer prerelease like "2.0.0.dev13" that's actually available, and would have (2)
+    # flagged "1.54.0" as an "update" even though it's older than the installed dev build,
+    # were it not for _is_update_available's separate PEP 440 comparison. Confirmed live
+    # against a real installation with `pip install --upgrade --dry-run --report`: pip's own
+    # resolver leaves an already-installed pre-release alone entirely (offers nothing at
+    # all, not even "1.54.0") unless --pre is passed -- so "what counts as latest" here must
+    # mirror pip's own pre-release policy, not just PyPI's info.version field.
+
+    def test_installed_prerelease_sees_newer_prerelease(self):
+        available = ["1.54.0", "2.0.0.dev10", "2.0.0.dev11", "2.0.0.dev13"]
+        self.assertEqual(services._select_latest_version(available, "2.0.0.dev11"), "2.0.0.dev13")
+
+    def test_installed_stable_ignores_prereleases(self):
+        available = ["1.50.0", "1.54.0", "2.0.0.dev13"]
+        self.assertEqual(services._select_latest_version(available, "1.50.0"), "1.54.0")
+
+    def test_installed_stable_already_latest_ignores_newer_prerelease(self):
+        available = ["1.54.0", "2.0.0.dev13"]
+        self.assertEqual(services._select_latest_version(available, "1.54.0"), "1.54.0")
+
+    def test_no_versions_available_returns_none(self):
+        self.assertIsNone(services._select_latest_version([], "1.0.0"))
+
+    def test_unparseable_version_strings_are_skipped(self):
+        self.assertEqual(services._select_latest_version(["not-a-version", "1.2.3"], "1.0.0"), "1.2.3")
+
+
+class IsUpdateAvailableTests(unittest.TestCase):
+    def test_installed_prerelease_ahead_of_stable_latest_is_not_flagged(self):
+        # Same production case as SelectLatestVersionTests -- even if "latest" somehow ended
+        # up as an older stable release, this must never say an "update" is available for a
+        # dev build that's already ahead of it.
+        self.assertFalse(services._is_update_available("2.0.0.dev11", "1.54.0"))
+
+    def test_genuinely_newer_version_is_flagged(self):
+        self.assertTrue(services._is_update_available("1.50.0", "1.54.0"))
+
+    def test_same_version_is_not_flagged(self):
+        self.assertFalse(services._is_update_available("1.54.0", "1.54.0"))
+
+    def test_none_latest_is_not_flagged(self):
+        self.assertFalse(services._is_update_available("1.54.0", None))
