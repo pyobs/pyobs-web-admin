@@ -26,6 +26,13 @@ PYOBS_LOG_LEVEL = "info"
 # pyobsd's own config file. Set explicitly to "file" or "journald" to override.
 # PYOBS_LOG_BACKEND = None
 
+# Packages page: what's installed (via `pip list`) is always the primary source of truth,
+# this is only for what pip's own installed-environment metadata can't recover later --
+# an extras spec (pip never remembers a package was installed with "[full]", so a later
+# upgrade would silently drop it) and/or extra non-"pyobs"-prefixed packages to also show
+# and manage from the same page. pyobs-core is installed with the "full" extra by default.
+PYOBS_MANAGED_PACKAGES = ["pyobs-core[full]"]
+
 # Generate the password hash with:
 #   DJANGO_SETTINGS_MODULE=pyobs_web_admin.settings uv run python -c \
 #     "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"

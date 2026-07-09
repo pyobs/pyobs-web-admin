@@ -152,11 +152,60 @@ def _pip_exec() -> str:
     return "pip"
 
 
+_PACKAGE_SPEC_RE = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(\[[^\]]*\])?$")
+
+
+def _normalize_package_name(name: str) -> str:
+    """PEP 503 normalization -- lowercase, runs of "-._" collapsed to a single "-" -- so
+    "pyobs-core", "pyobs_core", and "Pyobs.Core" all compare equal, the same as pip/PyPI
+    themselves treat package names as equivalent regardless of separator/casing. Used to
+    match a bare name from `pip list` (list_pyobs_packages) against a name parsed out of
+    settings.PYOBS_MANAGED_PACKAGES (_managed_package_specs), which an operator could have
+    spelled either way.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _managed_package_specs() -> dict[str, str]:
+    """Parses settings.PYOBS_MANAGED_PACKAGES (e.g. ["pyobs-core[full]", "my-custom-driver"])
+    into {normalized bare name: full spec string}. See that setting's own settings.py
+    comment for what it's for; both list_pyobs_packages and update_package consult this,
+    not just one of them, so a name only shows up on the Packages page if it can also
+    actually be updated through it, and vice versa.
+
+    Malformed entries are skipped rather than raising -- a typo in local_settings.py
+    shouldn't be able to break the whole Packages page.
+    """
+    specs: dict[str, str] = {}
+    for entry in getattr(settings, "PYOBS_MANAGED_PACKAGES", []):
+        m = _PACKAGE_SPEC_RE.match(entry.strip())
+        if not m:
+            continue
+        specs[_normalize_package_name(m.group(1))] = entry.strip()
+    return specs
+
+
+def _install_spec_for(name: str) -> str:
+    """The exact string update_package passes to `pip install --upgrade` for a managed
+    package -- name itself, unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it
+    (e.g. "pyobs-core[full]"), in which case that's used instead. Without this, a package
+    originally installed with an extra would silently lose it on every future upgrade, since
+    pip itself never records anywhere which extra (if any) an install originally requested
+    -- confirmed by inspecting a real installed distribution's own dist-info: METADATA lists
+    which extras a package *offers* (Provides-Extra), never which one was *used*.
+    """
+    return _managed_package_specs().get(_normalize_package_name(name), name)
+
+
 def list_pyobs_packages() -> list[dict]:
     """Installed pyobs-* packages (name + version), via `pip list --format=json` rather than
     importlib.metadata -- pyobs-web-admin itself may run in a different environment than
     pyobs (see _pip_exec), so introspecting its own imports wouldn't reflect what pyobs
-    actually has installed."""
+    actually has installed. Also includes any package -- pyobs-prefixed or not -- listed in
+    settings.PYOBS_MANAGED_PACKAGES, but only if it's actually installed: that setting can
+    extend which installed packages are shown/managed, never invent an entry for one that
+    isn't really there.
+    """
     try:
         result = subprocess.run(
             [_pip_exec(), "list", "--format=json"],
@@ -170,11 +219,12 @@ def list_pyobs_packages() -> list[dict]:
         installed = json.loads(result.stdout)
     except ValueError:
         return []
+    managed = _managed_package_specs()
     return sorted(
         (
             {"name": p["name"], "version": p["version"]}
             for p in installed
-            if p["name"].lower().startswith("pyobs")
+            if p["name"].lower().startswith("pyobs") or _normalize_package_name(p["name"]) in managed
         ),
         key=lambda p: p["name"].lower(),
     )
@@ -307,11 +357,14 @@ def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict
 
 
 def update_package(name: str, installed_version: str) -> tuple[bool, str]:
-    """Runs `pip install --upgrade <name>` in pyobs's own environment (_pip_exec). Callers
-    (api_package_update) must already have checked name against list_pyobs_packages() --
-    the prefix check here is just defense in depth, not the primary access control, so that
-    this function alone can never be used to pip-install something arbitrary even if a
-    caller forgot that check.
+    """Runs `pip install --upgrade <spec>` in pyobs's own environment (_pip_exec), where
+    <spec> is name itself unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it (see
+    _install_spec_for). Callers (api_package_update) must already have checked name against
+    list_pyobs_packages() -- the name check here is just defense in depth, not the primary
+    access control, so that this function alone can never be used to pip-install something
+    arbitrary even if a caller forgot that check. Mirrors list_pyobs_packages' own "pyobs-
+    prefixed, or explicitly allow-listed via PYOBS_MANAGED_PACKAGES" rule -- a name only
+    reachable here if it could also have shown up on the Packages page in the first place.
 
     Adds --pre when installed_version is itself a pre/dev release, mirroring the exact same
     is_prerelease check _select_latest_version uses to decide what "latest" even means for
@@ -324,12 +377,12 @@ def update_package(name: str, installed_version: str) -> tuple[bool, str]:
     aren't re-examined for a newer prerelease of their own just because this install allows
     prereleases in general.
     """
-    if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE):
-        return False, f"Refusing to update non-pyobs package: {name!r}"
+    if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE) and _normalize_package_name(name) not in _managed_package_specs():
+        return False, f"Refusing to update unmanaged package: {name!r}"
     args = [_pip_exec(), "install", "--upgrade", "--upgrade-strategy=only-if-needed", "--no-input"]
     if _is_prerelease(installed_version):
         args.append("--pre")
-    args.append(name)
+    args.append(_install_spec_for(name))
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
