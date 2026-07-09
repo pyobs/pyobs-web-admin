@@ -1507,11 +1507,17 @@ class NormalizePackageNameTests(unittest.TestCase):
 class ManagedPackageSpecsTests(unittest.TestCase):
     def test_extras_spec_parsed_by_bare_name(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
-            self.assertEqual(services._managed_package_specs(), {"pyobs-core": "pyobs-core[full]"})
+            self.assertEqual(
+                services._managed_package_specs(),
+                {"pyobs-core": services._ManagedSpec("pyobs-core[full]", is_vcs=False)},
+            )
 
     def test_bare_non_pyobs_name_is_its_own_spec(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
-            self.assertEqual(services._managed_package_specs(), {"my-custom-driver": "my-custom-driver"})
+            self.assertEqual(
+                services._managed_package_specs(),
+                {"my-custom-driver": services._ManagedSpec("my-custom-driver", is_vcs=False)},
+            )
 
     def test_lookup_key_is_normalized(self):
         # An operator listing "pyobs_core[full]" (underscore) must still match pip's own
@@ -1527,6 +1533,18 @@ class ManagedPackageSpecsTests(unittest.TestCase):
         with override_settings(PYOBS_MANAGED_PACKAGES=[]):
             self.assertEqual(services._managed_package_specs(), {})
 
+    def test_git_url_spec_is_parsed_and_flagged_vcs(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertEqual(
+                services._managed_package_specs(),
+                {"pyobs-iagvt": services._ManagedSpec(entry, is_vcs=True)},
+            )
+
+    def test_bare_and_extras_specs_are_not_flagged_vcs(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            self.assertFalse(services._managed_package_specs()["pyobs-core"].is_vcs)
+
 
 class InstallSpecForTests(unittest.TestCase):
     def test_uses_configured_extras_spec(self):
@@ -1536,6 +1554,59 @@ class InstallSpecForTests(unittest.TestCase):
     def test_falls_back_to_bare_name_when_unmanaged(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=[]):
             self.assertEqual(services._install_spec_for("pyobs-core"), "pyobs-core")
+
+    def test_uses_configured_git_url_spec(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertEqual(services._install_spec_for("pyobs-iagvt"), entry)
+
+
+class IsVcsManagedTests(unittest.TestCase):
+    def test_true_for_git_url_spec(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertTrue(services._is_vcs_managed("pyobs-iagvt"))
+
+    def test_false_for_plain_extras_spec(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            self.assertFalse(services._is_vcs_managed("pyobs-core"))
+
+    def test_false_for_unmanaged_package(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            self.assertFalse(services._is_vcs_managed("pyobs-core"))
+
+
+class GetPackageOverviewVcsTests(unittest.TestCase):
+    """A git/URL-installed managed package has no PyPI release history, so its overview
+    entry must skip the PyPI lookup rather than report a spurious/misleading result."""
+
+    @patch("modules.services._pypi_latest_version")
+    @patch("modules.services.list_pyobs_packages")
+    def test_pypi_lookup_skipped_for_vcs_package(self, mock_list, mock_latest):
+        mock_list.return_value = [{"name": "pyobs-iagvt", "version": "1.0.0"}]
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            overview = services.get_package_overview()
+        mock_latest.assert_not_called()
+        self.assertEqual(overview, [{
+            "name": "pyobs-iagvt",
+            "installed_version": "1.0.0",
+            "latest_version": None,
+            "update_available": False,
+            "vcs": True,
+        }])
+
+    @patch("modules.services._pypi_latest_version")
+    @patch("modules.services.list_pyobs_packages")
+    def test_pypi_lookup_still_used_for_regular_package(self, mock_list, mock_latest):
+        mock_list.return_value = [{"name": "pyobs-core", "version": "1.0.0"}]
+        mock_latest.return_value = "2.0.0"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            overview = services.get_package_overview()
+        mock_latest.assert_called_once_with("pyobs-core", "1.0.0")
+        self.assertEqual(overview[0]["vcs"], False)
+        self.assertEqual(overview[0]["latest_version"], "2.0.0")
+        self.assertTrue(overview[0]["update_available"])
 
 
 class ListPyobsPackagesManagedTests(unittest.TestCase):
