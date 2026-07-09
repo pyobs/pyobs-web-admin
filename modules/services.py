@@ -226,6 +226,41 @@ def get_package_overview() -> list[dict]:
     ]
 
 
+def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict:
+    """Turns get_package_overview()-shaped per-host package lists into a package x host
+    matrix for the fleet Overview page -- one row per pyobs-* package name (the union across
+    every host), one cell per host in the same order as `hosts`, each either that host's
+    get_package_overview() entry for the package or None if that host doesn't have it
+    installed at all. Mirrors merge_acl_matrices' row["cells"]-is-a-dict-keyed-by-column
+    shape turned into a positional list instead (row["cells"][c] there vs. cells[i] here) --
+    Django templates can't do a dict lookup keyed by a {% for %} loop variable, only a
+    literal attribute/key, so the per-host values need to already be in column order by the
+    time they reach the template (see fleet_overview.html's parallel {% for host in
+    package_hosts %} / {% for cell in pkg.cells %} loops).
+
+    latest_version is taken from whichever host happened to report one -- PyPI has no notion
+    of "per host", so any host's non-None reading is as good as any other's; a package only
+    installed on an unreachable host reports None here, same as get_package_overview()'s own
+    "latest lookup failed" case.
+    """
+    host_names = [name for name, _ in per_host]
+    by_package: dict[str, dict[str, dict]] = {}
+    for host_name, packages in per_host:
+        for pkg in packages:
+            by_package.setdefault(pkg["name"], {})[host_name] = pkg
+
+    rows = []
+    for name in sorted(by_package, key=str.lower):
+        entries = by_package[name]
+        latest = next((e["latest_version"] for e in entries.values() if e["latest_version"] is not None), None)
+        rows.append({
+            "name": name,
+            "latest_version": latest,
+            "cells": [entries.get(host_name) for host_name in host_names],
+        })
+    return {"hosts": host_names, "packages": rows}
+
+
 def update_package(name: str) -> tuple[bool, str]:
     """Runs `pip install --upgrade <name>` in pyobs's own environment (_pip_exec). Callers
     (api_package_update) must already have checked name against list_pyobs_packages() --
