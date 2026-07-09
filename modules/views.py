@@ -133,6 +133,7 @@ def fleet_overview(request):
         stats = services.get_module_stats(name) if status == "running" else None
         local_modules.append({"name": name, "status": status, "stats": stats})
     hosts = [_host_summary("localhost", local_modules)]
+    per_host_packages = [("localhost", services.get_package_overview())]
 
     unreachable = []
     for host_cfg in getattr(settings, "HUB_HOSTS", []):
@@ -141,17 +142,36 @@ def fleet_overview(request):
             hosts.append(_host_summary(host_cfg["name"], data.get("modules", [])))
         except Exception as e:
             unreachable.append({"name": host_cfg["name"], "error": str(e)})
+            continue
+        # Only bothers fetching packages for a host already confirmed reachable above --
+        # if a host's down, it's already in unreachable_hosts and simply has no column in
+        # the package matrix below, rather than doubling every down-host round trip and/or
+        # a second, redundant unreachable notice for the same host.
+        try:
+            pkg_data = proxy.call(host_cfg, "GET", "/api/packages/")
+            per_host_packages.append((host_cfg["name"], pkg_data.get("packages", [])))
+        except Exception:
+            pass
+
+    package_matrix = services.build_package_version_matrix(per_host_packages)
 
     return render(request, "modules/fleet_overview.html", {
         "active_fleet_overview": True,
         "hosts": hosts,
         "unreachable_hosts": unreachable,
+        "package_hosts": package_matrix["hosts"],
+        "packages": package_matrix["packages"],
     })
 
 
 def packages(request):
     """Follows the session's active host, like dashboard/module_detail -- installed
-    pyobs-* packages and their pip environment are a per-host thing, not fleet-wide.
+    pyobs-* packages and their pip environment are a per-host thing, so this shows one
+    host's full detail (with Update buttons) at a time. See fleet_overview's own
+    package-version matrix for the cross-host "is everything on the same version?" view,
+    the same Dashboard/Overview split this app already uses for modules (DEVELOPMENT.md's
+    "Two dashboards").
+
     Data itself (installed + latest PyPI versions) is loaded client-side via api_packages,
     since the PyPI lookups are slow enough that rendering them synchronously here would
     block the page load."""
@@ -673,10 +693,13 @@ def api_package_update(request, name: str):
         return _proxy(host, "POST", f"/api/packages/{name}/update/")
     # Only ever allow updating a package this host actually has installed -- guards against
     # an authenticated admin being tricked (e.g. a crafted link) into pip-installing an
-    # arbitrary package name via this endpoint.
-    if name not in {p["name"] for p in services.list_pyobs_packages()}:
+    # arbitrary package name via this endpoint. Also gives update_package the installed
+    # version it needs to decide whether to allow pre-releases, from the same lookup, rather
+    # than a second pip subprocess call to re-derive it.
+    installed = {p["name"]: p["version"] for p in services.list_pyobs_packages()}
+    if name not in installed:
         return JsonResponse({"ok": False, "error": f"{name!r} is not an installed pyobs-* package"}, status=404)
-    ok, message = services.update_package(name)
+    ok, message = services.update_package(name, installed[name])
     return JsonResponse({"ok": ok, "message": message})
 
 

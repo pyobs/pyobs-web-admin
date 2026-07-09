@@ -6,7 +6,8 @@
 <style>
   /* Without this, a tight mobile viewport wraps cell text (e.g. "511.7 MB" breaking
      mid-word) instead of properly scrolling horizontally via table-responsive. */
-  #fleet-overview-table th, #fleet-overview-table td { white-space: nowrap; }
+  #fleet-overview-table th, #fleet-overview-table td,
+  #package-matrix-table th, #package-matrix-table td { white-space: nowrap; }
 </style>
 {% endblock %}
 
@@ -63,4 +64,40 @@
   </tbody>
 </table>
 </div>
+
+{% if packages %}
+<h6 class="mt-4">Package versions</h6>
+<p class="text-muted small">
+  Installed <code>pyobs-*</code> package versions across every host, with each package's
+  latest release on PyPI for reference — see each host's own Packages page to update it.
+  <span class="text-warning">Highlighted</span> versions are behind the latest PyPI release.
+</p>
+
+<div class="table-responsive border rounded" style="max-width: 900px;">
+<table class="table table-sm table-hover align-middle mb-0" id="package-matrix-table">
+  <thead>
+    <tr>
+      <th>Package</th>
+      <th class="text-end">Latest (PyPI)</th>
+      {% for host in package_hosts %}
+      <th class="text-end"><i class="bi bi-hdd-network me-1 text-muted"></i>{{ host }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for pkg in packages %}
+  <tr>
+    <td class="fw-semibold">{{ pkg.name }}</td>
+    <td class="text-end text-secondary">{{ pkg.latest_version|default:"—" }}</td>
+    {% for cell in pkg.cells %}
+    <td class="text-end{% if cell.update_available %} text-warning{% endif %}">
+      {% if cell %}{{ cell.installed_version }}{% else %}<span class="text-muted">—</span>{% endif %}
+    </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
 {% endblock %}

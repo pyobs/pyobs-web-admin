@@ -152,11 +152,60 @@ def _pip_exec() -> str:
     return "pip"
 
 
+_PACKAGE_SPEC_RE = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(\[[^\]]*\])?$")
+
+
+def _normalize_package_name(name: str) -> str:
+    """PEP 503 normalization -- lowercase, runs of "-._" collapsed to a single "-" -- so
+    "pyobs-core", "pyobs_core", and "Pyobs.Core" all compare equal, the same as pip/PyPI
+    themselves treat package names as equivalent regardless of separator/casing. Used to
+    match a bare name from `pip list` (list_pyobs_packages) against a name parsed out of
+    settings.PYOBS_MANAGED_PACKAGES (_managed_package_specs), which an operator could have
+    spelled either way.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _managed_package_specs() -> dict[str, str]:
+    """Parses settings.PYOBS_MANAGED_PACKAGES (e.g. ["pyobs-core[full]", "my-custom-driver"])
+    into {normalized bare name: full spec string}. See that setting's own settings.py
+    comment for what it's for; both list_pyobs_packages and update_package consult this,
+    not just one of them, so a name only shows up on the Packages page if it can also
+    actually be updated through it, and vice versa.
+
+    Malformed entries are skipped rather than raising -- a typo in local_settings.py
+    shouldn't be able to break the whole Packages page.
+    """
+    specs: dict[str, str] = {}
+    for entry in getattr(settings, "PYOBS_MANAGED_PACKAGES", []):
+        m = _PACKAGE_SPEC_RE.match(entry.strip())
+        if not m:
+            continue
+        specs[_normalize_package_name(m.group(1))] = entry.strip()
+    return specs
+
+
+def _install_spec_for(name: str) -> str:
+    """The exact string update_package passes to `pip install --upgrade` for a managed
+    package -- name itself, unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it
+    (e.g. "pyobs-core[full]"), in which case that's used instead. Without this, a package
+    originally installed with an extra would silently lose it on every future upgrade, since
+    pip itself never records anywhere which extra (if any) an install originally requested
+    -- confirmed by inspecting a real installed distribution's own dist-info: METADATA lists
+    which extras a package *offers* (Provides-Extra), never which one was *used*.
+    """
+    return _managed_package_specs().get(_normalize_package_name(name), name)
+
+
 def list_pyobs_packages() -> list[dict]:
     """Installed pyobs-* packages (name + version), via `pip list --format=json` rather than
     importlib.metadata -- pyobs-web-admin itself may run in a different environment than
     pyobs (see _pip_exec), so introspecting its own imports wouldn't reflect what pyobs
-    actually has installed."""
+    actually has installed. Also includes any package -- pyobs-prefixed or not -- listed in
+    settings.PYOBS_MANAGED_PACKAGES, but only if it's actually installed: that setting can
+    extend which installed packages are shown/managed, never invent an entry for one that
+    isn't really there.
+    """
     try:
         result = subprocess.run(
             [_pip_exec(), "list", "--format=json"],
@@ -170,25 +219,71 @@ def list_pyobs_packages() -> list[dict]:
         installed = json.loads(result.stdout)
     except ValueError:
         return []
+    managed = _managed_package_specs()
     return sorted(
         (
             {"name": p["name"], "version": p["version"]}
             for p in installed
-            if p["name"].lower().startswith("pyobs")
+            if p["name"].lower().startswith("pyobs") or _normalize_package_name(p["name"]) in managed
         ),
         key=lambda p: p["name"].lower(),
     )
 
 
-def _pypi_latest_version(name: str) -> str | None:
-    """None on any failure (package not on PyPI, network error, timeout, ...) -- this only
-    ever feeds a display column, never something worth failing the whole page load over."""
+def _is_prerelease(version: str) -> bool:
+    try:
+        return Version(version).is_prerelease
+    except InvalidVersion:
+        return False
+
+
+def _select_latest_version(available: list[str], installed: str) -> str | None:
+    """Picks the version _pypi_latest_version reports as "latest" for an `installed`
+    version, given every version string PyPI has ever published for the package. Split out
+    as a pure, network-free function so this policy has unit test coverage independent of
+    PyPI's actual current release history for any real package.
+
+    Mirrors pip's own default pre-release policy for `pip install --upgrade <name>` (no
+    version specifier): pre-release candidates are only considered at all if `installed` is
+    itself a pre-release -- confirmed live against a real installation via `pip install
+    --upgrade --dry-run --report`: for an installed "2.0.0.dev10", pip's resolver reports
+    nothing to install at all (not even a "downgrade" to a newer stable "1.54.0") unless
+    --pre is passed, in which case it correctly offers a newer "2.0.0.dev13". Just using
+    PyPI's own info.version (its "latest stable" field) would report "1.54.0" as latest
+    regardless -- wrong in two ways at once: it doesn't surface the real newer prerelease,
+    and (before _is_update_available's own PEP 440 comparison) would make an install that's
+    actually ahead look like it needs a downgrade. update_package's own --pre gate mirrors
+    this exact is_prerelease(installed) check, so the two stay in lockstep -- otherwise the
+    UI could advertise an upgrade pip would then silently decline to perform.
+    """
+    allow_prereleases = _is_prerelease(installed)
+    versions = []
+    for v in available:
+        try:
+            parsed = Version(v)
+        except InvalidVersion:
+            continue
+        if parsed.is_prerelease and not allow_prereleases:
+            continue
+        versions.append(parsed)
+    return str(max(versions)) if versions else None
+
+
+def _pypi_latest_version(name: str, installed: str) -> str | None:
+    """None on any failure (package not on PyPI, network error, timeout, bad data) or if no
+    comparable version was found -- this only ever feeds a display column, never something
+    worth failing the whole page load over. See _select_latest_version for the actual
+    "what counts as latest" policy."""
     try:
         resp = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=5)
         resp.raise_for_status()
-        return resp.json()["info"]["version"]
+        releases = resp.json().get("releases", {})
     except Exception:
         return None
+    # A version with an empty file list has had every upload deleted/yanked -- nothing left
+    # to actually install, so it's not a real candidate.
+    available = [v for v, files in releases.items() if files]
+    return _select_latest_version(available, installed)
 
 
 def _is_update_available(installed: str, latest: str | None) -> bool:
@@ -214,7 +309,7 @@ def get_package_overview() -> list[dict]:
     if not installed:
         return []
     with ThreadPoolExecutor(max_workers=min(8, len(installed))) as pool:
-        latest_versions = list(pool.map(lambda p: _pypi_latest_version(p["name"]), installed))
+        latest_versions = list(pool.map(lambda p: _pypi_latest_version(p["name"], p["version"]), installed))
     return [
         {
             "name": pkg["name"],
@@ -226,20 +321,70 @@ def get_package_overview() -> list[dict]:
     ]
 
 
-def update_package(name: str) -> tuple[bool, str]:
-    """Runs `pip install --upgrade <name>` in pyobs's own environment (_pip_exec). Callers
-    (api_package_update) must already have checked name against list_pyobs_packages() --
-    the prefix check here is just defense in depth, not the primary access control, so that
-    this function alone can never be used to pip-install something arbitrary even if a
-    caller forgot that check.
+def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict:
+    """Turns get_package_overview()-shaped per-host package lists into a package x host
+    matrix for the fleet Overview page -- one row per pyobs-* package name (the union across
+    every host), one cell per host in the same order as `hosts`, each either that host's
+    get_package_overview() entry for the package or None if that host doesn't have it
+    installed at all. Mirrors merge_acl_matrices' row["cells"]-is-a-dict-keyed-by-column
+    shape turned into a positional list instead (row["cells"][c] there vs. cells[i] here) --
+    Django templates can't do a dict lookup keyed by a {% for %} loop variable, only a
+    literal attribute/key, so the per-host values need to already be in column order by the
+    time they reach the template (see fleet_overview.html's parallel {% for host in
+    package_hosts %} / {% for cell in pkg.cells %} loops).
+
+    latest_version is taken from whichever host happened to report one -- PyPI has no notion
+    of "per host", so any host's non-None reading is as good as any other's; a package only
+    installed on an unreachable host reports None here, same as get_package_overview()'s own
+    "latest lookup failed" case.
     """
-    if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE):
-        return False, f"Refusing to update non-pyobs package: {name!r}"
+    host_names = [name for name, _ in per_host]
+    by_package: dict[str, dict[str, dict]] = {}
+    for host_name, packages in per_host:
+        for pkg in packages:
+            by_package.setdefault(pkg["name"], {})[host_name] = pkg
+
+    rows = []
+    for name in sorted(by_package, key=str.lower):
+        entries = by_package[name]
+        latest = next((e["latest_version"] for e in entries.values() if e["latest_version"] is not None), None)
+        rows.append({
+            "name": name,
+            "latest_version": latest,
+            "cells": [entries.get(host_name) for host_name in host_names],
+        })
+    return {"hosts": host_names, "packages": rows}
+
+
+def update_package(name: str, installed_version: str) -> tuple[bool, str]:
+    """Runs `pip install --upgrade <spec>` in pyobs's own environment (_pip_exec), where
+    <spec> is name itself unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it (see
+    _install_spec_for). Callers (api_package_update) must already have checked name against
+    list_pyobs_packages() -- the name check here is just defense in depth, not the primary
+    access control, so that this function alone can never be used to pip-install something
+    arbitrary even if a caller forgot that check. Mirrors list_pyobs_packages' own "pyobs-
+    prefixed, or explicitly allow-listed via PYOBS_MANAGED_PACKAGES" rule -- a name only
+    reachable here if it could also have shown up on the Packages page in the first place.
+
+    Adds --pre when installed_version is itself a pre/dev release, mirroring the exact same
+    is_prerelease check _select_latest_version uses to decide what "latest" even means for
+    this package -- without it, pip's own resolver leaves an already-installed pre-release
+    alone entirely rather than upgrading it, even to a newer pre-release (verified live, see
+    _select_latest_version's docstring), so Update would silently do nothing for exactly the
+    packages this policy exists to handle. --upgrade-strategy=only-if-needed (pip's own
+    default, made explicit here rather than trusted to stay that way under any local pip.conf)
+    keeps --pre's effect scoped to resolving *this* package -- already-satisfied dependencies
+    aren't re-examined for a newer prerelease of their own just because this install allows
+    prereleases in general.
+    """
+    if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE) and _normalize_package_name(name) not in _managed_package_specs():
+        return False, f"Refusing to update unmanaged package: {name!r}"
+    args = [_pip_exec(), "install", "--upgrade", "--upgrade-strategy=only-if-needed", "--no-input"]
+    if _is_prerelease(installed_version):
+        args.append("--pre")
+    args.append(_install_spec_for(name))
     try:
-        result = subprocess.run(
-            [_pip_exec(), "install", "--upgrade", "--no-input", name],
-            capture_output=True, text=True, timeout=120,
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         return False, "Timed out waiting for pip install to finish"
     except FileNotFoundError:

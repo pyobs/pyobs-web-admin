@@ -1442,3 +1442,162 @@ class TagHostTests(unittest.TestCase):
 
     def test_falls_back_to_prefix_when_no_leading_timestamp(self):
         self.assertEqual(_tag_host("no timestamp here", "spoke1"), "[spoke1] no timestamp here")
+
+
+# ── Package version selection (Packages page) ──────────────────────────────────
+
+class SelectLatestVersionTests(unittest.TestCase):
+    # Regression coverage for a real production case: a host had pyobs-core installed as
+    # "2.0.0.dev11" (an in-progress pre-release of an unreleased 2.0.0), while PyPI's
+    # info.version -- "the latest stable release" -- was "1.54.0". The original
+    # implementation compared against info.version directly, which (1) never surfaces a
+    # newer prerelease like "2.0.0.dev13" that's actually available, and would have (2)
+    # flagged "1.54.0" as an "update" even though it's older than the installed dev build,
+    # were it not for _is_update_available's separate PEP 440 comparison. Confirmed live
+    # against a real installation with `pip install --upgrade --dry-run --report`: pip's own
+    # resolver leaves an already-installed pre-release alone entirely (offers nothing at
+    # all, not even "1.54.0") unless --pre is passed -- so "what counts as latest" here must
+    # mirror pip's own pre-release policy, not just PyPI's info.version field.
+
+    def test_installed_prerelease_sees_newer_prerelease(self):
+        available = ["1.54.0", "2.0.0.dev10", "2.0.0.dev11", "2.0.0.dev13"]
+        self.assertEqual(services._select_latest_version(available, "2.0.0.dev11"), "2.0.0.dev13")
+
+    def test_installed_stable_ignores_prereleases(self):
+        available = ["1.50.0", "1.54.0", "2.0.0.dev13"]
+        self.assertEqual(services._select_latest_version(available, "1.50.0"), "1.54.0")
+
+    def test_installed_stable_already_latest_ignores_newer_prerelease(self):
+        available = ["1.54.0", "2.0.0.dev13"]
+        self.assertEqual(services._select_latest_version(available, "1.54.0"), "1.54.0")
+
+    def test_no_versions_available_returns_none(self):
+        self.assertIsNone(services._select_latest_version([], "1.0.0"))
+
+    def test_unparseable_version_strings_are_skipped(self):
+        self.assertEqual(services._select_latest_version(["not-a-version", "1.2.3"], "1.0.0"), "1.2.3")
+
+
+class IsUpdateAvailableTests(unittest.TestCase):
+    def test_installed_prerelease_ahead_of_stable_latest_is_not_flagged(self):
+        # Same production case as SelectLatestVersionTests -- even if "latest" somehow ended
+        # up as an older stable release, this must never say an "update" is available for a
+        # dev build that's already ahead of it.
+        self.assertFalse(services._is_update_available("2.0.0.dev11", "1.54.0"))
+
+    def test_genuinely_newer_version_is_flagged(self):
+        self.assertTrue(services._is_update_available("1.50.0", "1.54.0"))
+
+    def test_same_version_is_not_flagged(self):
+        self.assertFalse(services._is_update_available("1.54.0", "1.54.0"))
+
+    def test_none_latest_is_not_flagged(self):
+        self.assertFalse(services._is_update_available("1.54.0", None))
+
+
+# ── PYOBS_MANAGED_PACKAGES (extras + non-pyobs packages on the Packages page) ───
+
+class NormalizePackageNameTests(unittest.TestCase):
+    def test_hyphen_underscore_dot_all_equivalent(self):
+        self.assertEqual(services._normalize_package_name("pyobs-core"), "pyobs-core")
+        self.assertEqual(services._normalize_package_name("pyobs_core"), "pyobs-core")
+        self.assertEqual(services._normalize_package_name("Pyobs.Core"), "pyobs-core")
+
+
+class ManagedPackageSpecsTests(unittest.TestCase):
+    def test_extras_spec_parsed_by_bare_name(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            self.assertEqual(services._managed_package_specs(), {"pyobs-core": "pyobs-core[full]"})
+
+    def test_bare_non_pyobs_name_is_its_own_spec(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
+            self.assertEqual(services._managed_package_specs(), {"my-custom-driver": "my-custom-driver"})
+
+    def test_lookup_key_is_normalized(self):
+        # An operator listing "pyobs_core[full]" (underscore) must still match pip's own
+        # "pyobs-core" (hyphen) spelling of the installed package's name.
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs_core[full]"]):
+            self.assertIn("pyobs-core", services._managed_package_specs())
+
+    def test_malformed_entry_is_skipped_not_raised(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["not a valid spec!!"]):
+            self.assertEqual(services._managed_package_specs(), {})
+
+    def test_empty_by_default(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            self.assertEqual(services._managed_package_specs(), {})
+
+
+class InstallSpecForTests(unittest.TestCase):
+    def test_uses_configured_extras_spec(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            self.assertEqual(services._install_spec_for("pyobs-core"), "pyobs-core[full]")
+
+    def test_falls_back_to_bare_name_when_unmanaged(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            self.assertEqual(services._install_spec_for("pyobs-core"), "pyobs-core")
+
+
+class ListPyobsPackagesManagedTests(unittest.TestCase):
+    """list_pyobs_packages must still only report what's *actually installed* -- the
+    PYOBS_MANAGED_PACKAGES setting only ever widens the filter over pip's own report, never
+    invents an entry pip didn't return."""
+
+    def _mock_pip_list(self, packages):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = json.dumps(packages)
+        return result
+
+    @patch("modules.services.subprocess.run")
+    def test_non_pyobs_managed_package_included_if_installed(self, mock_run):
+        mock_run.return_value = self._mock_pip_list([
+            {"name": "pyobs-core", "version": "2.0.0.dev11"},
+            {"name": "my-custom-driver", "version": "1.0.0"},
+            {"name": "numpy", "version": "2.4.6"},
+        ])
+        with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
+            names = {p["name"] for p in services.list_pyobs_packages()}
+        self.assertEqual(names, {"pyobs-core", "my-custom-driver"})
+
+    @patch("modules.services.subprocess.run")
+    def test_managed_but_not_installed_is_not_invented(self, mock_run):
+        mock_run.return_value = self._mock_pip_list([
+            {"name": "pyobs-core", "version": "2.0.0.dev11"},
+        ])
+        with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
+            names = {p["name"] for p in services.list_pyobs_packages()}
+        self.assertEqual(names, {"pyobs-core"})
+
+
+class UpdatePackageManagedTests(unittest.TestCase):
+    def _mock_result(self, returncode=0, stdout="ok"):
+        result = MagicMock()
+        result.returncode = returncode
+        result.stdout = stdout
+        result.stderr = ""
+        return result
+
+    @patch("modules.services.subprocess.run")
+    def test_uses_configured_extras_spec_in_pip_args(self, mock_run):
+        mock_run.return_value = self._mock_result()
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            services.update_package("pyobs-core", "1.54.0")
+        args = mock_run.call_args[0][0]
+        self.assertEqual(args[-1], "pyobs-core[full]")
+
+    @patch("modules.services.subprocess.run")
+    def test_non_pyobs_managed_package_is_allowed(self, mock_run):
+        mock_run.return_value = self._mock_result()
+        with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
+            ok, _ = services.update_package("my-custom-driver", "1.0.0")
+        self.assertTrue(ok)
+        mock_run.assert_called_once()
+
+    @patch("modules.services.subprocess.run")
+    def test_unmanaged_non_pyobs_package_is_refused(self, mock_run):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            ok, message = services.update_package("some-random-package", "1.0.0")
+        self.assertFalse(ok)
+        self.assertIn("unmanaged", message)
+        mock_run.assert_not_called()

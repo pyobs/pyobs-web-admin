@@ -70,6 +70,20 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"
 PYOBS_LOG_LEVEL = "info"
 
+# Packages page (see modules/services.py's "Package management" section): what's actually
+# installed (via `pip list`) is always the primary source of truth for which pyobs-*
+# packages exist and what version they're at -- this setting never invents an entry for a
+# package that isn't really installed. It's only for two things pip's installed-environment
+# metadata has no other way to recover:
+#   - Extras: pip never records which extras (if any) a package was originally installed
+#     with, so a bare "pyobs-core" upgrade would silently drop a "[full]" extra forever.
+#     List "pyobs-core[full]" here and future upgrades keep using that same spec.
+#   - Non-"pyobs"-prefixed packages: list a bare name (e.g. "my-custom-driver") to have it
+#     show up on the Packages page and be upgradable through it too, alongside the pyobs-*
+#     packages it always already covers.
+# PYOBS_MANAGED_PACKAGES = ["pyobs-core[full]", "my-custom-driver"]
+PYOBS_MANAGED_PACKAGES = []
+
 # Where module logs live -- see DEV_JOURNALD_LOGS.md. "file": pyobs writes to PYOBS_LOG_DIR,
 # read back with tail. "journald": pyobs is started with --syslog instead of --log-file,
 # read back with journalctl. Fleet-wide switch, not per-module -- see that doc's Design
