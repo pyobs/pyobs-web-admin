@@ -14,8 +14,11 @@ urlpatterns = [
     path("acl/", views.acl_matrix, name="acl_matrix"),
     path("logs/", views.all_logs, name="all_logs"),
     path("xmpp-users/", views.xmpp_users, name="xmpp_users"),
+    path("packages/", views.packages, name="packages"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
+    path("api/packages/", views.api_packages, name="api_packages"),
+    path("api/packages/<str:name>/update/", views.api_package_update, name="api_package_update"),
     path("api/logs/", views.api_all_logs, name="api_all_logs"),
     path("api/modules/create/", views.api_create_module, name="api_create_module"),
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),

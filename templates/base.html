@@ -144,6 +144,10 @@
           Users
         </a>
         {% endif %}
+        <a href="{% url 'packages' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_packages %}active{% endif %}">
+          <i class="bi bi-box-seam" style="font-size:0.8rem"></i>
+          Packages
+        </a>
       </div>
 
       {% if hub_hosts|length > 1 %}
@@ -161,7 +165,7 @@
       {% endif %}
 
       <div class="px-2 py-2">
-        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs and not active_xmpp_users and not active_fleet_overview and not active_new_module %}active{% endif %}">
+        <a href="{% url 'dashboard' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if not active_module and not active_shared and not active_acl_matrix and not active_all_logs and not active_xmpp_users and not active_fleet_overview and not active_new_module and not active_packages %}active{% endif %}">
           <i class="bi bi-grid-fill" style="font-size:0.8rem"></i>
           Dashboard
         </a>
