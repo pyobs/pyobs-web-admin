@@ -22,6 +22,10 @@ PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"
 PYOBS_LOG_LEVEL = "info"
 
+# Where module logs live -- see DEV_JOURNALD_LOGS.md. None (default) auto-detects from
+# pyobsd's own config file. Set explicitly to "file" or "journald" to override.
+# PYOBS_LOG_BACKEND = None
+
 # Generate the password hash with:
 #   DJANGO_SETTINGS_MODULE=pyobs_web_admin.settings uv run python -c \
 #     "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"
@@ -38,3 +42,11 @@ HUB_TOKEN = ""
 #     {"name": "obs2", "url": "http://obs2:8765", "token": "another-secret"},
 # ]
 HUB_HOSTS = []
+
+# ejabberd integration -- see DEV_EJABBERD_INTEGRATION.md. Off by default: not every fleet
+# has ejabberd co-located. Uncomment and adjust to enable.
+# EJABBERD_ENABLED = True
+# EJABBERD_HOST = "localhost"  # name of the HUB_HOSTS entry (or "localhost") running ejabberd
+# EJABBERD_DOMAIN = "your-xmpp-domain"
+# EJABBERD_API_URL = "http://127.0.0.1:5281/api"
+# EJABBERDCTL = "ejabberdctl"

@@ -149,6 +149,15 @@ def fleet_overview(request):
     })
 
 
+def packages(request):
+    """Follows the session's active host, like dashboard/module_detail -- installed
+    pyobs-* packages and their pip environment are a per-host thing, not fleet-wide.
+    Data itself (installed + latest PyPI versions) is loaded client-side via api_packages,
+    since the PyPI lookups are slow enough that rendering them synchronously here would
+    block the page load."""
+    return render(request, "modules/packages.html", {"active_packages": True})
+
+
 def new_module(request):
     """A dedicated page (not a modal -- this app's own established mobile-friendliness
     convention, see DEV_EJABBERD_USER_MANAGEMENT.md's Users page) for the one-field "create a
@@ -645,6 +654,30 @@ def api_acl(request, name: str):
         return JsonResponse({"success": False, "error": str(e)}, status=409)
     except FileNotFoundError as e:
         return JsonResponse({"success": False, "error": str(e)}, status=404)
+
+
+# ── Package API ───────────────────────────────────────────────────────────────
+
+@require_GET
+def api_packages(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", "/api/packages/")
+    return JsonResponse({"packages": services.get_package_overview()})
+
+
+@require_POST
+def api_package_update(request, name: str):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/packages/{name}/update/")
+    # Only ever allow updating a package this host actually has installed -- guards against
+    # an authenticated admin being tricked (e.g. a crafted link) into pip-installing an
+    # arbitrary package name via this endpoint.
+    if name not in {p["name"] for p in services.list_pyobs_packages()}:
+        return JsonResponse({"ok": False, "error": f"{name!r} is not an installed pyobs-* package"}, status=404)
+    ok, message = services.update_package(name)
+    return JsonResponse({"ok": ok, "message": message})
 
 
 # ── ejabberd hub-mode delegation ────────────────────────────────────────────────

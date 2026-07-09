@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}Packages — pyobs Web Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0">Packages</h4>
+  <button class="btn btn-sm btn-outline-secondary" id="btn-refresh" onclick="loadPackages()">
+    <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
+  </button>
+</div>
+
+<p class="text-secondary small">Installed <code>pyobs-*</code> packages and their latest release on PyPI.</p>
+
+<div id="packages-error" class="alert alert-danger d-none"></div>
+
+<div class="table-responsive">
+  <table class="table table-hover align-middle mb-0">
+    <thead>
+      <tr>
+        <th>Package</th>
+        <th>Installed</th>
+        <th>Latest (PyPI)</th>
+        <th></th>
+        <th class="text-end">Action</th>
+      </tr>
+    </thead>
+    <tbody id="packages-tbody">
+      <tr><td colspan="5" class="text-center text-secondary py-4"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function pkgRow(pkg) {
+  const tr = document.createElement('tr');
+  tr.dataset.package = pkg.name;
+
+  const nameTd = document.createElement('td');
+  nameTd.className = 'fw-semibold';
+  nameTd.textContent = pkg.name;
+
+  const instTd = document.createElement('td');
+  instTd.className = 'text-secondary';
+  instTd.textContent = pkg.installed_version;
+
+  const latestTd = document.createElement('td');
+  latestTd.className = 'text-secondary';
+  latestTd.textContent = pkg.latest_version ?? '—';
+
+  const statusTd = document.createElement('td');
+  const badge = document.createElement('span');
+  if (pkg.latest_version === null) {
+    badge.className = 'badge bg-secondary';
+    badge.textContent = 'unknown';
+  } else if (pkg.update_available) {
+    badge.className = 'badge bg-warning text-dark';
+    badge.textContent = 'update available';
+  } else {
+    badge.className = 'badge bg-success';
+    badge.textContent = 'up to date';
+  }
+  statusTd.appendChild(badge);
+
+  const actionTd = document.createElement('td');
+  actionTd.className = 'text-end';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm btn-outline-primary';
+  btn.disabled = !pkg.update_available;
+  btn.innerHTML = '<i class="bi bi-cloud-arrow-down"></i> Update';
+  btn.onclick = () => updatePackage(pkg.name, btn);
+  actionTd.appendChild(btn);
+
+  tr.append(nameTd, instTd, latestTd, statusTd, actionTd);
+  return tr;
+}
+
+async function loadPackages() {
+  const tbody = document.getElementById('packages-tbody');
+  const errorBox = document.getElementById('packages-error');
+  errorBox.classList.add('d-none');
+  tbody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-4"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</td></tr>';
+  try {
+    const resp = await fetch("{% url 'api_packages' %}");
+    const data = await resp.json();
+    if (data.error) {
+      errorBox.textContent = data.error;
+      errorBox.classList.remove('d-none');
+      tbody.innerHTML = '';
+      return;
+    }
+    tbody.innerHTML = '';
+    if (!data.packages.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-4">No pyobs-* packages found.</td></tr>';
+      return;
+    }
+    data.packages.forEach(pkg => tbody.appendChild(pkgRow(pkg)));
+  } catch (e) {
+    errorBox.textContent = `Failed to load packages: ${e}`;
+    errorBox.classList.remove('d-none');
+    tbody.innerHTML = '';
+  }
+}
+
+async function updatePackage(name, btn) {
+  btn.disabled = true;
+  const original = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Updating…';
+  try {
+    const resp = await fetch(`/api/packages/${encodeURIComponent(name)}/update/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken()},
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(`Failed to update ${name}:\n${data.message || data.error || 'unknown error'}`);
+      btn.disabled = false;
+      btn.innerHTML = original;
+      return;
+    }
+    await loadPackages();
+  } catch (e) {
+    alert(`Failed to update ${name}: ${e}`);
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
+loadPackages();
+</script>
+{% endblock %}

@@ -5,6 +5,7 @@ import re
 import signal
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,10 @@ from typing import Any
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
 import psutil
+import requests
 import yaml
 from django.conf import settings
+from packaging.version import InvalidVersion, Version
 from ruamel.yaml import YAML as _RuamelYAML
 
 from modules.pyobs_config import pre_process_yaml
@@ -129,6 +132,120 @@ def list_modules() -> list[str]:
         return []
     # exclude *.shared.yaml (shared config fragments, not runnable modules)
     return sorted(p.stem for p in d.glob("*.yaml") if not p.name.endswith(".shared.yaml"))
+
+
+# ── Package management ───────────────────────────────────────────────────────
+
+def _pip_exec() -> str:
+    """pip from the same environment PYOBS_EXEC runs pyobs in (e.g. PYOBS_EXEC
+    "/opt/pyobs/venv/bin/pyobs" -> "/opt/pyobs/venv/bin/pip"), so installed versions and
+    upgrades reflect what pyobs itself actually imports -- not whatever environment
+    pyobs-web-admin happens to run in. Falls back to a bare "pip" (PATH lookup) when
+    PYOBS_EXEC has no directory component (the settings.py default, "pyobs") or no sibling
+    pip exists there.
+    """
+    d = os.path.dirname(_pyobs_exec())
+    if d:
+        pip_path = os.path.join(d, "pip")
+        if os.path.exists(pip_path):
+            return pip_path
+    return "pip"
+
+
+def list_pyobs_packages() -> list[dict]:
+    """Installed pyobs-* packages (name + version), via `pip list --format=json` rather than
+    importlib.metadata -- pyobs-web-admin itself may run in a different environment than
+    pyobs (see _pip_exec), so introspecting its own imports wouldn't reflect what pyobs
+    actually has installed."""
+    try:
+        result = subprocess.run(
+            [_pip_exec(), "list", "--format=json"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        installed = json.loads(result.stdout)
+    except ValueError:
+        return []
+    return sorted(
+        (
+            {"name": p["name"], "version": p["version"]}
+            for p in installed
+            if p["name"].lower().startswith("pyobs")
+        ),
+        key=lambda p: p["name"].lower(),
+    )
+
+
+def _pypi_latest_version(name: str) -> str | None:
+    """None on any failure (package not on PyPI, network error, timeout, ...) -- this only
+    ever feeds a display column, never something worth failing the whole page load over."""
+    try:
+        resp = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=5)
+        resp.raise_for_status()
+        return resp.json()["info"]["version"]
+    except Exception:
+        return None
+
+
+def _is_update_available(installed: str, latest: str | None) -> bool:
+    """PEP 440 version comparison, not a plain string inequality -- an installed dev/pre-
+    release (e.g. "2.0.0.dev10") can sort *ahead* of PyPI's latest stable release (e.g.
+    "1.54.0"), and flagging that as "update available" would invite clicking Update and
+    (at best, pip itself still refuses) being confused about why nothing happened. Falls
+    back to a plain inequality if either string isn't a version PEP 440 recognizes.
+    """
+    if latest is None:
+        return False
+    try:
+        return Version(latest) > Version(installed)
+    except InvalidVersion:
+        return latest != installed
+
+
+def get_package_overview() -> list[dict]:
+    """list_pyobs_packages() plus each package's latest PyPI release, fetched in parallel
+    since PyPI's JSON API is one HTTP round-trip per package and this page's whole point is
+    showing every pyobs-* package at once."""
+    installed = list_pyobs_packages()
+    if not installed:
+        return []
+    with ThreadPoolExecutor(max_workers=min(8, len(installed))) as pool:
+        latest_versions = list(pool.map(lambda p: _pypi_latest_version(p["name"]), installed))
+    return [
+        {
+            "name": pkg["name"],
+            "installed_version": pkg["version"],
+            "latest_version": latest,
+            "update_available": _is_update_available(pkg["version"], latest),
+        }
+        for pkg, latest in zip(installed, latest_versions)
+    ]
+
+
+def update_package(name: str) -> tuple[bool, str]:
+    """Runs `pip install --upgrade <name>` in pyobs's own environment (_pip_exec). Callers
+    (api_package_update) must already have checked name against list_pyobs_packages() --
+    the prefix check here is just defense in depth, not the primary access control, so that
+    this function alone can never be used to pip-install something arbitrary even if a
+    caller forgot that check.
+    """
+    if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE):
+        return False, f"Refusing to update non-pyobs package: {name!r}"
+    try:
+        result = subprocess.run(
+            [_pip_exec(), "install", "--upgrade", "--no-input", name],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "Timed out waiting for pip install to finish"
+    except FileNotFoundError:
+        return False, f"pip executable not found: {_pip_exec()!r}"
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
 
 
 # ── PID helpers ───────────────────────────────────────────────────────────────
