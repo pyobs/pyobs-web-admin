@@ -81,7 +81,16 @@ PYOBS_LOG_LEVEL = "info"
 #   - Non-"pyobs"-prefixed packages: list a bare name (e.g. "my-custom-driver") to have it
 #     show up on the Packages page and be upgradable through it too, alongside the pyobs-*
 #     packages it always already covers.
-# PYOBS_MANAGED_PACKAGES = ["pyobs-core[full]", "my-custom-driver"]
+#   - Git/URL-installed packages: a PEP 508 direct reference, e.g.
+#     "pyobs-iagvt[gui] @ git+https://gitlab.example.org/iagvt/pyobs-iagvt.git", for a
+#     package that isn't published on PyPI at all. The Packages page skips the (futile)
+#     PyPI version check for these and instead offers a manual "Reinstall" action that
+#     re-runs `pip install --upgrade <spec>` to pick up whatever's newest at that URL/ref.
+# PYOBS_MANAGED_PACKAGES = [
+#     "pyobs-core[full]",
+#     "my-custom-driver",
+#     "pyobs-iagvt[gui] @ git+https://gitlab.example.org/iagvt/pyobs-iagvt.git",
+# ]
 PYOBS_MANAGED_PACKAGES = []
 
 # Where module logs live -- see DEV_JOURNALD_LOGS.md. "file": pyobs writes to PYOBS_LOG_DIR,

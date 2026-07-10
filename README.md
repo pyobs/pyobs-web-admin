@@ -22,7 +22,10 @@ filter their logs, and view and edit their configuration files — all from a br
   - *ACL* — point-and-click editor for the module's `acl:` block: click to allow/deny known modules, add other callers, toggle enforce/log mode
 - **New module** — a "+" next to the sidebar's Modules section creates a brand-new `<name>.yaml` config (a minimal starter with just a `class:` key) and takes you straight to its Config tab to fill in the rest
 - **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
-- **Overview** (`/overview/`) — fleet-wide summary, one row per configured host: reachable or not, running/stopped/total counts, aggregate CPU/RAM, linking into that host's own Dashboard. Deliberately no bulk or per-module actions — those stay on the per-host Dashboard, since a fleet-wide "Stop All" from one button is a real footgun
+- **Packages** (`/packages/`) — every installed `pyobs-*` package (plus anything else listed in `PYOBS_MANAGED_PACKAGES`) with its installed and latest-PyPI version, and a one-click Update button; git/URL-installed packages get a Reinstall action instead (see [Package management](#package-management))
+- **Overview** (`/overview/`) — fleet-wide summary, one row per configured host: reachable or not, running/stopped/total counts, aggregate CPU/RAM, linking into that host's own Dashboard, plus a package-version matrix (one row per `pyobs-*` package, one column per host) so version drift across the fleet is visible at a glance. Deliberately no bulk or per-module actions — those stay on the per-host Dashboard, since a fleet-wide "Stop All" from one button is a real footgun
+- **All Logs** (`/logs/`) — fleet-wide live log tail across every module on every configured host, same filtering as a module's own Logs tab
+- **ACL Matrix** (`/acl/`) — fleet-wide read-only matrix of which module can call which, merged across every configured host (see [DEV_ACL_MATRIX.md](DEV_ACL_MATRIX.md))
 - **Hub mode** — control multiple remote pyobs hosts from a single browser tab; remote hosts are listed in the sidebar and all actions are proxied transparently
 - **ejabberd / XMPP status** (optional) — dashboard summary tile and per-module connected/not-connected indicator, plus a session/last-seen/registered-account block on each module's own page, for modules with a `comm.user` in their config — closes the gap between "the process is running" and "the module is actually reachable over XMPP" (see [ejabberd integration](#ejabberd-integration))
 - **ejabberd / XMPP user management** (optional, builds on the above) — register, reset password, ban/unban, unregister, and kick XMPP accounts, either from a module's own Overview tab or from a fleet-wide **Users** page (`/xmpp-users/`) listing every registered account across every host, cross-referenced against which module(s) use it and which one is actually running. Safe by design for an identity shared across more than one module's `comm.user` — a password reset writes back to every module sharing it, and destructive actions name which other modules are affected before you confirm (see [ejabberd user management](#ejabberd-user-management))
@@ -172,6 +175,10 @@ PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 PYOBS_LOG_BACKEND = None                    # None (default): auto-detect from pyobsd's own
                                              # config; "file" or "journald" to override --
                                              # see DEV_JOURNALD_LOGS.md
+
+# Packages page (optional — see Package management section)
+PYOBS_MANAGED_PACKAGES = []                 # e.g. ["pyobs-core[full]", "my-custom-driver",
+                                             # "pyobs-iagvt[gui] @ git+ssh://git@gitlab.example.org/iagvt/pyobs-iagvt.git"]
 
 # Hub (optional — see Hub mode section)
 HUB_TOKEN = ""                              # token to accept from a hub instance
@@ -370,6 +377,81 @@ host with one admin identity, not a shared or multi-tenant one.
 
 ---
 
+## Package management
+
+The **Packages** page (`/packages/`) lists every installed `pyobs-*` package (plus anything
+extra listed in `PYOBS_MANAGED_PACKAGES`) alongside its latest release on PyPI, and lets you
+update any of them with one click. It always reflects `pip`'s own view of the environment
+`PYOBS_EXEC` runs in (via the sibling `pip` next to it) — nothing here is invented or cached.
+The fleet-wide **Overview** page (`/overview/`) additionally shows a package-version matrix
+across every configured host, so a package that's drifted out of sync on one host is easy to
+spot.
+
+### `PYOBS_MANAGED_PACKAGES`
+
+`pip` never remembers *how* a package was originally installed — only what's currently
+there — so a bare `pip install --upgrade pyobs-core` would silently drop a `[full]` extra
+forever, and a package that isn't on PyPI at all has nothing for the Packages page to even
+find. `PYOBS_MANAGED_PACKAGES` fills in what pip's own installed-environment metadata can't
+recover:
+
+```python
+PYOBS_MANAGED_PACKAGES = [
+    "pyobs-core[full]",     # keep using this extra on every future upgrade
+    "my-custom-driver",     # a non-"pyobs"-prefixed package, shown/managed alongside pyobs-*
+    "pyobs-iagvt[gui] @ git+ssh://git@gitlab.example.org/iagvt/pyobs-iagvt.git",  # git-installed
+]
+```
+
+- **Extras** — list the full `name[extra]` spec and future updates keep using it, instead of
+  reverting to a bare install.
+- **Non-`pyobs`-prefixed packages** — a bare name makes it show up on the Packages page and
+  be upgradable through it too.
+- **Git/URL-installed packages** — a [PEP 508 direct reference](https://peps.python.org/pep-0508/#direct-references)
+  (`name[extras] @ <url>`) for a package that isn't published on PyPI. The Packages page
+  skips the (futile) PyPI version check for these and shows a **Reinstall** action instead,
+  which just re-runs `pip install --upgrade <spec>` to pick up whatever's newest at that
+  URL/ref.
+
+Malformed entries are skipped rather than raising, so a typo here can't break the whole page.
+
+### Installing a private git-hosted package
+
+For a private repository (e.g. an institute-internal driver like `pyobs-iagvt` above), `pip`
+running non-interactively needs its own credentials — an SSH deploy key is the recommended
+way:
+
+1. **Generate a passwordless key** for the OS user that actually runs pyobs-web-admin's own
+   process (gunicorn/the systemd service user — not necessarily the `pyobs` service account,
+   since the Packages page's `pip install` inherits *this* process's environment, not
+   pyobs's):
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+   ```
+2. **Add the public key as a GitLab Deploy Key** on the private project (Settings →
+   Repository → Deploy keys), read-only access is enough. Scoped to just that repo and
+   revocable independently of any person's account — prefer this over a personal SSH key.
+3. **Pre-seed `known_hosts`** for that user, so the first non-interactive install doesn't
+   hang waiting on a host-key prompt:
+   ```bash
+   ssh-keyscan gitlab.example.org >> ~/.ssh/known_hosts
+   ```
+4. **Use `git+ssh://`, not `git+https://`**, in `PYOBS_MANAGED_PACKAGES`:
+   ```python
+   PYOBS_MANAGED_PACKAGES = [
+       "pyobs-iagvt[gui] @ git+ssh://git@gitlab.example.org/iagvt/pyobs-iagvt.git",
+   ]
+   ```
+5. **In hub mode, repeat this on every host** that's expected to manage the package — package
+   updates run on whichever host is currently active, not just the hub, so each of them needs
+   its own copy of the key (or the same key deployed to all of them).
+
+An SSH key is preferred over embedding a GitLab Deploy Token in an HTTPS URL: the token would
+end up as a literal `pip install` command-line argument, visible to any other local user via
+`ps aux` for the few seconds the install runs. An SSH key file avoids that exposure.
+
+---
+
 ## How modules are managed
 
 - **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
@@ -408,6 +490,11 @@ templates/
     dashboard.html
     detail.html
     shared_detail.html      Config editor for *.shared.yaml files
+    new_module.html         "Create a new module" form
+    packages.html           Package list + Update/Reinstall actions
+    fleet_overview.html     Fleet-wide host summary + package-version matrix
+    all_logs.html           Fleet-wide live log tail
+    acl_matrix.html         Fleet-wide ACL matrix
     xmpp_users.html         Fleet-wide XMPP account list + write actions
   registration/
     login.html

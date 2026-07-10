@@ -50,9 +50,16 @@ function pkgRow(pkg) {
   latestTd.className = 'text-secondary';
   latestTd.textContent = pkg.latest_version ?? '—';
 
+  if (pkg.vcs) {
+    latestTd.textContent = 'git';
+  }
+
   const statusTd = document.createElement('td');
   const badge = document.createElement('span');
-  if (pkg.latest_version === null) {
+  if (pkg.vcs) {
+    badge.className = 'badge bg-info text-dark';
+    badge.textContent = 'git-installed';
+  } else if (pkg.latest_version === null) {
     badge.className = 'badge bg-secondary';
     badge.textContent = 'unknown';
   } else if (pkg.update_available) {
@@ -68,8 +75,10 @@ function pkgRow(pkg) {
   actionTd.className = 'text-end';
   const btn = document.createElement('button');
   btn.className = 'btn btn-sm btn-outline-primary';
-  btn.disabled = !pkg.update_available;
-  btn.innerHTML = '<i class="bi bi-cloud-arrow-down"></i> Update';
+  btn.disabled = !pkg.vcs && !pkg.update_available;
+  btn.innerHTML = pkg.vcs
+    ? '<i class="bi bi-arrow-repeat"></i> Reinstall'
+    : '<i class="bi bi-cloud-arrow-down"></i> Update';
   btn.onclick = () => updatePackage(pkg.name, btn);
   actionTd.appendChild(btn);
 

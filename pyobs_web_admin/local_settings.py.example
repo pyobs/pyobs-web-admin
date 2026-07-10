@@ -31,6 +31,9 @@ PYOBS_LOG_LEVEL = "info"
 # an extras spec (pip never remembers a package was installed with "[full]", so a later
 # upgrade would silently drop it) and/or extra non-"pyobs"-prefixed packages to also show
 # and manage from the same page. pyobs-core is installed with the "full" extra by default.
+# A PEP 508 direct reference (e.g. "pyobs-iagvt[gui] @ git+https://...") also works, for a
+# package installed from git/a URL rather than PyPI -- see settings.py's own comment on
+# this setting for what that changes on the Packages page.
 PYOBS_MANAGED_PACKAGES = ["pyobs-core[full]"]
 
 # Generate the password hash with:

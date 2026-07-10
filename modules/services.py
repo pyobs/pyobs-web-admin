@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
@@ -152,7 +152,11 @@ def _pip_exec() -> str:
     return "pip"
 
 
-_PACKAGE_SPEC_RE = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(\[[^\]]*\])?$")
+# Bare "name" or "name[extras]" (PyPI-resolved), optionally followed by a PEP 508 direct
+# URL reference -- "name[extras] @ <url>" -- for a package that isn't on PyPI at all
+# (e.g. a git-hosted driver: "pyobs-iagvt[gui] @ git+https://gitlab.example.org/...").
+# Group 3 is the URL, used by _managed_package_specs to flag the entry as VCS-installed.
+_PACKAGE_SPEC_RE = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(\[[^\]]*\])?(?:\s*@\s*(\S+))?$")
 
 
 def _normalize_package_name(name: str) -> str:
@@ -166,35 +170,57 @@ def _normalize_package_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _managed_package_specs() -> dict[str, str]:
-    """Parses settings.PYOBS_MANAGED_PACKAGES (e.g. ["pyobs-core[full]", "my-custom-driver"])
-    into {normalized bare name: full spec string}. See that setting's own settings.py
-    comment for what it's for; both list_pyobs_packages and update_package consult this,
-    not just one of them, so a name only shows up on the Packages page if it can also
-    actually be updated through it, and vice versa.
+class _ManagedSpec(NamedTuple):
+    spec: str  # full entry, passed to pip as-is
+    is_vcs: bool  # True for a PEP 508 direct URL reference (git+, http(s) tarball, etc.) --
+    # such a package isn't published on PyPI, so it has no "latest version" to look up there.
+
+
+def _managed_package_specs() -> dict[str, _ManagedSpec]:
+    """Parses settings.PYOBS_MANAGED_PACKAGES (e.g. ["pyobs-core[full]", "my-custom-driver",
+    "pyobs-iagvt[gui] @ git+https://gitlab.example.org/iagvt/pyobs-iagvt.git"]) into
+    {normalized bare name: _ManagedSpec}. See that setting's own settings.py comment for
+    what it's for; both list_pyobs_packages and update_package consult this, not just one of
+    them, so a name only shows up on the Packages page if it can also actually be updated
+    through it, and vice versa.
 
     Malformed entries are skipped rather than raising -- a typo in local_settings.py
     shouldn't be able to break the whole Packages page.
     """
-    specs: dict[str, str] = {}
+    specs: dict[str, _ManagedSpec] = {}
     for entry in getattr(settings, "PYOBS_MANAGED_PACKAGES", []):
         m = _PACKAGE_SPEC_RE.match(entry.strip())
         if not m:
             continue
-        specs[_normalize_package_name(m.group(1))] = entry.strip()
+        specs[_normalize_package_name(m.group(1))] = _ManagedSpec(entry.strip(), is_vcs=m.group(3) is not None)
     return specs
 
 
 def _install_spec_for(name: str) -> str:
     """The exact string update_package passes to `pip install --upgrade` for a managed
     package -- name itself, unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it
-    (e.g. "pyobs-core[full]"), in which case that's used instead. Without this, a package
-    originally installed with an extra would silently lose it on every future upgrade, since
-    pip itself never records anywhere which extra (if any) an install originally requested
-    -- confirmed by inspecting a real installed distribution's own dist-info: METADATA lists
-    which extras a package *offers* (Provides-Extra), never which one was *used*.
+    (e.g. "pyobs-core[full]" or a git URL), in which case that's used instead. Without this,
+    a package originally installed with an extra would silently lose it on every future
+    upgrade, since pip itself never records anywhere which extra (if any) an install
+    originally requested -- confirmed by inspecting a real installed distribution's own
+    dist-info: METADATA lists which extras a package *offers* (Provides-Extra), never which
+    one was *used*. A git-installed package would fare even worse without this: falling back
+    to the bare name would have pip try to resolve it against PyPI instead, which either
+    fails outright (not published there) or silently installs an unrelated same-named
+    package.
     """
-    return _managed_package_specs().get(_normalize_package_name(name), name)
+    spec = _managed_package_specs().get(_normalize_package_name(name))
+    return spec.spec if spec else name
+
+
+def _is_vcs_managed(name: str) -> bool:
+    """Whether `name` is a PYOBS_MANAGED_PACKAGES entry with a PEP 508 direct URL reference
+    (e.g. a git+ URL) rather than a plain PyPI-resolved name -- such a package has no PyPI
+    release history, so get_package_overview skips the PyPI lookup for it entirely rather
+    than reporting a spurious "unknown"/mismatched result.
+    """
+    spec = _managed_package_specs().get(_normalize_package_name(name))
+    return spec is not None and spec.is_vcs
 
 
 def list_pyobs_packages() -> list[dict]:
@@ -304,18 +330,27 @@ def _is_update_available(installed: str, latest: str | None) -> bool:
 def get_package_overview() -> list[dict]:
     """list_pyobs_packages() plus each package's latest PyPI release, fetched in parallel
     since PyPI's JSON API is one HTTP round-trip per package and this page's whole point is
-    showing every pyobs-* package at once."""
+    showing every pyobs-* package at once. Skips the PyPI lookup entirely for a package
+    installed via a PYOBS_MANAGED_PACKAGES git/URL spec (_is_vcs_managed) -- it isn't
+    published on PyPI, so the lookup would either fail or (worse) hit an unrelated
+    same-named package there; "vcs": True lets the Packages page offer a manual
+    reinstall-to-pick-up-latest-commit action instead of a version comparison it can't make.
+    """
     installed = list_pyobs_packages()
     if not installed:
         return []
     with ThreadPoolExecutor(max_workers=min(8, len(installed))) as pool:
-        latest_versions = list(pool.map(lambda p: _pypi_latest_version(p["name"], p["version"]), installed))
+        latest_versions = list(pool.map(
+            lambda p: None if _is_vcs_managed(p["name"]) else _pypi_latest_version(p["name"], p["version"]),
+            installed,
+        ))
     return [
         {
             "name": pkg["name"],
             "installed_version": pkg["version"],
             "latest_version": latest,
             "update_available": _is_update_available(pkg["version"], latest),
+            "vcs": _is_vcs_managed(pkg["name"]),
         }
         for pkg, latest in zip(installed, latest_versions)
     ]
