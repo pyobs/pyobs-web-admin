@@ -6,9 +6,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
-from django.test import override_settings
+from django.test import RequestFactory, override_settings
 
 from modules import ejabberd, services
+from modules.middleware import HubTokenMiddleware
 from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
 
@@ -1672,3 +1673,46 @@ class UpdatePackageManagedTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("unmanaged", message)
         mock_run.assert_not_called()
+
+
+class HubTokenMiddlewareTests(unittest.TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.middleware = HubTokenMiddleware(lambda request: request)
+
+    @override_settings(HUB_CLIENTS=[{"name": "hub-a", "token": "secret-a"}, {"name": "hub-b", "token": "secret-b"}])
+    def test_matching_token_authenticates_and_identifies_client(self):
+        request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="secret-b")
+        self.middleware(request)
+        self.assertTrue(request._hub_authenticated)
+        self.assertEqual(request._hub_client, "hub-b")
+        self.assertTrue(request._dont_enforce_csrf_checks)
+
+    @override_settings(HUB_CLIENTS=[{"name": "hub-a", "token": "secret-a"}])
+    def test_unknown_token_is_not_authenticated(self):
+        request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="wrong-token")
+        self.middleware(request)
+        self.assertFalse(getattr(request, "_hub_authenticated", False))
+
+    @override_settings(HUB_CLIENTS=[{"name": "hub-a", "token": "secret-a"}])
+    def test_missing_token_is_not_authenticated(self):
+        request = self.factory.get("/api/status")
+        self.middleware(request)
+        self.assertFalse(getattr(request, "_hub_authenticated", False))
+
+    @override_settings(HUB_CLIENTS=[], HUB_TOKEN="legacy-secret")
+    def test_legacy_hub_token_still_works_as_default_client(self):
+        request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="legacy-secret")
+        self.middleware(request)
+        self.assertTrue(request._hub_authenticated)
+        self.assertEqual(request._hub_client, "default")
+
+    @override_settings(HUB_CLIENTS=[{"name": "hub-a", "token": "secret-a"}], HUB_TOKEN="legacy-secret")
+    def test_named_clients_and_legacy_token_coexist(self):
+        request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="secret-a")
+        self.middleware(request)
+        self.assertEqual(request._hub_client, "hub-a")
+
+        request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="legacy-secret")
+        self.middleware(request)
+        self.assertEqual(request._hub_client, "default")

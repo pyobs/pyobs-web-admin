@@ -54,7 +54,8 @@ Hub mode
 
 ::
 
-    HUB_TOKEN = ""     # token this instance accepts from a hub, if it's a spoke
+    HUB_TOKEN = ""      # deprecated single-token form, if it's a spoke -- see HUB_CLIENTS
+    HUB_CLIENTS = []    # named tokens this instance accepts from external callers, if it's a spoke
     HUB_HOSTS = []      # remote hosts this instance controls, if it's a hub
 
 See :doc:`hub` for the full picture -- which side sets which of these, and what the token

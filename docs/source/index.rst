@@ -33,6 +33,8 @@ Feature overview
   account management for modules' XMPP identities. See :doc:`ejabberd/index`.
 * **Overview page** and **fleet-wide Users page** -- cross-host summaries built on top of
   hub mode. See :doc:`features/dashboard` and :doc:`ejabberd/user_management`.
+* **HTTP API** -- every endpoint the UI itself calls is also callable directly, by a hub or
+  any other external client. See :doc:`api_endpoints`.
 
 
 Getting started
@@ -67,4 +69,5 @@ Getting started
    :maxdepth: 2
    :caption: API reference
 
+   api_endpoints
    api/index

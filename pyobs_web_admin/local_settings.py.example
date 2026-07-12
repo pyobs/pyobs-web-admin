@@ -42,8 +42,19 @@ PYOBS_MANAGED_PACKAGES = ["pyobs-core[full]"]
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = ""
 
-# Hub: allow this instance to be controlled by a hub (leave empty to disable)
+# Hub: allow this instance to be controlled by a hub (leave empty to disable).
+# Deprecated in favour of HUB_CLIENTS below -- kept working as a "default"-named client.
 HUB_TOKEN = ""
+
+# Named tokens for external callers of this instance's API -- a hub, a script, another
+# service. Give each caller its own secret so it can be revoked/rotated on its own without
+# affecting the others.
+# Each entry must have: name (label, shown nowhere but logs), token (shared secret)
+# HUB_CLIENTS = [
+#     {"name": "hub-monets", "token": "shared-secret"},
+#     {"name": "external-script", "token": "another-secret"},
+# ]
+HUB_CLIENTS = []
 
 # Hub: remote hosts this instance can control
 # Each entry must have: name (display label), url (base URL), token (shared secret)

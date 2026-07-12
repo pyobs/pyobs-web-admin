@@ -60,8 +60,14 @@ ADMIN_PASSWORD_HASH = ""
 # Hub: list of remote hosts this instance can control
 # Each entry: {"name": "obs1", "url": "http://obs1:8765", "token": "shared-secret"}
 HUB_HOSTS = []
-# Token to accept from a hub instance (allows hub to call this instance's API)
+# Token to accept from a hub instance (allows hub to call this instance's API).
+# Deprecated in favour of HUB_CLIENTS below, kept for backwards compatibility --
+# equivalent to a HUB_CLIENTS entry named "default".
 HUB_TOKEN = ""
+# Named tokens for external callers (a hub, a script, another service). Each caller
+# gets its own secret so it can be revoked/rotated independently of the others.
+# Each entry: {"name": "hub-monets", "token": "shared-secret"}
+HUB_CLIENTS = []
 
 # pyobs paths
 PYOBS_EXEC = "pyobs"

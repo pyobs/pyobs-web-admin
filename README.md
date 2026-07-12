@@ -181,7 +181,8 @@ PYOBS_MANAGED_PACKAGES = []                 # e.g. ["pyobs-core[full]", "my-cust
                                              # "pyobs-iagvt[gui] @ git+ssh://git@gitlab.example.org/iagvt/pyobs-iagvt.git"]
 
 # Hub (optional — see Hub mode section)
-HUB_TOKEN = ""                              # token to accept from a hub instance
+HUB_TOKEN = ""                              # deprecated, single-token form -- see HUB_CLIENTS
+HUB_CLIENTS = []                            # named tokens for external callers (hub, scripts, ...)
 HUB_HOSTS = []                              # remote hosts this instance controls
 
 # ejabberd integration (optional — see ejabberd integration section)
@@ -215,16 +216,29 @@ HUB_HOSTS = [
 ]
 ```
 
-On each **remote host**, set the matching token so it accepts hub requests:
+On each **remote host**, give it a named client entry matching the token the hub sends:
 
 ```python
-HUB_TOKEN = "shared-secret"   # must match the token the hub sends
+HUB_CLIENTS = [
+    {"name": "hub", "token": "shared-secret"},   # must match HUB_HOSTS' token above
+]
 ```
 
-The hub authenticates to remote instances via an `X-Hub-Token` header. Remote
-instances that receive a valid token bypass the normal browser session/CSRF check,
-so they can be called from the hub without a login session. The token is a
-plain pre-shared string — use a long random value and keep it secret.
+The hub — or any other external caller, such as a script calling the API directly —
+authenticates to remote instances via an `X-Hub-Token` header. Remote instances check
+that header against every entry in `HUB_CLIENTS`; a match bypasses the normal browser
+session/CSRF check, so the caller can invoke the API without a login session. Give each
+caller its own named entry so it can be revoked or rotated independently. Tokens are
+plain pre-shared strings — use long random values and keep them secret.
+
+The older `HUB_TOKEN` setting (a single unnamed token) still works for backwards
+compatibility, equivalent to a `HUB_CLIENTS` entry named `"default"`.
+
+There's no separate "external" API — every endpoint the hub calls (start/stop, logs,
+config, ACL, packages, ejabberd user management, ...) is the same plain JSON API any
+`X-Hub-Token`-authenticated caller can use directly, e.g. from a script. See
+[`docs/source/api_endpoints.rst`](docs/source/api_endpoints.rst) for the full endpoint
+reference.
 
 ---
 
