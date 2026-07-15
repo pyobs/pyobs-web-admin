@@ -15,6 +15,9 @@
     <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
       <i class="bi bi-stop-fill"></i><span class="d-none d-md-inline"> Stop All</span>
     </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="acknowledgeAllLogs()" title="Mark every module's current warnings/errors as seen">
+      <i class="bi bi-check2-all"></i><span class="d-none d-md-inline"> Acknowledge All</span>
+    </button>
     <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses()">
       <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
     </button>
@@ -332,6 +335,14 @@ function collectAckTimes() {
     if (key && key.startsWith('log-ack-')) acks[key.slice('log-ack-'.length)] = localStorage.getItem(key);
   }
   return acks;
+}
+
+function acknowledgeAllLogs() {
+  const now = new Date().toISOString();
+  document.querySelectorAll('.module-log-stats[data-module]').forEach(el => {
+    localStorage.setItem('log-ack-' + el.dataset.module, now);
+  });
+  refreshLogStats();
 }
 
 async function refreshLogStats() {
