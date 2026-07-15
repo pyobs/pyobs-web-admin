@@ -305,6 +305,19 @@ class GetCommUserTests(unittest.TestCase):
         )
         self.assertEqual(services.get_comm_user("cam1"), "camera")
 
+    def test_comm_user_via_include_of_missing_file_returns_none(self):
+        """A dangling {include} (fragment deleted/renamed after a module's config referenced
+        it) must not crash -- previously pre_process_yaml's bare open() raised
+        FileNotFoundError straight out of get_resolved_comm, which is called directly from
+        views like the dashboard's status list with no try/except, so one module with a
+        broken include used to take down the whole fleet view."""
+        self._write(
+            "cam1",
+            "class: pyobs.modules.camera.BaseCamera\n{include comm.shared.yaml}\n",
+        )
+        self.assertIsNone(services.get_comm_user("cam1"))
+        self.assertEqual(services.get_resolved_comm("cam1"), (None, None, None))
+
     def test_resolved_missing_module_returns_none_triple(self):
         self.assertEqual(services.get_resolved_comm("nope"), (None, None, None))
 

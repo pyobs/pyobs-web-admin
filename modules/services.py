@@ -944,12 +944,21 @@ def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
     source is needed for that same doc's config write-back (change_password), which must
     refuse to edit comm.password: when it resolves to a shared fragment, exactly the guard
     save_local_acl already applies to acl:.
+
+    Also returns all-None if resolution itself fails -- e.g. an {include}'d fragment that no
+    longer exists -- the same as "no comm: block", rather than raising. Unlike get_resolved_acl
+    (whose only caller, resolve_and_validate_acl, already catches this), get_resolved_comm is
+    called directly from several views (dashboard status polling, module ejabberd endpoints,
+    the Users page), so one module's broken include must not crash the whole fleet view.
     """
     validate_name(name)
     config_file = _config_dir() / f"{name}.yaml"
     if not config_file.exists():
         return None, None, None
-    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    try:
+        resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    except OSError:
+        return None, None, None
     comm = resolved.get("comm")
     if not isinstance(comm, dict):
         return None, None, None
