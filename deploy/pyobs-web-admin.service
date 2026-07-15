@@ -15,6 +15,7 @@ ExecStart=/opt/pyobs/pyobs-web-admin/.venv/bin/gunicorn \
     pyobs_web_admin.wsgi
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
