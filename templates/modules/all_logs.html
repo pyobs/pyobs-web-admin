@@ -56,6 +56,9 @@
   <button class="btn btn-outline-secondary" onclick="fetchLogs()">
     <i class="bi bi-arrow-clockwise me-1"></i>Refresh
   </button>
+  <button class="btn btn-outline-secondary" onclick="acknowledgeLogs()" title="Mark current warnings/errors as seen">
+    <i class="bi bi-check2-all me-1"></i>Acknowledge<span id="ack-new-badge" class="badge bg-danger ms-1 d-none">0</span>
+  </button>
   <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
     <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch">
     <label class="form-check-label ms-2" for="auto-refresh">Auto-refresh</label>
@@ -93,6 +96,49 @@ function toDatetimeLocal(d) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// ── Acknowledge (mark warnings/errors as seen) ──────────────────────────────────
+// Per-module "last acknowledged" timestamp in localStorage (key shared with the per-module
+// Logs tab), since this fleet-wide view merges lines from many modules at once.
+function lineModule(line) {
+  const m = line.match(/^\S+ \S+ \[\w+\] \(([^)]*)\)/);
+  return m ? m[1] : null;
+}
+
+function getAckTime(module) {
+  const stored = localStorage.getItem('log-ack-' + module);
+  if (!stored) {
+    // First time we've seen this module: establish a baseline now so its entire
+    // existing log history isn't retroactively flagged as "new".
+    localStorage.setItem('log-ack-' + module, new Date().toISOString());
+    return new Date();
+  }
+  return new Date(stored);
+}
+
+function isNewIssue(line) {
+  const u = line.toUpperCase();
+  if (!(u.includes('CRITICAL') || u.includes('ERROR') || u.includes('WARNING'))) return false;
+  const t   = parseLogTime(line);
+  const mod = lineModule(line);
+  if (!t || !mod) return false;
+  return t > getAckTime(mod);
+}
+
+function acknowledgeLogs() {
+  const now = new Date().toISOString();
+  const modules = new Set(selectedModules().map(v => v.slice(v.indexOf(':') + 1)));
+  rawLogLines.forEach(l => { const m = lineModule(l); if (m) modules.add(m); });
+  modules.forEach(m => localStorage.setItem('log-ack-' + m, now));
+  renderLogs();
+}
+
+function updateAckBadge() {
+  const count = rawLogLines.filter(isNewIssue).length;
+  const badge = document.getElementById('ack-new-badge');
+  badge.textContent = count;
+  badge.classList.toggle('d-none', count === 0);
+}
+
 function renderLine(line) {
   const e = escapeHtml(line);
   const u = line.toUpperCase();
@@ -104,7 +150,8 @@ function renderLine(line) {
   if (t) styles.push('cursor:pointer');
   const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
   const timeAttr  = t ? ` data-time="${t.toISOString()}"` : '';
-  return `<span class="log-line"${styleAttr}${timeAttr}>${e}</span>`;
+  const newBadge  = isNewIssue(line) ? '<span class="badge bg-danger ms-1" style="font-size:0.6rem;vertical-align:2px">NEW</span>' : '';
+  return `<span class="log-line"${styleAttr}${timeAttr}>${e}${newBadge}</span>`;
 }
 
 function applyFilters(lines) {
@@ -132,6 +179,7 @@ function renderLogs() {
   const pre = document.getElementById('log-output');
   pre.innerHTML = filtered.length ? filtered.map(renderLine).join('\n') : '(no matching log lines)';
   if (document.getElementById('auto-scroll').checked) pre.scrollTop = pre.scrollHeight;
+  updateAckBadge();
 }
 
 // ── Module selection ─────────────────────────────────────────────────────────
@@ -167,7 +215,12 @@ if (savedModules) {
   });
 }
 
-async function fetchLogs() {
+// Assigned to window explicitly: legacy function-hoisting (which is what lets the plain
+// `function`s in this block reach the top-level `onclick="…()"` handlers below) doesn't
+// cover `async function` declarations, so without this, clicking Refresh threw
+// "fetchLogs is not defined" and silently did nothing -- masked by auto-refresh polling
+// every 3s regardless.
+window.fetchLogs = async function fetchLogs() {
   try {
     const params = new URLSearchParams({lines: 300, modules: selectedModules().join(',')});
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
@@ -175,7 +228,7 @@ async function fetchLogs() {
     rawLogLines = data.lines || [];
     renderLogs();
   } catch (_) {}
-}
+};
 
 function clearTimeFilter() {
   document.getElementById('time-start').value = '';
