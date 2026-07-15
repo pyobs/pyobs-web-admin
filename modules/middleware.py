@@ -1,5 +1,16 @@
+import hmac
+
 from django.conf import settings
 from django.shortcuts import redirect
+
+
+def _configured_clients() -> list[dict]:
+    """Named external-caller tokens, plus the legacy flat HUB_TOKEN as a "default" client."""
+    clients = list(getattr(settings, "HUB_CLIENTS", []))
+    legacy = getattr(settings, "HUB_TOKEN", "")
+    if legacy:
+        clients.append({"name": "default", "token": legacy})
+    return clients
 
 
 class HubTokenMiddleware:
@@ -10,10 +21,13 @@ class HubTokenMiddleware:
 
     def __call__(self, request):
         token = request.headers.get("X-Hub-Token", "")
-        configured = getattr(settings, "HUB_TOKEN", "")
-        if token and configured and token == configured:
-            request._dont_enforce_csrf_checks = True
-            request._hub_authenticated = True
+        if token:
+            for client in _configured_clients():
+                if hmac.compare_digest(token, client["token"]):
+                    request._dont_enforce_csrf_checks = True
+                    request._hub_authenticated = True
+                    request._hub_client = client["name"]
+                    break
         return self.get_response(request)
 
 

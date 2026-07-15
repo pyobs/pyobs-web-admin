@@ -17,19 +17,33 @@ On the **hub** (the machine you browse to), list the remote hosts::
         {"name": "obs2", "url": "http://obs2:8765", "token": "another-secret"},
     ]
 
-On each **remote host** (a "spoke"), set the matching token so it accepts requests carrying
-it::
+On each **remote host** (a "spoke"), give it a named client entry matching the token the hub
+sends for it::
 
-    HUB_TOKEN = "shared-secret"   # must match the token the hub sends for this host
+    HUB_CLIENTS = [
+        {"name": "hub", "token": "shared-secret"},   # must match HUB_HOSTS' token above
+    ]
 
 Authentication
 **************
 
-The hub authenticates to a remote instance via an ``X-Hub-Token`` header. A remote instance
-that receives a request carrying its configured ``HUB_TOKEN`` bypasses the normal
-browser-session/CSRF check for that request -- this is what lets the hub call it without a
-login session of its own. The token is a plain pre-shared string with no other layer on top
-of it, so treat it like any other bearer credential: long, random, and secret.
+The hub -- or any other external caller -- authenticates to a remote instance via an
+``X-Hub-Token`` header. A remote instance checks that header against every entry in
+``HUB_CLIENTS`` (each entry is ``{"name": ..., "token": ...}``); a match bypasses the normal
+browser-session/CSRF check for that request, which is what lets an external caller invoke the
+API without a login session of its own. Each caller (a hub, a script, another service) should
+get its own named entry so it can be revoked or rotated independently, without affecting any
+other caller. The token is a plain pre-shared string with no other layer on top of it, so
+treat it like any other bearer credential: long, random, and secret.
+
+The older ``HUB_TOKEN`` setting (a single flat token, no name) still works for backwards
+compatibility -- it's equivalent to adding ``{"name": "default", "token": HUB_TOKEN}`` to
+``HUB_CLIENTS``. New setups should use ``HUB_CLIENTS`` directly so that every caller is
+independently identifiable and revocable.
+
+This mechanism isn't hub-specific -- any external client that sends a valid
+``X-Hub-Token`` can call the same endpoints the hub does. See :doc:`api_endpoints` for the
+full list.
 
 One active host at a time -- and the exception
 *************************************************
