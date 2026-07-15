@@ -1,14 +1,14 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
 from django.test import RequestFactory, override_settings
 
-from modules import ejabberd, services
+from modules import ejabberd, services, views
 from modules.middleware import HubTokenMiddleware
 from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
@@ -1286,6 +1286,35 @@ class LogBackendJournaldTests(unittest.TestCase):
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
+    def test_get_log_stats_since_narrows_window_when_more_recent_than_24h(self, mock_run):
+        # A dashboard-supplied "last acknowledged" instant more recent than the standard 24h
+        # rollup should become the actual --since cutoff, not just widen/ignore it.
+        mock_run.return_value = self._mock_result("")
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        services.get_log_stats("camera_verify_test", since=since)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--since", f"{since:%Y-%m-%d %H:%M:%S} UTC", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_log_stats_since_older_than_24h_falls_back_to_24h(self, mock_run):
+        # An ack from days ago shouldn't pull that whole history back into the "unacknowledged"
+        # count -- the window is still capped at the standard 24h rollup.
+        mock_run.return_value = self._mock_result("")
+        since = datetime.now(timezone.utc) - timedelta(days=3)
+        services.get_log_stats("camera_verify_test", since=since)
+        args = mock_run.call_args[0][0]
+        since_arg = args[args.index("--since") + 1]
+        self.assertTrue(since_arg.endswith(" UTC"))
+        cutoff = datetime.strptime(since_arg[:-len(" UTC")], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        expected = datetime.now(timezone.utc) - timedelta(hours=24)
+        self.assertLess(abs((cutoff - expected).total_seconds()), 5)
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
     def test_get_logs_strips_prefix_when_code_file_is_a_full_path(self, mock_run):
         """Regression test for a real bug caught by live testing, not by the other fixtures
         here: logging_journald's CODE_FILE is record.pathname (a full path), but pyobs's own
@@ -1389,6 +1418,20 @@ class GetAllLogsTests(unittest.TestCase):
                 "2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope",
                 "2026-07-04 08:00:02 [INFO] (camera) x.py:2 world camera",
             ])
+
+    def test_file_backend_get_log_stats_since_narrows_the_24h_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = datetime.now(timezone.utc)
+            old_ts = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+            recent_ts = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+            (Path(tmp) / "camera.log").write_text(
+                f"{old_ts} [WARNING] (camera) x.py:1 old warning\n"
+                f"{recent_ts} [WARNING] (camera) x.py:2 recent warning\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                self.assertEqual(services.get_log_stats("camera")["WARNING"], 2)
+                since = now - timedelta(hours=1)
+                self.assertEqual(services.get_log_stats("camera", since=since)["WARNING"], 1)
 
     def test_merge_log_lines_combines_and_trims_multiple_already_ordered_lists(self):
         # Exercises the same helper views.api_all_logs uses to combine each hub host's own
@@ -1729,3 +1772,65 @@ class HubTokenMiddlewareTests(unittest.TestCase):
         request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="legacy-secret")
         self.middleware(request)
         self.assertEqual(request._hub_client, "default")
+
+
+class ApiAllLogStatsAcksTests(unittest.TestCase):
+    """The dashboard sends its own localStorage "log-ack-<module>" timestamps as an `acks`
+    query param so its WARNING/ERROR/CRITICAL badges reflect unacknowledged issues rather than
+    an acknowledge-blind rolling 24h count -- see api_all_log_stats/collectAckTimes."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _request(self, acks=None):
+        params = {"acks": json.dumps(acks)} if acks is not None else {}
+        request = self.factory.get("/api/log-stats/", params)
+        request.session = {}  # _active_host reads request.session -- "localhost" (no proxy)
+        return request
+
+    @patch("modules.services.get_log_stats")
+    @patch("modules.services.list_modules")
+    def test_acks_entry_is_parsed_into_a_since_datetime(self, mock_list_modules, mock_get_log_stats):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_log_stats.return_value = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        response = views.api_all_log_stats(self._request({"camera": "2026-07-15T10:00:00.000Z"}))
+        self.assertEqual(response.status_code, 200)
+        mock_get_log_stats.assert_called_once_with("camera", since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc))
+
+    @patch("modules.services.get_log_stats")
+    @patch("modules.services.list_modules")
+    def test_module_with_no_ack_entry_gets_no_since(self, mock_list_modules, mock_get_log_stats):
+        mock_list_modules.return_value = ["camera", "telescope"]
+        mock_get_log_stats.return_value = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        views.api_all_log_stats(self._request({"camera": "2026-07-15T10:00:00.000Z"}))
+        calls = {c.args[0]: c.kwargs.get("since") for c in mock_get_log_stats.call_args_list}
+        self.assertIsNotNone(calls["camera"])
+        self.assertIsNone(calls["telescope"])
+
+    @patch("modules.services.get_log_stats")
+    @patch("modules.services.list_modules")
+    def test_no_acks_param_at_all_behaves_as_before(self, mock_list_modules, mock_get_log_stats):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_log_stats.return_value = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        views.api_all_log_stats(self._request())
+        mock_get_log_stats.assert_called_once_with("camera", since=None)
+
+    @patch("modules.services.get_log_stats")
+    @patch("modules.services.list_modules")
+    def test_malformed_acks_json_is_ignored_not_a_500(self, mock_list_modules, mock_get_log_stats):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_log_stats.return_value = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        request = self.factory.get("/api/log-stats/", {"acks": "{not json"})
+        request.session = {}
+        response = views.api_all_log_stats(request)
+        self.assertEqual(response.status_code, 200)
+        mock_get_log_stats.assert_called_once_with("camera", since=None)
+
+    @patch("modules.services.get_log_stats")
+    @patch("modules.services.list_modules")
+    def test_malformed_ack_value_for_one_module_is_skipped_not_fatal(self, mock_list_modules, mock_get_log_stats):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_log_stats.return_value = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        response = views.api_all_log_stats(self._request({"camera": "not-a-timestamp"}))
+        self.assertEqual(response.status_code, 200)
+        mock_get_log_stats.assert_called_once_with("camera", since=None)

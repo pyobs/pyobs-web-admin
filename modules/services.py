@@ -643,9 +643,17 @@ def _get_logs_journald(name: str, lines: int) -> list[str]:
     return [_journal_entry_to_line(e) for e in entries]
 
 
-def _get_log_stats_journald(name: str) -> dict:
+def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
     counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
-    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "--since", "-24h"])
+    # since (e.g. a per-module "last acknowledged" instant from the dashboard) narrows the
+    # window when it's more recent than the standard 24h rollup, but never widens it beyond
+    # 24h -- an ack from days ago shouldn't suddenly pull that whole history back in.
+    if since is not None:
+        cutoff = max(since, datetime.now(timezone.utc) - timedelta(hours=24))
+        since_arg = f"{cutoff:%Y-%m-%d %H:%M:%S} UTC"
+    else:
+        since_arg = "-24h"
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "--since", since_arg])
     for entry in entries:
         level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
         if level:
@@ -738,10 +746,10 @@ def get_all_logs(names: list[str] | None = None, lines: int = 300, filter_str: s
     return log_lines
 
 
-def get_log_stats(name: str) -> dict:
+def get_log_stats(name: str, since: datetime | None = None) -> dict:
     validate_name(name)
     if _log_backend() == "journald":
-        return _get_log_stats_journald(name)
+        return _get_log_stats_journald(name, since)
 
     counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
     log_file = _log_dir() / f"{_active_name(name)}.log"
@@ -749,6 +757,12 @@ def get_log_stats(name: str) -> dict:
         return counts
 
     cutoff = datetime.now() - timedelta(hours=24)
+    if since is not None:
+        # File-backend timestamps are naive and assumed UTC (see _journal_entry_to_line);
+        # convert the aware `since` the same way before comparing, and only narrow the
+        # window, never widen it beyond the standard 24h rollup.
+        since_naive = since.astimezone(timezone.utc).replace(tzinfo=None)
+        cutoff = max(cutoff, since_naive)
 
     def _line_ts(line: str) -> datetime | None:
         m = _TS_RE.match(line)
