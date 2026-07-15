@@ -1,6 +1,7 @@
 import json
 import re
 import secrets
+from datetime import datetime
 from typing import Any
 
 from django.conf import settings
@@ -523,11 +524,26 @@ def api_all_logs(request):
 
 @require_GET
 def api_all_log_stats(request):
+    # acks: optional JSON object of {module: iso-8601 "last acknowledged" instant}, sent by
+    # the dashboard from its own localStorage (the same per-module ack timestamps the Logs
+    # tab/All Logs "Acknowledge" button write) -- lets the dashboard's WARNING/ERROR/CRITICAL
+    # badges reflect *unacknowledged* issues instead of an acknowledge-blind rolling 24h count.
+    raw_acks = request.GET.get("acks")
     host = _active_host(request)
     if host:
-        return _proxy(host, "GET", "/api/log-stats/")
+        return _proxy(host, "GET", "/api/log-stats/", params={"acks": raw_acks} if raw_acks else None)
     modules = services.list_modules()
-    result = {m: services.get_log_stats(m) for m in modules}
+    acks: dict[str, datetime] = {}
+    if raw_acks:
+        try:
+            for name, iso in json.loads(raw_acks).items():
+                try:
+                    acks[name] = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    continue
+        except json.JSONDecodeError:
+            pass
+    result = {m: services.get_log_stats(m, since=acks.get(m)) for m in modules}
     return JsonResponse({"modules": result})
 
 

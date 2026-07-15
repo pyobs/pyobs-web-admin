@@ -322,9 +322,22 @@ async function controlAll(action) {
 
 const LOG_LEVEL_COLORS = {WARNING: 'warning', ERROR: 'danger', CRITICAL: 'danger'};
 
+function collectAckTimes() {
+  // Same "log-ack-<module>" localStorage keys the per-module Logs tab and All Logs page
+  // write via acknowledgeLogs() -- sent along so these badges reflect unacknowledged
+  // issues rather than an acknowledge-blind rolling 24h count.
+  const acks = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('log-ack-')) acks[key.slice('log-ack-'.length)] = localStorage.getItem(key);
+  }
+  return acks;
+}
+
 async function refreshLogStats() {
   try {
-    const resp = await fetch("{% url 'api_all_log_stats' %}");
+    const params = new URLSearchParams({acks: JSON.stringify(collectAckTimes())});
+    const resp = await fetch(`{% url 'api_all_log_stats' %}?${params}`);
     const data = await resp.json();
     for (const [name, counts] of Object.entries(data.modules)) {
       const el = document.querySelector(`.module-log-stats[data-module="${name}"]`);
