@@ -6,7 +6,7 @@ import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -618,7 +618,11 @@ def _journalctl_json(args: list[str]) -> list[dict]:
 
 
 def _journal_entry_to_line(entry: dict) -> str:
-    ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000)
+    # tz=timezone.utc: the reconstructed line's timestamp has no zone marker (matching the
+    # file backend's shape), so it must actually *be* UTC regardless of the host OS's local
+    # timezone -- the frontend (templates/modules/detail.html, all_logs.html: parseLogTime)
+    # assumes exactly that when it parses these lines back out.
+    ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=timezone.utc)
     level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
     module = entry.get("PYOBS_MODULE", "")
     # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal

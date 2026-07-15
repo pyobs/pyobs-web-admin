@@ -88,7 +88,11 @@ function escapeHtml(s) {
 
 function parseLogTime(line) {
   const m = line.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
-  return m ? new Date(`${m[1]}T${m[2]}`) : null;
+  // Log lines carry a naive UTC timestamp (no zone marker) -- append "Z" so this is parsed
+  // as the actual UTC instant rather than the browser's own local timezone, which would
+  // otherwise silently shift it by the viewer's UTC offset (see acknowledgeLogs()/getAckTime(),
+  // whose baseline is a real UTC instant via toISOString()).
+  return m ? new Date(`${m[1]}T${m[2]}Z`) : null;
 }
 
 function toDatetimeLocal(d) {
