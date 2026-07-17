@@ -40,7 +40,10 @@ is fine, that's what the Design section of the eventual doc is for.
   open (whether a genuinely group-less service account needs an explicit `journalctl`
   permission grant), see that doc's Status. `PYOBS_LOG_BACKEND` now defaults to auto-detecting
   from `pyobsd`'s own config file (`pyobs-core`'s daemon manager) instead of requiring it set
-  a second time — an explicit setting still overrides.
+  a second time — an explicit setting still overrides. Also gained pagination: both log
+  windows (a module's own Logs tab, and fleet-wide All Logs) now auto-load older entries when
+  scrolled to the top, via journalctl's `--until` — journald-backed modules only, since the
+  file backend has no seek/offset to page further back with.
 - [DEV_EJABBERD_USER_MANAGEMENT.md](DEV_EJABBERD_USER_MANAGEMENT.md) — register/reset-password/ban/
   unregister XMPP accounts for a module's `comm.user` from pyobs-web-admin, closing the
   write-side gap `DEV_EJABBERD_INTEGRATION.md` deliberately left open. **Implemented and

@@ -1,4 +1,4 @@
-# pyobs-web-admin: journald-backed module logging — v1.1 (2026-07-05)
+# pyobs-web-admin: journald-backed module logging — v1.2 (2026-07-17)
 
 ## Status
 
@@ -8,7 +8,11 @@ denied journal read access (see Open questions) — this doesn't block using the
 v1.1 adds auto-detection: `PYOBS_LOG_BACKEND`'s default changed from `"file"` to `None`
 (auto-detect from `pyobsd`'s own config file), not a Work Plan item originally but a real gap
 closed after `pyobsd` (`pyobs-core`'s daemon manager) turned out to read its own global
-config for the same `file`-vs-`journald` decision — see Progress log.
+config for the same `file`-vs-`journald` decision — see Progress log. v1.2 adds pagination:
+the log windows (module `Logs` tab, fleet-wide All Logs) now auto-load older entries when
+scrolled to the top, for journald-backed modules only — the file backend reports "nothing
+older available" rather than pretending to page further back, since a plain `tail -n` has no
+seek/offset to page with — see Progress log and Design's "Pagination: load older logs".
 
 ## Progress log
 
@@ -51,6 +55,7 @@ config for the same `file`-vs-`journald` decision — see Progress log.
   service account negative case. Doesn't block shipping this, since it's a deploy-time
   permissions question, not a code-correctness one.
 - **Done — v1.1, auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own config, not a Work Plan item.** Requested after learning `pyobsd` (`pyobs-core`'s daemon manager, `pyobs-core/pyobs/cli/pyobsd.py` — read directly, this app has no dependency on it) has its own global config file with a `syslog` key it already uses to decide `--syslog` vs. not, when it starts modules itself. `modules/services.py`: `_pyobsd_config()` reads that same file — the exact candidate-path list and "first one found wins" order as `pyobs-core/pyobs/cli/_cli.py`'s `CLI._load_config` (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, `/opt/pyobs/storage/pyobs.yaml`) — and returns just its `pyobsd` section, `{}` if no candidate exists or the file is malformed (never raises; this is a convenience auto-detection, not something that should ever break a page load). `_log_backend()` (the single existing choke point every journald-vs-file branch already called through) now checks `settings.PYOBS_LOG_BACKEND` first — if explicitly set (`"file"`/`"journald"`), that always wins, so any deployment that already configured this keeps working completely unchanged — and only falls through to `"journald" if _pyobsd_config().get("syslog") else "file"` when it's unset. `pyobs_web_admin/settings.py`'s default changed from `"file"` to `None` specifically so `_log_backend()` can tell "admin explicitly wants file" apart from "never configured, please auto-detect" — before this change every installation implicitly had an explicit `"file"` value (Django's settings loading always supplies the module-level default), so auto-detection could never have activated for anyone. Tests: `PyobsdAutoDetectTests` in `modules/tests.py` (10 tests — no-candidate-file, reads the `pyobsd` section, missing section, malformed YAML doesn't crash, first-existing-candidate-wins, auto-detects both `journald` and `file`, explicit setting overrides auto-detection in both directions), all patching `services._PYOBSD_CONFIG_CANDIDATES` to a controlled temp path rather than touching the real candidate locations, so results don't depend on whatever happens to exist on the machine running the tests. Verified live via `manage.py shell` against the real settings module (not just the test harness): confirmed a real temp `pyobs.yaml` with `syslog: true`/`false` correctly auto-detects `journald`/`file` when `PYOBS_LOG_BACKEND` is unset, and confirmed an explicit `PYOBS_LOG_BACKEND` setting overrides auto-detection even when the file disagrees. `python manage.py test modules` — 122/122 passing, no regressions (this repo's real `local_settings.py` already has `PYOBS_LOG_BACKEND = "journald"` set explicitly, confirmed to still take priority over auto-detection unchanged).
+- **Done — v1.2, load older logs on scroll-to-top, not a Work Plan item.** Requested after using the log windows and finding no way to see anything further back than the last `lines` tail without bumping the (capped-at-2000) `lines` param and re-fetching everything. `modules/services.py`: `get_logs`/`get_all_logs` gained an optional `before: datetime | None`, threaded through to `_get_logs_journald`/`_get_all_logs_journald`, which add `--until "<before> UTC"` ahead of the existing `-n <lines>` flag — the same temporal-boundary idiom `_get_log_stats_journald`'s `--since` already established, just the other direction. `journalctl -n <lines> --until <ts>` returns the last `<lines>` entries at or before `<ts>`, exactly "the page of older lines immediately before what's already on screen." The file backend (`tail -n`) has no seek/offset concept to page further back with, so a `before` request there returns `[]` rather than silently re-serving the same tail on every scroll — this makes "load older logs" a journald-only capability for now, not a half-working one on file-backed installs (see Design's new "Pagination: load older logs" section for the full read/API/frontend design). `modules/views.py`: `api_logs`/`api_all_logs` gained a `before` query param (`_parse_before`, same tolerant ISO-8601-with-`Z` parsing `api_all_log_stats`'s `acks` param already uses), forwarded unchanged to a remote hub host's own identical endpoint. `templates/modules/detail.html` (Logs tab) and `all_logs.html` (kept in lockstep, as this app's existing convention already does for these two near-identical log windows) both gained a `scroll` listener on `#log-output` that fetches older lines once scrolled within 40px of the top, deduping the response against already-loaded lines by exact string match (`--until` is inclusive, so the boundary line can reappear) and restoring scroll offset by the exact height delta added, so the line under the viewport doesn't jump. Tests: new cases in `GetLogsJournaldTests`/`GetAllLogsTests` (`before` → `--until`; file backend returns `[]` for a `before` request) and a new `ApiLogsBeforeParamTests` class (`_parse_before` parsing, `api_logs`/`api_all_logs` forwarding) in `modules/tests.py`. `python manage.py test modules` — 176/176 passing, no regressions. **Verified live** with a fake `journalctl` (a small Python script placed ahead of the real binary on `PATH`, since this dev box has no real journald) serving 1000 synthetic timestamped entries for a scratch module: both the per-module Logs tab and the fleet-wide All Logs page correctly paged all the way back to entry 0 across repeated scroll-to-top interactions, with no duplicate lines, correct scroll-position preservation, and "Beginning of available logs" shown exactly once the journal was exhausted, no console errors.
 
 ## Motivation
 
@@ -223,6 +228,37 @@ confirmed live to correctly bound the query window; counts come directly from ea
 `PRIORITY` via the same reverse-map, without round-tripping through reconstructed text and
 `_LOG_LEVEL_RE` again.
 
+### Pagination: load older logs (v1.2)
+
+**Backend.** `get_logs`/`get_all_logs` gained an optional `before: datetime | None` alongside
+the existing `lines`, threaded through to `_get_logs_journald`/`_get_all_logs_journald`, which
+add `--until "<before> UTC"` ahead of the existing `-n <lines>` flag — mirroring
+`_get_log_stats_journald`'s existing `--since` usage exactly, just the other temporal
+boundary. `journalctl -n <lines> --until <ts>` returns the last `<lines>` entries at or before
+that instant, which is exactly "give me the page of older lines immediately before what's
+already on screen." The file backend (`tail -n`) has no seek/offset concept to page further
+back with, so a `before` request there returns `[]` rather than silently re-serving the same
+tail on every scroll — this makes "load older logs" a journald-only capability for now, not a
+half-working one on file-backed installs.
+
+**API.** `api_logs`/`api_all_logs` (`views.py`) parse a new `before` query param
+(`_parse_before`, ISO-8601 with a `Z` suffix, same tolerant malformed-input-returns-`None`
+handling `api_all_log_stats`'s `acks` parsing already uses) and forward it straight through —
+including to a remote hub host's own identical endpoint, unchanged.
+
+**Frontend.** Both log windows (`detail.html`'s Logs tab, `all_logs.html`) already rendered
+into a single `<pre id="log-output">`; this adds one `scroll` listener on it that calls
+`fetchOlderLogs()` once scrolled within 40px of the top. It sends the oldest currently-loaded
+line's own parsed timestamp as `before`, dedupes the response against `rawLogLines` by exact
+string match (`--until` is inclusive, so the boundary line can come back in the next page),
+prepends whatever's left, then restores `scrollTop` by the exact height delta the prepend
+added — so the line the user was looking at stays in view instead of the viewport jumping. A
+small status line above the `<pre>` reads "Loading older logs…" while in flight and
+"Beginning of available logs" once a fetch returns nothing new (a full refresh, e.g. clicking
+Refresh or toggling a module checkbox on the All Logs page, resets that flag so a later scroll
+tries again — new activity could plausibly extend the journal's retained history further back
+in the meantime, though in practice it almost never will).
+
 ### What doesn't change
 
 Process management — PID file, start/stop, `get_module_status`, `psutil`-based
@@ -302,3 +338,6 @@ flagged ("tested from the same machine... strong evidence, not absolute proof").
   Progress log, Work Plan item 2, for the same reasoning applied there).
 - [x] **v1.1, not in the original plan.** Auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own
   config file instead of requiring it set a second time — see Progress log.
+- [x] **v1.2, not in the original plan.** Auto-load older log lines when a log window is
+  scrolled to the top (journald-backed modules only; the file backend reports "nothing older
+  available") — see Progress log and Design's "Pagination: load older logs" section.
