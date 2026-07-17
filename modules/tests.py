@@ -1347,6 +1347,36 @@ class LogBackendJournaldTests(unittest.TestCase):
                 ["tail", "-n", "300", str(log_file)], capture_output=True, text=True
             )
 
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_before_adds_until_arg_ahead_of_lines_flag(self, mock_run):
+        """The log window's "load older logs" (scroll-to-top) fetch passes the oldest
+        currently-loaded line's own timestamp as `before` -- this must become journalctl's
+        --until, mirroring get_log_stats' existing --since usage, so "-n" then returns the
+        last N entries *at or before* that instant instead of the last N overall."""
+        mock_run.return_value = self._mock_result("")
+        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        services.get_logs("camera_verify_test", lines=300, before=before)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--until", "2026-07-15 10:00:00 UTC", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_before_returns_empty_list_not_a_tail(self, mock_run):
+        """The file backend has no seek/offset to page further back with -- a `before`
+        request must report "nothing older available" (empty list) rather than silently
+        re-running the same tail, which would look like an infinite scrollback of duplicate
+        lines to the frontend's scroll-to-top handler."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "camera.log"
+            log_file.write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", before=datetime(2026, 7, 4, tzinfo=timezone.utc))
+            self.assertEqual(lines, [])
+            mock_run.assert_not_called()
+
 
 # ── get_all_logs ──────────────────────────────────────────────────────────────
 
@@ -1477,6 +1507,29 @@ class GetAllLogsTests(unittest.TestCase):
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_all_logs(names=["camera", "telescope"], lines=300, filter_str="telescope")
             self.assertEqual(lines, ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope"])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_before_adds_until_arg_ahead_of_lines_flag(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        services.get_all_logs(names=["camera"], lines=300, before=before)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
+             "--until", "2026-07-15 10:00:00 UTC", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_before_returns_empty_list(self, mock_run):
+        # Same "no seek/offset to page further back with" limitation as get_logs' own file
+        # backend -- see that test's docstring.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(names=["camera"], before=datetime(2026, 7, 4, tzinfo=timezone.utc))
+            self.assertEqual(lines, [])
+            mock_run.assert_not_called()
 
 
 # ── _tag_host (fleet-wide All Logs cross-host tagging) ────────────────────────
@@ -1834,3 +1887,62 @@ class ApiAllLogStatsAcksTests(unittest.TestCase):
         response = views.api_all_log_stats(self._request({"camera": "not-a-timestamp"}))
         self.assertEqual(response.status_code, 200)
         mock_get_log_stats.assert_called_once_with("camera", since=None)
+
+
+class ApiLogsBeforeParamTests(unittest.TestCase):
+    """The log windows' scroll-to-top "load older logs" fetch sends `before` (the oldest
+    currently-loaded line's own ISO-8601 timestamp) to api_logs/api_all_logs, which must
+    parse it the same tolerant way api_all_log_stats' acks param already is (see
+    ApiAllLogStatsAcksTests) and forward it through to services.get_logs/get_all_logs."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_parse_before_accepts_iso_with_z_suffix(self):
+        parsed = views._parse_before("2026-07-15T10:00:00.000Z")
+        self.assertEqual(parsed, datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc))
+
+    def test_parse_before_missing_is_none(self):
+        self.assertIsNone(views._parse_before(None))
+        self.assertIsNone(views._parse_before(""))
+
+    def test_parse_before_malformed_is_none_not_raising(self):
+        self.assertIsNone(views._parse_before("not-a-timestamp"))
+
+    @patch("modules.services.get_logs")
+    @patch("modules.services.list_modules")
+    def test_api_logs_forwards_before_to_get_logs(self, mock_list_modules, mock_get_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_logs.return_value = []
+        request = self.factory.get("/api/modules/camera/logs/", {"lines": 300, "before": "2026-07-15T10:00:00.000Z"})
+        request.session = {}
+        response = views.api_logs(request, "camera")
+        self.assertEqual(response.status_code, 200)
+        mock_get_logs.assert_called_once_with(
+            "camera", lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        )
+
+    @patch("modules.services.get_logs")
+    @patch("modules.services.list_modules")
+    def test_api_logs_no_before_param_behaves_as_before(self, mock_list_modules, mock_get_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_logs.return_value = []
+        request = self.factory.get("/api/modules/camera/logs/", {"lines": 300})
+        request.session = {}
+        views.api_logs(request, "camera")
+        mock_get_logs.assert_called_once_with("camera", lines=300, filter_str="", before=None)
+
+    @patch("modules.services.get_all_logs")
+    @patch("modules.services.list_modules")
+    def test_api_all_logs_forwards_before_to_get_all_logs(self, mock_list_modules, mock_get_all_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_all_logs.return_value = []
+        request = self.factory.get(
+            "/api/logs/", {"lines": 300, "modules": "localhost:camera", "before": "2026-07-15T10:00:00.000Z"}
+        )
+        request.session = {}
+        response = views.api_all_logs(request)
+        self.assertEqual(response.status_code, 200)
+        mock_get_all_logs.assert_called_once_with(
+            ["camera"], lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        )

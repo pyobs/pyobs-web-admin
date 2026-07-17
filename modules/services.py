@@ -638,8 +638,12 @@ def _journal_entry_to_line(entry: dict) -> str:
     return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
 
 
-def _get_logs_journald(name: str, lines: int) -> list[str]:
-    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "-n", str(lines)])
+def _get_logs_journald(name: str, lines: int, before: datetime | None = None) -> list[str]:
+    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}"]
+    if before is not None:
+        args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
+    args += ["-n", str(lines)]
+    entries = _journalctl_json(args)
     return [_journal_entry_to_line(e) for e in entries]
 
 
@@ -661,11 +665,17 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
     return counts
 
 
-def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
+def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime | None = None) -> list[str]:
     validate_name(name)
     if _log_backend() == "journald":
-        log_lines = _get_logs_journald(name, lines)
+        log_lines = _get_logs_journald(name, lines, before)
     else:
+        # "Load older logs" (before) isn't supported for the file backend yet -- a plain
+        # `tail -n` has no seek/offset concept to page further back with (see get_all_logs'
+        # analogous file-backend limitation) -- so this reports "nothing older available"
+        # rather than re-returning the same tail on every scroll-to-top.
+        if before is not None:
+            return []
         log_file = _log_dir() / f"{_active_name(name)}.log"
         if not log_file.exists():
             return []
@@ -679,7 +689,7 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "") -> list[str]:
 _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 
 
-def _get_all_logs_journald(names: list[str] | None, lines: int) -> list[str]:
+def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime | None = None) -> list[str]:
     # names is None means "no PYOBS_MODULE restriction at all" -- broader than "every
     # currently configured module," since it also surfaces entries from a module whose
     # config has since been removed/renamed. names == [] means the caller explicitly
@@ -691,6 +701,8 @@ def _get_all_logs_journald(names: list[str] | None, lines: int) -> list[str]:
         # Repeating a field name is journalctl's own OR syntax -- combined with the
         # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
         args += [f"PYOBS_MODULE={n}" for n in names]
+    if before is not None:
+        args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
     entries = _journalctl_json(args)
     return [_journal_entry_to_line(e) for e in entries]
@@ -733,13 +745,20 @@ def _get_all_logs_file(names: list[str], lines: int) -> list[str]:
     return merge_log_lines(line_lists, lines)
 
 
-def get_all_logs(names: list[str] | None = None, lines: int = 300, filter_str: str = "") -> list[str]:
+def get_all_logs(
+    names: list[str] | None = None, lines: int = 300, filter_str: str = "", before: datetime | None = None
+) -> list[str]:
     if names is not None:
         for name in names:
             validate_name(name)
     if _log_backend() == "journald":
-        log_lines = _get_all_logs_journald(names, lines)
+        log_lines = _get_all_logs_journald(names, lines, before)
     else:
+        # See get_logs' identical file-backend caveat -- no seek/offset to page further back
+        # with, so an older-logs request reports nothing available rather than re-serving
+        # the same tail.
+        if before is not None:
+            return []
         log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines)
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]

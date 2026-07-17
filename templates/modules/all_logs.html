@@ -69,6 +69,7 @@
   </div>
 </div>
 <small class="text-muted d-block mb-1">Click a line to set start time · Shift+click to set end time</small>
+<div id="log-older-status" class="text-muted small mb-1" style="min-height:1.2em"></div>
 <pre id="log-output"
      class="bg-black text-light p-3 rounded border border-secondary overflow-auto font-monospace"
      style="height: 600px; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;">
@@ -178,12 +179,54 @@ function applyFilters(lines) {
   });
 }
 
-function renderLogs() {
+function renderLogs(skipAutoScroll) {
   const filtered = applyFilters(rawLogLines);
   const pre = document.getElementById('log-output');
   pre.innerHTML = filtered.length ? filtered.map(renderLine).join('\n') : '(no matching log lines)';
-  if (document.getElementById('auto-scroll').checked) pre.scrollTop = pre.scrollHeight;
+  if (!skipAutoScroll && document.getElementById('auto-scroll').checked) pre.scrollTop = pre.scrollHeight;
   updateAckBadge();
+}
+
+// ── Load older logs on scroll-to-top ────────────────────────────────────────────
+let loadingOlderLogs = false;
+let noMoreOlderLogs = false;
+
+function setOlderStatus(text) {
+  document.getElementById('log-older-status').textContent = text || '';
+}
+
+async function fetchOlderLogs() {
+  if (loadingOlderLogs || noMoreOlderLogs || rawLogLines.length === 0) return;
+  const oldest = parseLogTime(rawLogLines[0]);
+  if (!oldest) return;
+  loadingOlderLogs = true;
+  setOlderStatus('Loading older logs…');
+  const pre = document.getElementById('log-output');
+  const prevScrollHeight = pre.scrollHeight;
+  const prevScrollTop = pre.scrollTop;
+  try {
+    const params = new URLSearchParams({
+      lines: 300, modules: selectedModules().join(','), before: oldest.toISOString(),
+    });
+    const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
+    const data = await resp.json();
+    // Dedup by exact line content -- --until is inclusive, so the oldest line already on
+    // screen (or one sharing its second-granularity timestamp) can come back in this batch.
+    const existing = new Set(rawLogLines);
+    const older = (data.lines || []).filter(l => !existing.has(l));
+    if (older.length === 0) {
+      noMoreOlderLogs = true;
+      setOlderStatus('Beginning of available logs');
+    } else {
+      rawLogLines = older.concat(rawLogLines);
+      renderLogs(true);
+      pre.scrollTop = prevScrollTop + (pre.scrollHeight - prevScrollHeight);
+      setOlderStatus('');
+    }
+  } catch (_) {
+  } finally {
+    loadingOlderLogs = false;
+  }
 }
 
 // ── Module selection ─────────────────────────────────────────────────────────
@@ -230,6 +273,8 @@ window.fetchLogs = async function fetchLogs() {
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
     const data = await resp.json();
     rawLogLines = data.lines || [];
+    noMoreOlderLogs = false;
+    setOlderStatus('');
     renderLogs();
   } catch (_) {}
 };
@@ -274,6 +319,10 @@ timeStartEl.addEventListener('change', function () {
 timeEndEl.addEventListener('change', function () {
   localStorage.setItem('log-time-end', this.value);
   renderLogs();
+});
+
+document.getElementById('log-output').addEventListener('scroll', function () {
+  if (this.scrollTop <= 40) fetchOlderLogs();
 });
 
 document.getElementById('log-output').addEventListener('click', function (e) {

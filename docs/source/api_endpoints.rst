@@ -104,16 +104,20 @@ Logs
    * - GET
      - ``/api/modules/<name>/logs/``
      - Query params: ``lines`` (default 300, capped at 2000), ``filter`` (substring/regex
-       applied server-side). ``{"lines": [...]}``.
+       applied server-side), ``before`` (ISO-8601 instant -- returns the last ``lines``
+       entries at or before it, for the log pane's scroll-to-top "load older logs" feature;
+       journald-backed modules only, the file backend returns ``[]``). ``{"lines": [...]}``.
    * - GET
      - ``/api/modules/<name>/log-stats/``
      - 24h level counts. ``{"stats": {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}}``.
    * - GET
      - ``/api/logs/``
      - Fleet-wide merged tail, independent of the active host. Query params: ``lines``,
-       ``filter``, and ``modules`` -- a comma-separated list of ``<host>:<module>`` tokens
+       ``filter``, ``modules`` -- a comma-separated list of ``<host>:<module>`` tokens
        (``host`` is ``"localhost"`` or a ``HUB_HOSTS`` name); omit ``modules`` entirely for
-       every module on every configured host. ``{"lines": [...], "unreachable_hosts":
+       every module on every configured host -- and ``before`` (same "load older logs"
+       semantics as the per-module endpoint above, forwarded unchanged to each configured
+       host). ``{"lines": [...], "unreachable_hosts":
        [{"name", "error"}, ...]}``; each line is tagged ``[host]`` when more than one host
        is selected.
    * - GET

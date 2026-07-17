@@ -47,3 +47,18 @@ Deployment note: reading the journal cross-user requires the account running
 pyobs-web-admin to have journal read access -- typically satisfied by membership in the
 ``adm`` or ``systemd-journal`` group on Debian/Ubuntu-family systems. A dedicated,
 minimal-privilege service account may need to be added to one of those groups explicitly.
+
+Loading older logs
+*******************
+
+Both log views (a module's own **Logs** tab, and the fleet-wide **All Logs** page) only ever
+fetch the most recent ``lines`` entries. Scrolling either view's log pane to the top
+auto-loads the next page of older entries and prepends them, preserving scroll position so
+the line you were looking at doesn't jump.
+
+This is a ``journald``-only capability for now: it queries ``journalctl`` with the oldest
+currently-loaded line's own timestamp as an ``--until`` cutoff (alongside the existing
+``-n <lines>``), giving the next page of entries immediately before what's already on screen.
+The file backend's plain ``tail -n`` has no equivalent seek/offset to page further back with,
+so on a file-backed module the pane instead reports "Beginning of available logs" the first
+time you scroll to the top, rather than silently re-serving the same tail on every scroll.

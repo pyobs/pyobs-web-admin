@@ -17,15 +17,15 @@ filter their logs, and view and edit their configuration files — all from a br
   - Responsive: on small screens the table collapses to status dot + name + log counts + actions
 - **Module detail** — per-module view with four tabs:
   - *Overview* — current status, PID, uptime, CPU and memory usage, per-level log message counts (last 24 h), XMPP connection state (if enabled), start/restart/stop/activate/deactivate control
-  - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh
+  - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh; scrolling to the top auto-loads older entries (journald-backed modules only, see [DEV_JOURNALD_LOGS.md](dev-docs/DEV_JOURNALD_LOGS.md))
   - *Config* — YAML editor with syntax highlighting and colour-coded `{include}` lines; included shared configs are shown as clickable links
   - *ACL* — point-and-click editor for the module's `acl:` block: click to allow/deny known modules, add other callers, toggle enforce/log mode
 - **New module** — a "+" next to the sidebar's Modules section creates a brand-new `<name>.yaml` config (a minimal starter with just a `class:` key) and takes you straight to its Config tab to fill in the rest
 - **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
 - **Packages** (`/packages/`) — every installed `pyobs-*` package (plus anything else listed in `PYOBS_MANAGED_PACKAGES`) with its installed and latest-PyPI version, and a one-click Update button; git/URL-installed packages get a Reinstall action instead (see [Package management](#package-management))
 - **Overview** (`/overview/`) — fleet-wide summary, one row per configured host: reachable or not, running/stopped/total counts, aggregate CPU/RAM, linking into that host's own Dashboard, plus a package-version matrix (one row per `pyobs-*` package, one column per host) so version drift across the fleet is visible at a glance. Deliberately no bulk or per-module actions — those stay on the per-host Dashboard, since a fleet-wide "Stop All" from one button is a real footgun
-- **All Logs** (`/logs/`) — fleet-wide live log tail across every module on every configured host, same filtering as a module's own Logs tab
-- **ACL Matrix** (`/acl/`) — fleet-wide read-only matrix of which module can call which, merged across every configured host (see [DEV_ACL_MATRIX.md](DEV_ACL_MATRIX.md))
+- **All Logs** (`/logs/`) — fleet-wide live log tail across every module on every configured host, same filtering and scroll-to-load-older behaviour as a module's own Logs tab
+- **ACL Matrix** (`/acl/`) — fleet-wide read-only matrix of which module can call which, merged across every configured host (see [DEV_ACL_MATRIX.md](dev-docs/DEV_ACL_MATRIX.md))
 - **Hub mode** — control multiple remote pyobs hosts from a single browser tab; remote hosts are listed in the sidebar and all actions are proxied transparently
 - **ejabberd / XMPP status** (optional) — dashboard summary tile and per-module connected/not-connected indicator, plus a session/last-seen/registered-account block on each module's own page, for modules with a `comm.user` in their config — closes the gap between "the process is running" and "the module is actually reachable over XMPP" (see [ejabberd integration](#ejabberd-integration))
 - **ejabberd / XMPP user management** (optional, builds on the above) — register, reset password, ban/unban, unregister, and kick XMPP accounts, either from a module's own Overview tab or from a fleet-wide **Users** page (`/xmpp-users/`) listing every registered account across every host, cross-referenced against which module(s) use it and which one is actually running. Safe by design for an identity shared across more than one module's `comm.user` — a password reset writes back to every module sharing it, and destructive actions name which other modules are affected before you confirm (see [ejabberd user management](#ejabberd-user-management))
@@ -174,7 +174,7 @@ PYOBS_RUN_DIR = "/opt/pyobs/run"            # directory for PID files
 PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 PYOBS_LOG_BACKEND = None                    # None (default): auto-detect from pyobsd's own
                                              # config; "file" or "journald" to override --
-                                             # see DEV_JOURNALD_LOGS.md
+                                             # see dev-docs/DEV_JOURNALD_LOGS.md
 
 # Packages page (optional — see Package management section)
 PYOBS_MANAGED_PACKAGES = []                 # e.g. ["pyobs-core[full]", "my-custom-driver",
@@ -321,7 +321,7 @@ it as-is; `mod_http_api` can also expose account-management commands
 trusted, no password or token is involved. This blocks the network (a request from outside
 the host is rejected), but **not** other processes on the same machine, which get the same
 access pyobs-web-admin does. That's an accepted tradeoff for a dedicated, single-purpose
-observatory control host — see `DEV_EJABBERD_INTEGRATION.md` if your threat model is different.
+observatory control host — see `dev-docs/DEV_EJABBERD_INTEGRATION.md` if your threat model is different.
 
 ---
 
@@ -471,12 +471,12 @@ end up as a literal `pip install` command-line argument, visible to any other lo
 - **Discovery** — all `*.yaml` files in `PYOBS_CONFIG_DIR` (excluding `*.shared.yaml`) are treated as modules. `*.shared.yaml` files are listed separately as shared configs.
 - **Creating a module** — the "New module" button writes a fresh `<name>.yaml` with a minimal starter (`class:` key only); `PYOBS_CONFIG_DIR` is created automatically if it doesn't exist yet.
 - **Activate / Deactivate** — deactivating a module renames its config from `name.yaml` to `_name.yaml` (stopping it first if running); activating renames it back. Deactivated modules are excluded from *Start All* and *Restart All*.
-- **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`. If the effective log backend is `"journald"` (see below), `--syslog` is passed instead of `--log-file` — pyobs then logs directly to the systemd journal, tagged `SYSLOG_IDENTIFIER=pyobs` and `PYOBS_MODULE=<name>` (see [DEV_JOURNALD_LOGS.md](DEV_JOURNALD_LOGS.md)).
+- **Start** — runs `pyobs --pid-file <run>/<name>.pid --log-file <log>/<name>.log --log-level <level> <config>`. pyobs daemonises itself via `python-daemon`. If the effective log backend is `"journald"` (see below), `--syslog` is passed instead of `--log-file` — pyobs then logs directly to the systemd journal, tagged `SYSLOG_IDENTIFIER=pyobs` and `PYOBS_MODULE=<name>` (see [DEV_JOURNALD_LOGS.md](dev-docs/DEV_JOURNALD_LOGS.md)).
 - **Stop** — sends `SIGTERM` to the PID in the PID file; falls back to `SIGKILL` after 5 s.
 - **Restart** — stop followed by start.
 - **Status** — checks whether the process with the stored PID is alive (`os.kill(pid, 0)`).
 - **Resource usage** — uptime, CPU %, and RSS memory read via `psutil` on every status poll.
-- **Logs** — read from `PYOBS_LOG_DIR`'s flat files by default, or from the systemd journal via `journalctl` if the effective log backend is `"journald"`; the log viewer and per-level counts work identically either way. The effective backend is `PYOBS_LOG_BACKEND` if set explicitly, otherwise auto-detected from `pyobsd`'s own config file (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, or `/opt/pyobs/storage/pyobs.yaml`, first found wins) — the same file `pyobsd` (`pyobs-core`'s daemon manager) reads to decide whether *it* starts modules with `--syslog`, so this can't silently drift out of sync with it.
+- **Logs** — read from `PYOBS_LOG_DIR`'s flat files by default, or from the systemd journal via `journalctl` if the effective log backend is `"journald"`; the log viewer and per-level counts work identically either way. The effective backend is `PYOBS_LOG_BACKEND` if set explicitly, otherwise auto-detected from `pyobsd`'s own config file (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, or `/opt/pyobs/storage/pyobs.yaml`, first found wins) — the same file `pyobsd` (`pyobs-core`'s daemon manager) reads to decide whether *it* starts modules with `--syslog`, so this can't silently drift out of sync with it. Scrolling a log window to the top auto-loads older entries via journalctl's `--until`, for journald-backed modules only — the file backend's plain `tail -n` has no seek/offset to page further back with, so it reports nothing older available instead (see [DEV_JOURNALD_LOGS.md](dev-docs/DEV_JOURNALD_LOGS.md)).
 - **Log counts** — per-level message counts (DEBUG / INFO / WARNING / ERROR / CRITICAL) for the last 24 h, using binary search on the log file to avoid reading the whole file.
 
 ---

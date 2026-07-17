@@ -29,11 +29,11 @@ doesn't apply here.
 Design docs
 ***********
 
-Non-trivial features get a short design document at the repository root before
-implementation (``DEV_ACL_MATRIX.md``, ``DEV_EJABBERD_INTEGRATION.md``,
-``DEV_EJABBERD_USER_MANAGEMENT.md``, ``DEV_JOURNALD_LOGS.md``), each following the same shape:
-Status, Motivation, Current state, Design, Open questions, Work Plan. ``DEVELOPMENT.md`` is
-the index pointing at each one plus a running list of not-yet-designed ideas. These are
+Non-trivial features get a short design document under ``dev-docs/`` before implementation
+(``DEV_ACL_MATRIX.md``, ``DEV_EJABBERD_INTEGRATION.md``, ``DEV_EJABBERD_USER_MANAGEMENT.md``,
+``DEV_JOURNALD_LOGS.md``), each following the same shape: Status, Motivation, Current state,
+Design, Open questions, Work Plan. ``dev-docs/DEVELOPMENT.md`` is the index pointing at each
+one plus a running list of not-yet-designed ideas. These are
 implementation journals aimed at whoever picks the feature back up, not end-user
 documentation -- the Features pages in this manual (:doc:`features/dashboard` onward) are
 the distilled, current-state version of what shipped from each of them.
