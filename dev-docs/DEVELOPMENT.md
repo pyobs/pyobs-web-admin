@@ -7,7 +7,7 @@ collects ideas that haven't been fleshed out into one yet.
 
 ## How this works
 
-Each non-trivial feature gets its own `FEATURE_NAME.md` at the repo root, following the
+Each non-trivial feature gets its own `FEATURE_NAME.md` under `dev-docs/`, following the
 shape `DEV_ACL_MATRIX.md`/`DEV_EJABBERD_INTEGRATION.md` already use: **Status** (one-paragraph
 current state, updated as work progresses) → **Motivation** → **Current state** (what's true
 in the codebase before this feature) → **Design** → **Open questions** → **Work Plan**
