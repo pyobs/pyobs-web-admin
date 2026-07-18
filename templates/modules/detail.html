@@ -623,8 +623,15 @@ function applyFilters(lines) {
 function renderLogs(skipAutoScroll) {
   const filtered = applyFilters(rawLogLines);
   const pre = document.getElementById('log-output');
+  // Captured before the re-render, which changes scrollHeight -- otherwise a refresh
+  // while reading old logs would always look "near the bottom" of the freshly grown
+  // content and yank the view back down even though auto-scroll is meant to pause
+  // while you're scrolled away from the tail.
+  const wasNearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 40;
   pre.innerHTML = filtered.length ? filtered.map(renderLine).join('\n') : '(no matching log lines)';
-  if (!skipAutoScroll && document.getElementById('auto-scroll').checked) pre.scrollTop = pre.scrollHeight;
+  if (!skipAutoScroll && document.getElementById('auto-scroll').checked && wasNearBottom) {
+    pre.scrollTop = pre.scrollHeight;
+  }
   updateAckBadge();
 }
 
@@ -632,11 +639,24 @@ async function fetchLogs() {
   try {
     const resp = await fetch(`/api/modules/${MODULE}/logs/?lines=300`);
     const data = await resp.json();
-    rawLogLines = data.lines;
-    noMoreOlderLogs = false;
-    setOlderStatus('');
+    rawLogLines = mergeWithOlderHistory(data.lines || []);
     renderLogs();
   } catch (_) {}
+}
+
+// A plain refresh only ever asks for the newest N lines, so replacing rawLogLines outright
+// would throw away anything fetchOlderLogs() prepended by scrolling up. Splice the fresh
+// tail back onto whatever older history is still present (matched by exact line content,
+// same dedup key fetchOlderLogs uses); if the tail has scrolled past that anchor entirely
+// (e.g. after a restart/log rotation) there's nothing reliable to stitch to, so drop it.
+function mergeWithOlderHistory(newest) {
+  if (rawLogLines.length && newest.length) {
+    const cutoffIdx = rawLogLines.indexOf(newest[0]);
+    if (cutoffIdx >= 0) return rawLogLines.slice(0, cutoffIdx).concat(newest);
+  }
+  noMoreOlderLogs = false;
+  setOlderStatus('');
+  return newest;
 }
 
 // ── Load older logs on scroll-to-top ────────────────────────────────────────────
