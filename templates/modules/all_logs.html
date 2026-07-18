@@ -63,10 +63,6 @@
     <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch">
     <label class="form-check-label ms-2" for="auto-refresh">Auto-refresh</label>
   </div>
-  <div class="form-check form-switch d-flex align-items-center mb-0">
-    <input class="form-check-input" type="checkbox" id="auto-scroll" role="switch">
-    <label class="form-check-label ms-2" for="auto-scroll">Auto-scroll</label>
-  </div>
 </div>
 <small class="text-muted d-block mb-1">Click a line to set start time · Shift+click to set end time</small>
 <div id="log-older-status" class="text-muted small mb-1" style="min-height:1.2em"></div>
@@ -184,13 +180,11 @@ function renderLogs(skipAutoScroll) {
   const pre = document.getElementById('log-output');
   // Captured before the re-render, which changes scrollHeight -- otherwise a refresh
   // while reading old logs would always look "near the bottom" of the freshly grown
-  // content and yank the view back down even though auto-scroll is meant to pause
-  // while you're scrolled away from the tail.
+  // content and yank the view back down even though we want to stay put while the
+  // user has scrolled away from the tail.
   const wasNearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 40;
   pre.innerHTML = filtered.length ? filtered.map(renderLine).join('\n') : '(no matching log lines)';
-  if (!skipAutoScroll && document.getElementById('auto-scroll').checked && wasNearBottom) {
-    pre.scrollTop = pre.scrollHeight;
-  }
+  if (!skipAutoScroll && wasNearBottom) pre.scrollTop = pre.scrollHeight;
   updateAckBadge();
 }
 
@@ -309,13 +303,11 @@ function clearTimeFilter() {
 
 // ── Persist log settings (shared keys with the per-module Logs tab) ─────────────
 const autoRefreshEl = document.getElementById('auto-refresh');
-const autoScrollEl  = document.getElementById('auto-scroll');
 const filterEl      = document.getElementById('log-filter');
 const timeStartEl   = document.getElementById('time-start');
 const timeEndEl     = document.getElementById('time-end');
 
 autoRefreshEl.checked = localStorage.getItem('log-auto-refresh') !== 'false';
-autoScrollEl.checked  = localStorage.getItem('log-auto-scroll')  !== 'false';
 filterEl.value        = localStorage.getItem('log-filter')       || '';
 timeStartEl.value     = localStorage.getItem('log-time-start')   || '';
 timeEndEl.value       = localStorage.getItem('log-time-end')     || '';
@@ -324,9 +316,6 @@ autoRefreshEl.addEventListener('change', function () {
   localStorage.setItem('log-auto-refresh', this.checked);
   clearInterval(logTimer);
   if (this.checked) logTimer = setInterval(fetchLogs, 3000);
-});
-autoScrollEl.addEventListener('change', function () {
-  localStorage.setItem('log-auto-scroll', this.checked);
 });
 filterEl.addEventListener('input', function () {
   localStorage.setItem('log-filter', this.value);
