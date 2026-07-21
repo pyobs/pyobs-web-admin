@@ -1,10 +1,10 @@
-# pyobs-web-admin: journald-backed module logging — v1.2 (2026-07-17)
+# pyobs-web-admin: journald-backed module logging — v1.3 (2026-07-21)
 
 ## Status
 
-**Implemented and verified live end-to-end** (Work Plan items 1–4; see Progress log). Only
-one item is still open: whether a genuinely group-less service account is ever actually
-denied journal read access (see Open questions) — this doesn't block using the feature.
+**Implemented and verified live end-to-end** (Work Plan items 1–4; see Progress log), including
+the previously-open group-less service-account case — see v1.3 in Progress log and the updated
+Cross-user journal read permission section. No open items remain.
 v1.1 adds auto-detection: `PYOBS_LOG_BACKEND`'s default changed from `"file"` to `None`
 (auto-detect from `pyobsd`'s own config file), not a Work Plan item originally but a real gap
 closed after `pyobsd` (`pyobs-core`'s daemon manager) turned out to read its own global
@@ -55,6 +55,22 @@ seek/offset to page with — see Progress log and Design's "Pagination: load old
   service account negative case. Doesn't block shipping this, since it's a deploy-time
   permissions question, not a code-correctness one.
 - **Done — v1.1, auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own config, not a Work Plan item.** Requested after learning `pyobsd` (`pyobs-core`'s daemon manager, `pyobs-core/pyobs/cli/pyobsd.py` — read directly, this app has no dependency on it) has its own global config file with a `syslog` key it already uses to decide `--syslog` vs. not, when it starts modules itself. `modules/services.py`: `_pyobsd_config()` reads that same file — the exact candidate-path list and "first one found wins" order as `pyobs-core/pyobs/cli/_cli.py`'s `CLI._load_config` (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, `/opt/pyobs/storage/pyobs.yaml`) — and returns just its `pyobsd` section, `{}` if no candidate exists or the file is malformed (never raises; this is a convenience auto-detection, not something that should ever break a page load). `_log_backend()` (the single existing choke point every journald-vs-file branch already called through) now checks `settings.PYOBS_LOG_BACKEND` first — if explicitly set (`"file"`/`"journald"`), that always wins, so any deployment that already configured this keeps working completely unchanged — and only falls through to `"journald" if _pyobsd_config().get("syslog") else "file"` when it's unset. `pyobs_web_admin/settings.py`'s default changed from `"file"` to `None` specifically so `_log_backend()` can tell "admin explicitly wants file" apart from "never configured, please auto-detect" — before this change every installation implicitly had an explicit `"file"` value (Django's settings loading always supplies the module-level default), so auto-detection could never have activated for anyone. Tests: `PyobsdAutoDetectTests` in `modules/tests.py` (10 tests — no-candidate-file, reads the `pyobsd` section, missing section, malformed YAML doesn't crash, first-existing-candidate-wins, auto-detects both `journald` and `file`, explicit setting overrides auto-detection in both directions), all patching `services._PYOBSD_CONFIG_CANDIDATES` to a controlled temp path rather than touching the real candidate locations, so results don't depend on whatever happens to exist on the machine running the tests. Verified live via `manage.py shell` against the real settings module (not just the test harness): confirmed a real temp `pyobs.yaml` with `syslog: true`/`false` correctly auto-detects `journald`/`file` when `PYOBS_LOG_BACKEND` is unset, and confirmed an explicit `PYOBS_LOG_BACKEND` setting overrides auto-detection even when the file disagrees. `python manage.py test modules` — 122/122 passing, no regressions (this repo's real `local_settings.py` already has `PYOBS_LOG_BACKEND = "journald"` set explicitly, confirmed to still take priority over auto-detection unchanged).
+- **Done — v1.3, resolves the last Open question with a real group-less negative case.**
+  `iagvtsrv`'s `pyobs` account (the dedicated, minimal-privilege system user that actually runs
+  pyobs modules there — not a repurposed admin/dev account like `husser` in the v1.2 test) ran
+  `journalctl SYSLOG_IDENTIFIER=pyobs -n 50 --no-pager` directly and got journald's own hint —
+  `"You are currently not seeing messages from other users and the system. Users in groups
+  'adm', 'systemd-journal' can see all messages."` — followed by `-- No entries --`, despite
+  matching entries existing in the journal. Confirms what the v1.2 test could only infer:
+  a genuinely group-less account **is** denied, the same way pyobs-web-admin's own
+  `_journalctl_json()` would be if the account running it lacks the grant — and since that
+  function never checks `returncode`/`stderr` (see Read layer section), the denial surfaces
+  only as silently empty logs in the UI, not an error. Fix applied: `usermod -aG systemd-journal
+  pyobs` (see "Which group to grant" below for why `systemd-journal` over `adm`), then a fresh
+  login/session for the new group membership to take effect — confirmed this closes the gap.
+  **Whichever account actually runs `pyobs-web-admin` itself needs the same grant**, not
+  necessarily the `pyobs` account — they're commonly different, and only the process calling
+  `journalctl` (the Django app's own process) needs journal read access.
 - **Done — v1.2, load older logs on scroll-to-top, not a Work Plan item.** Requested after using the log windows and finding no way to see anything further back than the last `lines` tail without bumping the (capped-at-2000) `lines` param and re-fetching everything. `modules/services.py`: `get_logs`/`get_all_logs` gained an optional `before: datetime | None`, threaded through to `_get_logs_journald`/`_get_all_logs_journald`, which add `--until "<before> UTC"` ahead of the existing `-n <lines>` flag — the same temporal-boundary idiom `_get_log_stats_journald`'s `--since` already established, just the other direction. `journalctl -n <lines> --until <ts>` returns the last `<lines>` entries at or before `<ts>`, exactly "the page of older lines immediately before what's already on screen." The file backend (`tail -n`) has no seek/offset concept to page further back with, so a `before` request there returns `[]` rather than silently re-serving the same tail on every scroll — this makes "load older logs" a journald-only capability for now, not a half-working one on file-backed installs (see Design's new "Pagination: load older logs" section for the full read/API/frontend design). `modules/views.py`: `api_logs`/`api_all_logs` gained a `before` query param (`_parse_before`, same tolerant ISO-8601-with-`Z` parsing `api_all_log_stats`'s `acks` param already uses), forwarded unchanged to a remote hub host's own identical endpoint. `templates/modules/detail.html` (Logs tab) and `all_logs.html` (kept in lockstep, as this app's existing convention already does for these two near-identical log windows) both gained a `scroll` listener on `#log-output` that fetches older lines once scrolled within 40px of the top, deduping the response against already-loaded lines by exact string match (`--until` is inclusive, so the boundary line can reappear) and restoring scroll offset by the exact height delta added, so the line under the viewport doesn't jump. Tests: new cases in `GetLogsJournaldTests`/`GetAllLogsTests` (`before` → `--until`; file backend returns `[]` for a `before` request) and a new `ApiLogsBeforeParamTests` class (`_parse_before` parsing, `api_logs`/`api_all_logs` forwarding) in `modules/tests.py`. `python manage.py test modules` — 176/176 passing, no regressions. **Verified live** with a fake `journalctl` (a small Python script placed ahead of the real binary on `PATH`, since this dev box has no real journald) serving 1000 synthetic timestamped entries for a scratch module: both the per-module Logs tab and the fleet-wide All Logs page correctly paged all the way back to entry 0 across repeated scroll-to-top interactions, with no duplicate lines, correct scroll-position preservation, and "Beginning of available logs" shown exactly once the journal was exhausted, no console errors.
 
 ## Motivation
@@ -291,25 +307,29 @@ Debian/Ubuntu-family systems is granted read access to `/var/log/journal` by a d
 `systemd-journal` afterward (`usermod -aG` + `sg systemd-journal -c ...`) also succeeded, as
 expected, but was redundant given `adm` already worked.
 
-**What's still not verified: a truly group-less account.** `husser` is this box's original
-setup-time admin account — it already had `adm` (and `sudo`) before this test ever started, so
-this only shows "`adm` is sufficient," not "some grant is always necessary." A dedicated,
-minimal-privilege service account created specifically to run `pyobs-web-admin` (the realistic
-production case, not a workstation's admin user) would very likely start in *neither* `adm`
-nor `systemd-journal` — that negative case (does `journalctl` actually deny/empty-out for such
-an account, and does adding it to either group fix it) was never observed here, so the
-deploy-step recommendation (add the account to `adm` or `systemd-journal`) is still the right
-defensive guidance, just not proven necessary by this test the way it would be by an actual
-denial-then-fix pair — same honesty gap `DEV_EJABBERD_INTEGRATION.md`'s own cross-host ACL test
-flagged ("tested from the same machine... strong evidence, not absolute proof").
+**v1.3 closes the gap: a truly group-less account, observed for real.** `iagvtsrv`'s `pyobs`
+account is exactly the case `husser` couldn't test — a dedicated, minimal-privilege service
+account, in neither `adm` nor `systemd-journal`, created specifically to run pyobs modules (not
+a repurposed admin/dev account). It ran `journalctl SYSLOG_IDENTIFIER=pyobs -n 50 --no-pager`
+directly and was denied — journald's own hint named the two groups, then `-- No entries --`
+despite real matching entries existing. `usermod -aG systemd-journal pyobs` plus a fresh
+session fixed it. So both halves are now confirmed on real accounts: `adm` is sufficient
+(`husser`, v1.2) and the group-less case really is denied, not just theoretically deniable
+(`pyobs`, v1.3).
+
+**Which group to grant: prefer `systemd-journal` over `adm`.** Both work — `adm` grants journal
+access as a side effect of a Debian/Ubuntu default `systemd-tmpfiles` ACL rule on
+`/var/log/journal`, not because it's designed for that. Its actual scope is much broader: read
+access to `/var/log/*` generally, plus the general "can read most system logs" role Debian has
+handed it historically. `systemd-journal` is the purpose-built group for exactly one thing —
+journal read access — nothing more. For a dedicated minimal-privilege account like `pyobs`,
+granting only what's actually needed argues for `systemd-journal`; reach for `adm` only if the
+account already needs (or already has) broader `/var/log` access for some other reason, in
+which case adding `systemd-journal` too would be redundant.
 
 ## Open questions
 
-- **Whether a genuinely group-less service account is ever actually denied.** This box's test
-  account already had `adm`, which turned out sufficient — so the negative case (a fresh
-  account in neither `adm` nor `systemd-journal`) remains unobserved. Testing this precisely
-  needs a real minimal-privilege account, not a repurposed admin/dev account like the one
-  available on this box.
+None remaining as of v1.3.
 
 ## Work Plan
 
@@ -328,10 +348,11 @@ flagged ("tested from the same machine... strong evidence, not absolute proof").
   Progress log.
 - [x] `get_log_stats()`: journald branch via `--since "-24h" -o json --no-pager`, counting
   directly from each entry's `PRIORITY` field.
-- [ ] **Deferred — deploy-time, not code.** Test the group-less-account negative case for
-  real (see Open questions) — a genuine minimal-privilege service account, not a repurposed
-  admin/dev account — then document whatever grant is actually required (`adm` or
-  `systemd-journal`) as a deploy step.
+- [x] **v1.3, not in the original plan.** Tested the group-less-account negative case for real
+  (`iagvtsrv`'s `pyobs` account, genuinely minimal-privilege, not a repurposed admin/dev
+  account) — confirmed denial, confirmed the fix, and documented `systemd-journal` as the
+  preferred grant over `adm` — see Progress log and the updated "Cross-user journal read
+  permission" section.
 - [x] `README.md`: document `PYOBS_LOG_BACKEND` once the above is implemented and verified
   live end-to-end — not before, matching this repo's existing practice of not documenting a
   setting in README before it's actually consumed by code (see `DEV_EJABBERD_INTEGRATION.md`'s
