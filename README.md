@@ -174,7 +174,12 @@ PYOBS_RUN_DIR = "/opt/pyobs/run"            # directory for PID files
 PYOBS_LOG_LEVEL = "info"                    # log level passed to pyobs on start
 PYOBS_LOG_BACKEND = None                    # None (default): auto-detect from pyobsd's own
                                              # config; "file" or "journald" to override --
-                                             # see dev-docs/DEV_JOURNALD_LOGS.md
+                                             # see dev-docs/DEV_JOURNALD_LOGS.md. If "journald":
+                                             # the account running pyobs-web-admin needs journal
+                                             # read access — `usermod -aG systemd-journal
+                                             # <account>` (preferred over `adm`, see the doc's
+                                             # "Which group to grant") — otherwise logs come
+                                             # back silently empty, no error.
 
 # Packages page (optional — see Package management section)
 PYOBS_MANAGED_PACKAGES = []                 # e.g. ["pyobs-core[full]", "my-custom-driver",

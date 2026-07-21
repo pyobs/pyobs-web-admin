@@ -303,6 +303,14 @@ async function toggleActive(name, action, btn) {
   }
 }
 
+// Stagger start/restart so modules don't all hit hardware/network at once; stop stays
+// instant since shutting down has no equivalent contention concern.
+const CONTROL_ALL_STAGGER_MS = 1000;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function controlAll(action) {
   const btnId = `btn-${action}-all`;
   const btn = document.getElementById(btnId);
@@ -311,12 +319,18 @@ async function controlAll(action) {
     const modules = [...document.querySelectorAll('.status-badge[data-module]')]
       .map(el => el.dataset.module)
       .filter(name => (action === 'stop') || !name.startsWith('_'));
-    await Promise.all(modules.map(name =>
-      fetch(`/api/modules/${name}/${action}/`, {
-        method: 'POST',
-        headers: {'X-CSRFToken': getCsrfToken()},
-      })
-    ));
+    const call = name => fetch(`/api/modules/${name}/${action}/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken()},
+    });
+    if (action === 'stop') {
+      await Promise.all(modules.map(call));
+    } else {
+      for (let i = 0; i < modules.length; i++) {
+        if (i > 0) await sleep(CONTROL_ALL_STAGGER_MS);
+        await call(modules[i]);
+      }
+    }
     await refreshAllStatuses();
   } finally {
     btn.disabled = false;
