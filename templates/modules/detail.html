@@ -534,6 +534,14 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// Extracts the level from the "[LEVEL]" tag right after the timestamp -- NOT a substring
+// search over the whole line, since exception class names like "FocusError" or "ValueError"
+// contain "ERROR" and would otherwise misclassify plain INFO lines.
+function parseLogLevel(line) {
+  const m = line.match(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\s*\[(\w+)\]/);
+  return m ? m[1].toUpperCase() : null;
+}
+
 function parseLogTime(line) {
   const m = line.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
   // Log lines carry a naive UTC timestamp (no zone marker) -- append "Z" so this is parsed
@@ -563,8 +571,8 @@ function getAckTime() {
 }
 
 function isNewIssue(line) {
-  const u = line.toUpperCase();
-  if (!(u.includes('CRITICAL') || u.includes('ERROR') || u.includes('WARNING'))) return false;
+  const level = parseLogLevel(line);
+  if (!(level === 'CRITICAL' || level === 'ERROR' || level === 'WARNING')) return false;
   const t = parseLogTime(line);
   return t ? t > getAckTime() : false;
 }
@@ -583,12 +591,12 @@ function updateAckBadge() {
 
 function renderLine(line) {
   const e = escapeHtml(line);
-  const u = line.toUpperCase();
+  const level = parseLogLevel(line);
   const t = parseLogTime(line);
   const styles = [];
-  if      (u.includes('CRITICAL') || u.includes('ERROR')) styles.push('color:#ff6b6b');
-  else if (u.includes('WARNING'))                          styles.push('color:#ffa94d');
-  else if (u.includes('DEBUG'))                            styles.push('color:#868e96');
+  if      (level === 'CRITICAL' || level === 'ERROR') styles.push('color:#ff6b6b');
+  else if (level === 'WARNING')                        styles.push('color:#ffa94d');
+  else if (level === 'DEBUG')                           styles.push('color:#868e96');
   if (t) styles.push('cursor:pointer');
   const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
   const timeAttr  = t ? ` data-time="${t.toISOString()}"` : '';
