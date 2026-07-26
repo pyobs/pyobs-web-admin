@@ -1260,6 +1260,21 @@ class LogBackendJournaldTests(unittest.TestCase):
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
+    def test_get_logs_deactivated_module_queries_active_name(self, mock_run):
+        # pyobs-core strips leading underscores off the config filename stem before stamping
+        # PYOBS_MODULE (f3b20627, "log _test.yaml configs as test"), so a deactivated module
+        # started manually for testing ("_startup.yaml") is tagged "startup" in the journal --
+        # the query must match that, not the raw "_startup" name.
+        mock_run.return_value = self._mock_result("")
+        services.get_logs("_startup", lines=300)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=startup",
+             "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
     def test_get_logs_filter_str_applies_after_reconstruction(self, mock_run):
         mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
         lines = services.get_logs("camera_verify_test", filter_str="critical")
@@ -1280,6 +1295,17 @@ class LogBackendJournaldTests(unittest.TestCase):
         self.assertEqual(counts, {"DEBUG": 1, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 1})
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--since", "-24h", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_log_stats_deactivated_module_queries_active_name(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        services.get_log_stats("_startup")
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=startup",
              "--since", "-24h", "-o", "json", "--no-pager"],
             capture_output=True, text=True,
         )
@@ -1415,6 +1441,17 @@ class GetAllLogsTests(unittest.TestCase):
         services.get_all_logs(names=["camera", "telescope"], lines=50)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera", "PYOBS_MODULE=telescope",
+             "-n", "50", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_names_normalizes_deactivated_names_to_active_form(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        services.get_all_logs(names=["camera", "_startup"], lines=50)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera", "PYOBS_MODULE=startup",
              "-n", "50", "-o", "json", "--no-pager"],
             capture_output=True, text=True,
         )
