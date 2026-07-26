@@ -600,11 +600,12 @@ def restart_module(name: str) -> tuple[bool, str]:
 
 # ── journald log backend ─────────────────────────────────────────────────────
 #
-# Matched on the exact `name` passed in here, not `_active_name(name)`: pyobs's own
-# PYOBS_MODULE field is Path(config).stem, and start_module() invokes pyobs against
-# `{name}.yaml` verbatim (leading underscore and all, for a deactivated module) -- unlike
-# the file backend's log filename, which is deliberately normalized via _active_name() so
-# toggling activation doesn't rename the log file. See DEV_JOURNALD_LOGS.md, Current state.
+# Matched on _active_name(name), not the exact `name` passed in here: pyobs-core (as of
+# f3b20627, "log _test.yaml configs as test") strips leading underscores off the config
+# filename stem before stamping PYOBS_MODULE, so a deactivated module started manually for
+# testing (`_startup.yaml`) is tagged "startup" in the journal, not "_startup" -- the same
+# normalization the file backend's log filename already applies via _active_name(). See
+# DEV_JOURNALD_LOGS.md, Current state.
 
 def _journalctl_json(args: list[str]) -> list[dict]:
     result = subprocess.run(["journalctl", *args, "-o", "json", "--no-pager"], capture_output=True, text=True)
@@ -639,7 +640,7 @@ def _journal_entry_to_line(entry: dict) -> str:
 
 
 def _get_logs_journald(name: str, lines: int, before: datetime | None = None) -> list[str]:
-    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}"]
+    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_active_name(name)}"]
     if before is not None:
         args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
@@ -657,7 +658,7 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
         since_arg = f"{cutoff:%Y-%m-%d %H:%M:%S} UTC"
     else:
         since_arg = "-24h"
-    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={name}", "--since", since_arg])
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_active_name(name)}", "--since", since_arg])
     for entry in entries:
         level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
         if level:
@@ -700,7 +701,7 @@ def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime
     if names:
         # Repeating a field name is journalctl's own OR syntax -- combined with the
         # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
-        args += [f"PYOBS_MODULE={n}" for n in names]
+        args += [f"PYOBS_MODULE={_active_name(n)}" for n in names]
     if before is not None:
         args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
