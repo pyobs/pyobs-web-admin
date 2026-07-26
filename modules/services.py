@@ -256,6 +256,37 @@ def list_pyobs_packages() -> list[dict]:
     )
 
 
+_PYOBS_CORE_VERSION_CACHE_TTL = 60  # seconds
+_pyobs_core_version_cache: tuple[float, Version | None] | None = None
+
+
+def pyobs_core_version() -> Version | None:
+    """Installed pyobs-core version in the same environment PYOBS_EXEC runs pyobs in (see
+    _pip_exec) -- the version actually producing the logs/behavior this app has to interpret,
+    which can differ from host to host and drift out of step with pyobs-web-admin's own
+    release. None if pyobs-core isn't listed there or its version string doesn't parse.
+
+    Cached for _PYOBS_CORE_VERSION_CACHE_TTL: this sits on the journald log-fetch hot path
+    (polled every few seconds per open browser tab), and list_pyobs_packages() shells out to
+    pip each call -- far too slow to redo on every request. Tests that need a fresh read
+    should reset the module-level `_pyobs_core_version_cache` global directly.
+    """
+    global _pyobs_core_version_cache
+    now = time.time()
+    if _pyobs_core_version_cache is not None and now - _pyobs_core_version_cache[0] < _PYOBS_CORE_VERSION_CACHE_TTL:
+        return _pyobs_core_version_cache[1]
+    version = None
+    for p in list_pyobs_packages():
+        if _normalize_package_name(p["name"]) == "pyobs-core":
+            try:
+                version = Version(p["version"])
+            except InvalidVersion:
+                version = None
+            break
+    _pyobs_core_version_cache = (now, version)
+    return version
+
+
 def _is_prerelease(version: str) -> bool:
     try:
         return Version(version).is_prerelease
@@ -600,12 +631,30 @@ def restart_module(name: str) -> tuple[bool, str]:
 
 # ── journald log backend ─────────────────────────────────────────────────────
 #
-# Matched on _active_name(name), not the exact `name` passed in here: pyobs-core (as of
-# f3b20627, "log _test.yaml configs as test") strips leading underscores off the config
-# filename stem before stamping PYOBS_MODULE, so a deactivated module started manually for
-# testing (`_startup.yaml`) is tagged "startup" in the journal, not "_startup" -- the same
-# normalization the file backend's log filename already applies via _active_name(). See
+# pyobs-core 2.0.0.dev41 (commit f3b20627, "log _test.yaml configs as test") started
+# stripping leading underscores off the config filename stem before stamping PYOBS_MODULE, so
+# a deactivated module started manually for testing (`_startup.yaml`) is tagged "startup" in
+# the journal, not "_startup" -- the same normalization the file backend's log filename
+# already applies via _active_name(). Older pyobs-core still tags the raw name, underscore
+# and all. _journald_module_tag() picks whichever this host's actually-installed pyobs-core
+# does, via pyobs_core_version() -- each host's journal only ever holds entries from its own
+# local pyobs-core install (see api_all_logs' hub delegation: a remote host's logs are always
+# fetched by *that host's own* instance, never read out of its journal directly), so there's
+# no cross-host version mixing to worry about within a single journalctl call. See
 # DEV_JOURNALD_LOGS.md, Current state.
+_PYOBS_CORE_STRIPS_MODULE_UNDERSCORE = Version("2.0.0.dev41")
+
+
+def _journald_module_tag(name: str) -> str:
+    version = pyobs_core_version()
+    # Unknown version (pip lookup failed, pyobs-core not found, ...): assume current
+    # pyobs-core behavior rather than the pre-f3b20627 one, since that's what any fresh
+    # install has -- an operator on a genuinely old pyobs-core should have a resolvable
+    # version already, at which point this falls back correctly.
+    if version is None or version >= _PYOBS_CORE_STRIPS_MODULE_UNDERSCORE:
+        return _active_name(name)
+    return name
+
 
 def _journalctl_json(args: list[str]) -> list[dict]:
     result = subprocess.run(["journalctl", *args, "-o", "json", "--no-pager"], capture_output=True, text=True)
@@ -640,7 +689,7 @@ def _journal_entry_to_line(entry: dict) -> str:
 
 
 def _get_logs_journald(name: str, lines: int, before: datetime | None = None) -> list[str]:
-    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_active_name(name)}"]
+    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}"]
     if before is not None:
         args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
@@ -658,7 +707,7 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
         since_arg = f"{cutoff:%Y-%m-%d %H:%M:%S} UTC"
     else:
         since_arg = "-24h"
-    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_active_name(name)}", "--since", since_arg])
+    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}", "--since", since_arg])
     for entry in entries:
         level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
         if level:
@@ -701,7 +750,7 @@ def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime
     if names:
         # Repeating a field name is journalctl's own OR syntax -- combined with the
         # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
-        args += [f"PYOBS_MODULE={_active_name(n)}" for n in names]
+        args += [f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]
     if before is not None:
         args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
