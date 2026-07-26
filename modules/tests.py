@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 from django.test import RequestFactory, override_settings
+from packaging.version import Version
 
 from modules import ejabberd, services, views
 from modules.middleware import HubTokenMiddleware
@@ -1232,6 +1234,17 @@ class LogBackendJournaldTests(unittest.TestCase):
         '"__SEQNUM_ID":"ca9321337fb04d6f8365c542905d8539","_GID":"1000"}'
     )
 
+    def setUp(self):
+        # Seed the version-detection cache so _journald_module_tag() doesn't shell out to
+        # `pip list` on every call (which would both slow these tests down and add an
+        # unmocked-shaped extra subprocess.run call, breaking assert_called_once_with below) --
+        # see JournaldModuleTagVersionGateTests for coverage of the version-gating itself.
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev41"))
+        self.addCleanup(self._clear_version_cache)
+
+    def _clear_version_cache(self):
+        services._pyobs_core_version_cache = None
+
     def _mock_result(self, stdout):
         result = MagicMock()
         result.stdout = stdout
@@ -1404,6 +1417,99 @@ class LogBackendJournaldTests(unittest.TestCase):
             mock_run.assert_not_called()
 
 
+# ── journald PYOBS_MODULE version gating ─────────────────────────────────────
+
+class JournaldModuleTagVersionGateTests(unittest.TestCase):
+    """_journald_module_tag() picks the pre- or post-f3b20627 PYOBS_MODULE tagging convention
+    based on the installed pyobs-core version, so a fleet running a mix of old and new
+    pyobs-core across hosts still matches each host's own journal correctly."""
+
+    def tearDown(self):
+        services._pyobs_core_version_cache = None
+
+    def test_old_version_keeps_raw_name(self):
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev40"))
+        self.assertEqual(services._journald_module_tag("_startup"), "_startup")
+
+    def test_new_version_strips_underscore(self):
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev41"))
+        self.assertEqual(services._journald_module_tag("_startup"), "startup")
+
+    def test_version_above_cutoff_strips_underscore(self):
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0"))
+        self.assertEqual(services._journald_module_tag("_startup"), "startup")
+
+    def test_unknown_version_defaults_to_new_behavior(self):
+        # pip lookup failed, or pyobs-core isn't listed at all -- assume current pyobs-core
+        # behavior rather than the old one, since that's what any fresh install has.
+        services._pyobs_core_version_cache = (time.time(), None)
+        self.assertEqual(services._journald_module_tag("_startup"), "startup")
+
+    def test_name_without_leading_underscore_is_unaffected_either_way(self):
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev40"))
+        self.assertEqual(services._journald_module_tag("camera"), "camera")
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev41"))
+        self.assertEqual(services._journald_module_tag("camera"), "camera")
+
+
+class PyobsCoreVersionTests(unittest.TestCase):
+    """pyobs_core_version() reads the installed pyobs-core version from the same environment
+    PYOBS_EXEC runs pyobs in (via list_pyobs_packages' `pip list --format=json`), cached so
+    it's not re-shelled-out-to on every journald request."""
+
+    def setUp(self):
+        services._pyobs_core_version_cache = None
+        self.addCleanup(self._clear_version_cache)
+
+    def _clear_version_cache(self):
+        services._pyobs_core_version_cache = None
+
+    def _mock_pip_list(self, packages):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = json.dumps(packages)
+        return result
+
+    @patch("modules.services.subprocess.run")
+    def test_parses_installed_pyobs_core_version(self, mock_run):
+        mock_run.return_value = self._mock_pip_list(
+            [{"name": "pyobs-core", "version": "2.0.0.dev41"}, {"name": "pyobs-iagvt", "version": "1.0.0"}]
+        )
+        self.assertEqual(services.pyobs_core_version(), Version("2.0.0.dev41"))
+
+    @patch("modules.services.subprocess.run")
+    def test_name_matched_pep503_normalized(self, mock_run):
+        mock_run.return_value = self._mock_pip_list([{"name": "pyobs_core", "version": "1.9.0"}])
+        self.assertEqual(services.pyobs_core_version(), Version("1.9.0"))
+
+    @patch("modules.services.subprocess.run")
+    def test_pyobs_core_not_installed_returns_none(self, mock_run):
+        mock_run.return_value = self._mock_pip_list([{"name": "pyobs-iagvt", "version": "1.0.0"}])
+        self.assertIsNone(services.pyobs_core_version())
+
+    @patch("modules.services.subprocess.run")
+    def test_unparseable_version_string_returns_none(self, mock_run):
+        mock_run.return_value = self._mock_pip_list([{"name": "pyobs-core", "version": "not-a-version"}])
+        self.assertIsNone(services.pyobs_core_version())
+
+    @patch("modules.services.subprocess.run")
+    def test_result_is_cached_not_requeried_within_ttl(self, mock_run):
+        mock_run.return_value = self._mock_pip_list([{"name": "pyobs-core", "version": "2.0.0.dev41"}])
+        first = services.pyobs_core_version()
+        second = services.pyobs_core_version()
+        self.assertEqual(first, second)
+        mock_run.assert_called_once()
+
+    @patch("modules.services.subprocess.run")
+    def test_stale_cache_entry_is_requeried(self, mock_run):
+        services._pyobs_core_version_cache = (
+            time.time() - services._PYOBS_CORE_VERSION_CACHE_TTL - 1,
+            Version("1.0.0"),
+        )
+        mock_run.return_value = self._mock_pip_list([{"name": "pyobs-core", "version": "2.0.0.dev41"}])
+        self.assertEqual(services.pyobs_core_version(), Version("2.0.0.dev41"))
+
+
 # ── get_all_logs ──────────────────────────────────────────────────────────────
 
 class GetAllLogsTests(unittest.TestCase):
@@ -1417,6 +1523,14 @@ class GetAllLogsTests(unittest.TestCase):
         '"__REALTIME_TIMESTAMP":"1783144499000000","CODE_FILE":"telescope.py","CODE_LINE":"2",'
         '"MESSAGE":"telescope telescope.py:2 from telescope"}'
     )
+
+    def setUp(self):
+        # See LogBackendJournaldTests.setUp -- same reasoning.
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev41"))
+        self.addCleanup(self._clear_version_cache)
+
+    def _clear_version_cache(self):
+        services._pyobs_core_version_cache = None
 
     def _mock_result(self, stdout):
         result = MagicMock()
