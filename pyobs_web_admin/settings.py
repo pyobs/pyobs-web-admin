@@ -114,15 +114,31 @@ PYOBS_MANAGED_PACKAGES = []
 PYOBS_LOG_BACKEND = None
 
 # Git-backed configuration -- see dev-docs/PLAN-git-config2.md. Off by default: set these to
-# enable Git as a persistence backend for configuration files. See local_settings.py.example
-# for commented examples of all four settings. The repository is cloned via sparse checkout
-# so only the configured subpath is checked out.
-# PYOBS_CONFIG_GIT_ENABLED – whether to enable Git support (default False)
-# PYOBS_CONFIG_GIT_ROOT   – directory where .git lives (clone destination)
-# PYOBS_CONFIG_GIT_REPO   – remote URL to clone from
-# PYOBS_CONFIG_GIT_BRANCH – branch to use during clone/sparse-checkout
+# enable Git as a persistence backend for configuration files. Configuration writes are
+# staged automatically after saves, and the Git card on the dashboard shows status.
+# The repository is cloned via sparse checkout so only the configured subpath is checked out.
+#
+# PYOBS_CONFIG_GIT_ROOT   – directory that contains .git. Set explicitly so the repository
+#                          location is decoupled from PYOBS_CONFIG_DIR (which may point
+#                          inside a sparse checkout). Must remain constant after cloning.
+# PYOBS_CONFIG_GIT_SUBPATH – sparse checkout path kept inside PYOBS_CONFIG_GIT_ROOT, e.g.
+#                          "sites/obs1". The working tree inside this directory is where
+#                          pyobs reads and writes its YAML files via PYOBS_CONFIG_DIR.
+#
+# Expected layout after clone (with repo root "/opt/pyobs/config", subpath "sites/obs1"):
+#
+#   /opt/pyobs/config/           # PYOBS_CONFIG_GIT_ROOT (contains .git)
+#   ├── .git/
+#   ├── sites/
+#   │   └── obs1/
+#   │       ├── modules/
+#   │       └── comm.yaml
+#
+#   /opt/pyobs/config/sites/obs1 # PYOBS_CONFIG_DIR (pyobs reads/writes here)
+#
 PYOBS_CONFIG_GIT_ENABLED = False
 PYOBS_CONFIG_GIT_ROOT = ""
+PYOBS_CONFIG_GIT_SUBPATH = ""
 PYOBS_CONFIG_GIT_REPO = ""
 PYOBS_CONFIG_GIT_BRANCH = "main"
 

@@ -49,18 +49,26 @@ Use Git as a persistence backend, not as a Git client.
 Repository layout:
 
 ```
-/opt/pyobs/config/
+/opt/pyobs/config/         ← PYOBS_CONFIG_GIT_ROOT (clone destination, contains .git)
     .git/
     sites/
-        obs1/
+        obs1/              ← sparse checkout keeps this subtree
+            modules/
+            comm.yaml      ← reads/writes via PYOBS_CONFIG_DIR
+
+/opt/pyobs/config/sites/obs1  ← PYOBS_CONFIG_DIR (target of pyobs)
 ```
 
 ```
-PYOBS_CONFIG_DIR = /opt/pyobs/config/sites/obs1
-PYOBS_CONFIG_GIT_SUBPATH = sites/obs1
+PYOBS_CONFIG_GIT_ROOT     = /opt/pyobs/config
+PYOBS_CONFIG_GIT_SUBPATH  = sites/obs1
+PYOBS_CONFIG_DIR          = /opt/pyobs/config/sites/obs1
 ```
 
-Repository root is computed from `PYOBS_CONFIG_DIR` and `PYOBS_CONFIG_GIT_SUBPATH`.
+`PYOBS_CONFIG_GIT_ROOT` is explicit and constant — not derived from `PYOBS_CONFIG_DIR`
+or `PYOBS_CONFIG_GIT_SUBPATH`. This decouples the repository layout from the pyobs
+configuration directory, preventing recursive clones when `PYOBS_CONFIG_DIR` changes
+after the initial clone.
 
 Rules:
 
@@ -77,6 +85,7 @@ Rules:
 Add settings:
 
 - PYOBS_CONFIG_GIT_ENABLED
+- PYOBS_CONFIG_GIT_ROOT
 - PYOBS_CONFIG_GIT_REPO
 - PYOBS_CONFIG_GIT_SUBPATH
 - PYOBS_CONFIG_GIT_BRANCH

@@ -2254,8 +2254,27 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
-        ok, msg = services.git_clone()
+        with patch("modules.services._config_dir", return_value=clone_target):
+            ok, msg = services.git_clone()
         self.assertTrue(ok)
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_config_dir_not_in_repo(self, mock_repo_dir, mock_run, mock_settings):
+        clone_target = self.tmp_path / "repo-root"
+        mock_repo_dir.return_value = clone_target
+        config_dir = self.tmp_path / "other" / "config"
+        config_dir.mkdir(parents=True)
+        mock_run.return_value = self._mock_result()
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        with patch("modules.services._config_dir", return_value=config_dir):
+            ok, msg = services.git_clone()
+        self.assertFalse(ok)
+        self.assertIn("not inside", msg)
 
     # --- git_fetch ---
 

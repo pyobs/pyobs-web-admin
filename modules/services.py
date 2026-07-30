@@ -57,6 +57,26 @@ def _git_root() -> Path | None:
     return Path(root) if root else None
 
 
+def _git_config_ok() -> tuple[bool, str]:
+    """Validate that PYOBS_CONFIG_DIR is inside the configured git root.
+
+    Returns (success, error_message). If git is disabled the check is a no-op.
+    """
+    if not _git_enabled():
+        return True, ""
+    repo_dir = _git_repo_dir()
+    config_dir = _config_dir()
+    try:
+        config_dir.relative_to(repo_dir)
+    except ValueError:
+        return False, (
+            f"PYOBS_CONFIG_DIR ({config_dir}) is not inside "
+            f"PYOBS_CONFIG_GIT_ROOT ({repo_dir}). "
+            "Configuration files must reside within the git repository tree."
+        )
+    return True, ""
+
+
 def _git_subpath() -> str:
     return getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
 
@@ -1033,6 +1053,10 @@ def git_clone() -> tuple[bool, str]:
         return False, "Repository already exists"
     if repo_dir.exists() and any(repo_dir.iterdir()):
         return False, "Repository root is not empty"
+
+    ok, msg = _git_config_ok()
+    if not ok:
+        return False, msg
 
     repo_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
