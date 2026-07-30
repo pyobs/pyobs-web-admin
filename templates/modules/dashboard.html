@@ -71,6 +71,42 @@
   {% endif %}
 </div>
 
+{% if git_enabled %}
+<div class="card border-secondary mb-3" id="git-card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>
+      <i class="bi bi-git"></i> Git
+    </span>
+    <div class="d-flex gap-2">
+      <button class="btn btn-sm btn-outline-secondary" onclick="gitClone()" id="btn-git-clone" style="display:none">
+        <i class="bi bi-download"></i> Clone
+      </button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="gitFetch()" id="btn-git-refresh" style="display:none">
+        <i class="bi bi-arrow-repeat"></i> Refresh
+      </button>
+      <button class="btn btn-sm btn-outline-primary" onclick="gitPull()" id="btn-git-pull" style="display:none">
+        <i class="bi bi-cloud-arrow-down"></i> Pull
+      </button>
+      <button class="btn btn-sm btn-outline-primary" onclick="gitPush()" id="btn-git-push" style="display:none">
+        <i class="bi bi-cloud-arrow-up"></i> Push
+      </button>
+    </div>
+  </div>
+  <div class="card-body py-2">
+    <div class="d-flex align-items-center gap-3 flex-wrap" id="git-status-row" style="display:none">
+      <span id="git-branch" class="badge bg-secondary"></span>
+      <span id="git-commit" class="text-secondary small"></span>
+      <span id="git-datetime" class="text-secondary small"></span>
+      <span id="git-ahead" class="text-success small"></span>
+      <span id="git-behind" class="text-danger small"></span>
+      <span id="git-dirty" class="badge bg-danger" style="display:none">Dirty</span>
+    </div>
+    <div id="git-loading" class="text-center text-secondary py-2"><i class="bi bi-hourglass-split"></i> Loading…</div>
+    <div id="git-error" class="alert alert-danger d-none py-2 small"></div>
+  </div>
+</div>
+{% endif %}
+
 <table class="table table-hover align-middle mb-0" id="module-grid">
   <colgroup>
     <col style="width:1%">       <!-- status -->
@@ -456,5 +492,105 @@ refreshStatusesThenEjabberd();
 setInterval(refreshStatusesThenEjabberd, 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
+
+// ── Git-backed config ─────────────────────────────────────────────────────────────
+
+async function gitFetchStatus() {
+  try {
+    const resp = await fetch("{% url 'api_git_status' %}");
+    const data = await resp.json();
+    if (data.error || !data.branch) {
+      gitShowClone();
+      return;
+    }
+    gitShowStatus(data);
+  } catch (_) {
+    gitShowClone();
+  }
+}
+
+function gitShowClone() {
+  document.getElementById('git-loading').classList.add('d-none');
+  document.getElementById('git-status-row').style.display = 'none';
+  var btn = document.getElementById('btn-git-clone');
+  btn.style.display = '';
+  document.getElementById('btn-git-refresh').style.display = 'none';
+  document.getElementById('btn-git-pull').style.display = 'none';
+  document.getElementById('btn-git-push').style.display = 'none';
+}
+
+function gitShowStatus(data) {
+  document.getElementById('git-loading').classList.add('d-none');
+  document.getElementById('git-status-row').style.display = 'flex';
+  document.getElementById('btn-git-clone').style.display = 'none';
+  document.getElementById('btn-git-refresh').style.display = '';
+  document.getElementById('btn-git-pull').style.display = '';
+  document.getElementById('btn-git-push').style.display = '';
+
+  document.getElementById('git-branch').textContent = data.branch;
+
+  var commit = document.getElementById('git-commit');
+  commit.textContent = data.last_commit ? '📝 ' + data.last_commit : '';
+
+  var dt = document.getElementById('git-datetime');
+  dt.textContent = data.last_commit_time || '';
+
+  if (data.ahead > 0) {
+    document.getElementById('git-ahead').textContent = '↑' + data.ahead;
+    document.getElementById('git-ahead').style.display = '';
+  } else {
+    document.getElementById('git-ahead').style.display = 'none';
+  }
+
+  if (data.behind > 0) {
+    document.getElementById('git-behind').textContent = '↓' + data.behind;
+    document.getElementById('git-behind').style.display = '';
+  } else {
+    document.getElementById('git-behind').style.display = 'none';
+  }
+
+  var dirty = document.getElementById('git-dirty');
+  if (data.dirty) {
+    dirty.style.display = '';
+    dirty.textContent = data.staged ? 'Staged' : 'Dirty';
+  } else {
+    dirty.style.display = 'none';
+  }
+}
+
+async function gitAction(url, btn, label) {
+  btn.disabled = true;
+  var original = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> ' + label;
+  try {
+    var resp = await fetch(url, {
+      method: 'POST',
+      headers: {'X-CSRFToken': getCsrfToken()},
+    });
+    var data = await resp.json();
+    if (!data.success) {
+      var errBox = document.getElementById('git-error');
+      errBox.textContent = data.message || 'Operation failed';
+      errBox.classList.remove('d-none');
+      setTimeout(function() { errBox.classList.add('d-none'); }, 5000);
+      btn.disabled = false;
+      btn.innerHTML = original;
+      return;
+    }
+    gitFetchStatus();
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
+function gitClone() { gitAction("{% url 'api_git_clone' %}", document.getElementById('btn-git-clone'), 'Cloning…'); }
+function gitFetch() { gitAction("{% url 'api_git_fetch' %}", document.getElementById('btn-git-refresh'), 'Fetching…'); }
+function gitPull() { gitAction("{% url 'api_git_pull' %}", document.getElementById('btn-git-pull'), 'Pulling…'); }
+function gitPush() { gitAction("{% url 'api_git_push' %}", document.getElementById('btn-git-push'), 'Pushing…'); }
+
+if ({{ git_enabled|lower }}) {
+  gitFetchStatus();
+}
 </script>
 {% endblock %}

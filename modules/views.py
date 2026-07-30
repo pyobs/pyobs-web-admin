@@ -99,6 +99,7 @@ def dashboard(request):
     return render(request, "modules/dashboard.html", {
         "modules": modules,
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
+        "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
     })
 
 
@@ -1385,3 +1386,56 @@ def api_ejabberd_users_kick(request, user: str):
         return JsonResponse({"success": True})
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+# ── Git-backed config API ───────────────────────────────────────────────────────
+
+def api_git_status(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", "/api/git/status/")
+    return JsonResponse(services.git_status())
+
+
+@require_POST
+def api_git_clone(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/clone/")
+    success, message = services.git_clone()
+    if success:
+        return JsonResponse({"success": True, "message": message})
+    return JsonResponse({"success": False, "message": message}, status=409)
+
+
+@require_POST
+def api_git_fetch(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/fetch/")
+    success, message = services.git_fetch()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_pull(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/pull/")
+    success, message = services.git_pull()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_push(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/push/")
+    success, message = services.git_push()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)

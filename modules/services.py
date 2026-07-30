@@ -47,6 +47,70 @@ def _pyobs_exec() -> str:
     return settings.PYOBS_EXEC
 
 
+def _git_enabled() -> bool:
+    return getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
+
+
+def _git_subpath() -> str:
+    return getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
+
+
+def _git_repo_dir() -> Path:
+    """Compute the Git repository root.
+
+    If PYOBS_CONFIG_GIT_SUBPATH is set, the repo root is the parent of the subpath.
+    Otherwise the repo root is PYOBS_CONFIG_DIR.
+    """
+    if _git_enabled():
+        subpath = _git_subpath()
+        if subpath:
+            parts = Path(subpath).parts
+            return _config_dir().parents[len(parts) - 1]
+    return _config_dir()
+
+
+def _git_run(args: list[str]) -> tuple[bool, str]:
+    """Run a git command inside the repository root.
+
+    Returns (success, output). If git is not enabled returns (True, "").
+    """
+    if not _git_enabled():
+        return True, ""
+    repo_dir = _git_repo_dir()
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+    except FileNotFoundError:
+        return False, "git executable not found"
+    except subprocess.TimeoutExpired:
+        return False, "git command timed out (60s)"
+
+
+def _git_auto_stage() -> None:
+    """Best-effort stage all changes after a config write. Never raises."""
+    if not _git_enabled():
+        return
+    try:
+        subprocess.run(
+            ["git", "add", "-A", str(_config_dir())],
+            cwd=_git_repo_dir(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def _log_level() -> str:
     return getattr(settings, "PYOBS_LOG_LEVEL", "info")
 
@@ -889,6 +953,7 @@ def save_shared_config(name: str, content: str) -> None:
     if not f.exists():
         raise FileNotFoundError(f"Shared config not found: {f}")
     f.write_text(content)
+    _git_auto_stage()
 
 
 def get_config(name: str) -> str | None:
@@ -905,6 +970,7 @@ def save_config(name: str, content: str) -> None:
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_file}")
     config_file.write_text(content)
+    _git_auto_stage()
 
 
 _NEW_MODULE_TEMPLATE = (
@@ -925,6 +991,207 @@ def create_module(name: str) -> None:
         raise FileExistsError(f"Module {name!r} already exists")
     _config_dir().mkdir(parents=True, exist_ok=True)
     config_file.write_text(_NEW_MODULE_TEMPLATE)
+    _git_auto_stage()
+
+
+# ── Git-backed config ───────────────────────────────────────────────────────────
+
+
+def git_repo_exists() -> bool:
+    """Check whether a Git working tree exists at the configured repository root."""
+    return (_git_repo_dir() / ".git").is_dir()
+
+
+def git_clone() -> tuple[bool, str]:
+    """Clone the configured repository and set up sparse checkout.
+
+    Refuses to clone if the repository root already contains a Git working tree.
+
+    Returns (success, message).
+    """
+    repo_dir = _git_repo_dir()
+    repo = settings.PYOBS_CONFIG_GIT_REPO
+    branch = getattr(settings, "PYOBS_CONFIG_GIT_BRANCH", "main")
+    subpath = _git_subpath()
+
+    if not repo:
+        return False, "PYOBS_CONFIG_GIT_REPO is not set"
+    if git_repo_exists():
+        return False, "Repository already exists"
+    if repo_dir.exists() and any(repo_dir.iterdir()):
+        return False, "Repository root is not empty"
+
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--branch", branch, repo, str(repo_dir)],
+            cwd=repo_dir.parent,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+    except FileNotFoundError:
+        return False, "git executable not found"
+    except subprocess.TimeoutExpired:
+        return False, "git clone timed out (120s)"
+
+    if result.returncode != 0:
+        return False, (result.stdout + result.stderr).strip()
+
+    if subpath:
+        sp = subprocess.run(
+            ["git", "sparse-checkout", "init", "--cone"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if sp.returncode != 0:
+            import shutil
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            return False, sp.stderr.strip()
+
+        ss = subprocess.run(
+            ["git", "sparse-checkout", "set", subpath],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if ss.returncode != 0:
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            return False, ss.stderr.strip()
+
+    return True, "Repository cloned successfully"
+
+
+def git_fetch() -> tuple[bool, str]:
+    """Fetch remote updates without modifying the working tree."""
+    return _git_run(["fetch", "--tags"])
+
+
+def git_status() -> dict:
+    """Get detailed repository status."""
+    status: dict[str, object] = {
+        "branch": "",
+        "remote": "origin",
+        "ahead": 0,
+        "behind": 0,
+        "clean": True,
+        "dirty": False,
+        "modified": False,
+        "staged": False,
+        "modified_files": [],
+        "staged_files": [],
+        "last_commit": "",
+        "last_commit_time": "",
+    }
+
+    success, branch = _git_run(["rev-parse", "--abbrev-ref", "HEAD"])
+    if success and branch:
+        status["branch"] = branch.strip()
+        local = branch.strip()
+        remote_ref = f"origin/{local}"
+        success, ahead = _git_run(["rev-list", "--count", f"{local}..{remote_ref}"])
+        success, behind = _git_run(["rev-list", "--count", f"{remote_ref}..{local}"])
+        try:
+            status["ahead"] = int(ahead.strip())
+        except (ValueError, AttributeError):
+            pass
+        try:
+            status["behind"] = int(behind.strip())
+        except (ValueError, AttributeError):
+            pass
+
+    success, hash_out = _git_run(["rev-parse", "--short", "HEAD"])
+    if success and hash_out:
+        status["last_commit"] = hash_out.strip()
+
+    success, time_out = _git_run(["log", "-1", "--format=%ci"])
+    if success and time_out:
+        status["last_commit_time"] = time_out.strip()
+
+    success, porcelain = _git_run(["status", "--porcelain=v2", "--branch"])
+    if success and porcelain:
+        modified_files: list[str] = []
+        staged_files: list[str] = []
+        has_untracked = False
+        for line in porcelain.splitlines():
+            if line.startswith("##") or not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            # v2 format: <index> <index_status><worktree_status> <flags> <more_fields...> <filename>
+            # x = index status (parts[1]), y = worktree status (parts[2])
+            x, y = parts[1], parts[2]
+            filepath = parts[-1].strip('"').strip("'")
+            if not filepath:
+                continue
+            if x != " ":
+                staged_files.append(filepath)
+                status["staged"] = True
+            if x != " " and y != "U":
+                status["modified"] = True
+                modified_files.append(filepath)
+            if (x == "?" or (x == " " and y == "?")):
+                has_untracked = True
+
+        status["modified_files"] = modified_files
+        status["staged_files"] = staged_files
+        status["dirty"] = bool(status["staged"] or status["modified"] or has_untracked)
+        status["clean"] = not status["dirty"]
+
+    return status
+
+
+def git_stage_all() -> tuple[bool, str]:
+    """Stage all changes."""
+    return _git_run(["add", "-A", str(_config_dir())])
+
+
+def git_commit(message: str) -> tuple[bool, str]:
+    """Commit all staged changes."""
+    if not message:
+        message = "Auto-commit config changes before pull"
+    return _git_run(["commit", "-m", message, "--allow-empty"])
+
+
+def git_pull() -> tuple[bool, str]:
+    """Auto-commit pending changes, then pull with autostash (if configured).
+
+    When GIT_PULL_AUTO_STASH is True (default), auto-commits staged changes first,
+    then performs a regular pull. When False, falls back to `git pull --autostash`
+    which stashes and re-applies uncommitted changes.
+    """
+    _auto_stash = getattr(settings, "GIT_PULL_AUTO_STASH", True)
+    if _auto_stash:
+        # Auto-commit staged changes
+        success, output = git_commit("Auto-commit config changes before pull")
+        if not success:
+            # "nothing to commit" is fine — proceed to pull
+            lower = output.lower()
+            if "nothing to commit" not in lower and "no changes" not in lower:
+                return False, output
+    return _git_run(["pull", "--autostash"])
+
+
+def git_push() -> tuple[bool, str]:
+    """Push current branch to origin."""
+    return _git_run(["push"])
+
+
+def git_init_if_needed() -> tuple[bool, str]:
+    """Lazy init: clone if the repository doesn't exist yet."""
+    if not git_repo_exists():
+        return git_clone()
+    return True, "Repository already exists"
 
 
 # ── ACL resolution ────────────────────────────────────────────────────────────
