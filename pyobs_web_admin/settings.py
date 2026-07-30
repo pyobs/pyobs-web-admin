@@ -113,6 +113,19 @@ PYOBS_MANAGED_PACKAGES = []
 # override auto-detection.
 PYOBS_LOG_BACKEND = None
 
+# Git-backed configuration -- see dev-docs/PLAN-git-config2.md. Off by default: set these to
+# enable Git as a persistence backend for configuration files. See local_settings.py.example
+# for commented examples of all four settings. The repository is cloned via sparse checkout
+# so only the configured subpath is checked out.
+# PYOBS_CONFIG_GIT_ENABLED – whether to enable Git support (default False)
+# PYOBS_CONFIG_GIT_ROOT   – directory where .git lives (clone destination)
+# PYOBS_CONFIG_GIT_REPO   – remote URL to clone from
+# PYOBS_CONFIG_GIT_BRANCH – branch to use during clone/sparse-checkout
+PYOBS_CONFIG_GIT_ENABLED = False
+PYOBS_CONFIG_GIT_ROOT = ""
+PYOBS_CONFIG_GIT_REPO = ""
+PYOBS_CONFIG_GIT_BRANCH = "main"
+
 # ejabberd integration -- see DEV_EJABBERD_INTEGRATION.md. Off by default: not every fleet has
 # ejabberd co-located. EJABBERD_HOST names whichever host in HUB_HOSTS (or "localhost")
 # actually runs it -- every other host proxies through to that one rather than talking to

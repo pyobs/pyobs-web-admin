@@ -170,6 +170,7 @@
   </tbody>
 </table>
 {% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -577,7 +578,13 @@ async function gitAction(url, btn, label) {
       btn.innerHTML = original;
       return;
     }
-    gitFetchStatus();
+    btn.disabled = false;
+    btn.innerHTML = original;
+    if (url.indexOf('clone') !== -1) {
+      window.location.reload();
+    } else {
+      gitFetchStatus();
+    }
   } catch (e) {
     btn.disabled = false;
     btn.innerHTML = original;

@@ -71,3 +71,18 @@ HUB_HOSTS = []
 # EJABBERD_DOMAIN = "your-xmpp-domain"
 # EJABBERD_API_URL = "http://127.0.0.1:5281/api"
 # EJABBERDCTL = "ejabberdctl"
+
+# Git-backed configuration -- see dev-docs/PLAN-git-config2.md. Off by default: set this to
+# True to enable Git as a persistence backend for configuration files. All config files are
+# version-controlled, staged automatically after writes, and visible in the dashboard Git
+# card. The repository is cloned via sparse checkout so only the configured subpath is
+# checked out.
+#
+# PYOBS_CONFIG_GIT_ROOT is the directory that contains .git — it is the clone destination.
+# The subpath controls what the sparse checkout keeps inside that directory.
+#
+# PYOBS_CONFIG_GIT_ENABLED = True
+# PYOBS_CONFIG_GIT_ROOT = "/opt/pyobs/config"
+# PYOBS_CONFIG_GIT_REPO = "https://git.example.org/pyobs/config.git"
+# PYOBS_CONFIG_GIT_BRANCH = "main"
+# PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"

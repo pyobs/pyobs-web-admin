@@ -2120,18 +2120,21 @@ class GitConfigTests(unittest.TestCase):
     @patch("modules.services.settings")
     def test_git_disabled_returns_false(self, mock_settings):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = False
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         self.assertFalse(services._git_enabled())
 
     @patch("modules.services.settings")
     def test_git_enabled_returns_true(self, mock_settings):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         self.assertTrue(services._git_enabled())
 
     @patch("modules.services.settings")
     def test_git_repo_dir_without_subpath(self, mock_settings):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config"
         self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
 
@@ -2139,6 +2142,7 @@ class GitConfigTests(unittest.TestCase):
     def test_git_repo_dir_with_subpath(self, mock_settings):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config/sites/obs1"
         self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
 
@@ -2146,8 +2150,17 @@ class GitConfigTests(unittest.TestCase):
     def test_git_repo_dir_with_nested_subpath(self, mock_settings):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "cluster/phase/obs1/config"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/cluster/phase/obs1/config"
         self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs"))
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_uses_explicit_root(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = "/opt/pyobs/config"
+        mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config/sites/obs1"
+        self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
 
     # --- auto-stage ---
 
@@ -2210,6 +2223,7 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_REPO = ""
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         ok, msg = services.git_clone()
         self.assertFalse(ok)
         self.assertIn("is not set", msg)
@@ -2224,6 +2238,7 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         ok, msg = services.git_clone()
         self.assertFalse(ok)
         self.assertIn("already exists", msg)
@@ -2238,6 +2253,7 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         ok, msg = services.git_clone()
         self.assertTrue(ok)
 
@@ -2268,6 +2284,7 @@ class GitConfigTests(unittest.TestCase):
     def test_git_pull_auto_stash_off(self, mock_settings, mock_enabled):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.GIT_PULL_AUTO_STASH = False
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         with patch("modules.services.subprocess.run") as mock_run:
             mock_run.side_effect = [self._mock_result()]
             with patch("modules.services._git_repo_dir", return_value=self.tmp_path):

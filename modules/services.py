@@ -51,16 +51,25 @@ def _git_enabled() -> bool:
     return getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
 
 
+def _git_root() -> Path | None:
+    """Return the explicit git root, or None if not set."""
+    root = getattr(settings, "PYOBS_CONFIG_GIT_ROOT", "")
+    return Path(root) if root else None
+
+
 def _git_subpath() -> str:
     return getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
 
 
 def _git_repo_dir() -> Path:
-    """Compute the Git repository root.
+    """Return the directory where .git lives.
 
-    If PYOBS_CONFIG_GIT_SUBPATH is set, the repo root is the parent of the subpath.
-    Otherwise the repo root is PYOBS_CONFIG_DIR.
+    Uses the explicit PYOBS_CONFIG_GIT_ROOT when set; otherwise
+    derives it from ``PYOBS_CONFIG_DIR`` and ``PYOBS_CONFIG_GIT_SUBPATH``.
     """
+    explicit = _git_root()
+    if explicit:
+        return explicit
     if _git_enabled():
         subpath = _git_subpath()
         if subpath:
@@ -999,13 +1008,17 @@ def create_module(name: str) -> None:
 
 def git_repo_exists() -> bool:
     """Check whether a Git working tree exists at the configured repository root."""
+    if not _git_enabled():
+        return False
     return (_git_repo_dir() / ".git").is_dir()
 
 
 def git_clone() -> tuple[bool, str]:
     """Clone the configured repository and set up sparse checkout.
 
-    Refuses to clone if the repository root already contains a Git working tree.
+    The clone target is the repository root (`_git_repo_dir()`), never
+    `PYOBS_CONFIG_DIR`. Refuses to clone if that directory already
+    contains a Git working tree or non-empty contents.
 
     Returns (success, message).
     """
@@ -1028,7 +1041,7 @@ def git_clone() -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["git", "clone", "--branch", branch, repo, str(repo_dir)],
-            cwd=repo_dir.parent,
+            cwd=str(repo_dir.parent),
             capture_output=True,
             text=True,
             timeout=120,
