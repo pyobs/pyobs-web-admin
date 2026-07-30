@@ -2276,6 +2276,23 @@ class GitConfigTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("not inside", msg)
 
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    @patch("modules.services._git_repo_dir")
+    @patch("modules.services._config_dir")
+    def test_git_run_config_dir_not_in_repo(
+        self, mock_config_dir, mock_repo_dir, mock_enabled, mock_run
+    ):
+        config_dir = self.tmp_path / "other" / "config"
+        config_dir.mkdir(parents=True)
+        repo_dir = self.tmp_path / "repo-root"
+        mock_repo_dir.return_value = repo_dir
+        mock_config_dir.return_value = config_dir
+        ok, msg = services._git_run(["status"])
+        self.assertFalse(ok)
+        self.assertIn("not inside", msg)
+        mock_run.assert_not_called()
+
     # --- git_fetch ---
 
     @patch("modules.services.subprocess.run")
@@ -2306,7 +2323,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         with patch("modules.services.subprocess.run") as mock_run:
             mock_run.side_effect = [self._mock_result()]
-            with patch("modules.services._git_repo_dir", return_value=self.tmp_path):
+            with patch("modules.services._git_repo_dir", return_value=self.tmp_path), \
+                 patch("modules.services._config_dir", return_value=self.tmp_path):
                 services.git_pull()
                 calls = [c[0][0] for c in mock_run.call_args_list]
                 self.assertEqual(len([c for c in calls if "commit" in c]), 0)

@@ -105,6 +105,9 @@ def _git_run(args: list[str]) -> tuple[bool, str]:
     """
     if not _git_enabled():
         return True, ""
+    ok, msg = _git_config_ok()
+    if not ok:
+        return False, msg
     repo_dir = _git_repo_dir()
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"

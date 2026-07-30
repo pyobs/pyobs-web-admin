@@ -17,6 +17,7 @@ staticfiles/
 
 # IDE
 .idea/
+.claude/
 
 # Sphinx docs
 .doc-build/
