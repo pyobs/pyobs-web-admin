@@ -134,10 +134,12 @@
           <i class="bi bi-journal-text" style="font-size:0.8rem"></i>
           Logs
         </a>
+        {% if acl_matrix_enabled %}
         <a href="{% url 'acl_matrix' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_acl_matrix %}active{% endif %}">
           <i class="bi bi-shield-lock" style="font-size:0.8rem"></i>
           ACL Matrix
         </a>
+        {% endif %}
         {% if ejabberd_enabled %}
         <a href="{% url 'xmpp_users' %}" class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_xmpp_users %}active{% endif %}">
           <i class="bi bi-people-fill" style="font-size:0.8rem"></i>

@@ -41,5 +41,6 @@ def sidebar_modules(request):
         # which takes precedence over this processor when both provide it.
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
         "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
+        "acl_matrix_enabled": getattr(settings, "PYOBS_CONFIG_ACL_MATRIX_ENABLED", False),
     }
 

@@ -98,3 +98,7 @@ HUB_HOSTS = []
 # PYOBS_CONFIG_GIT_REPO = "https://git.example.org/pyobs/config.git"
 # PYOBS_CONFIG_GIT_BRANCH = "main"
 # PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"
+
+# ACL Matrix -- fleet-wide view of which module can call which (see /acl/).
+# Uncomment to enable the page and sidebar entry.
+# PYOBS_CONFIG_ACL_MATRIX_ENABLED = True

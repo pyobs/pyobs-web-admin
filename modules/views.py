@@ -311,6 +311,8 @@ def all_logs(request):
 
 
 def acl_matrix(request):
+    if not getattr(settings, "PYOBS_CONFIG_ACL_MATRIX_ENABLED", False):
+        raise Http404
     # Aggregates across every configured hub host (see DEV_ACL_MATRIX.md, "Hub mode
     # interaction") regardless of which host is currently "active" in the session --
     # unlike the rest of this app's hub-mode views, this page's whole point is to show
