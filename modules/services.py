@@ -1175,6 +1175,7 @@ def git_status() -> dict:
         modified_files: list[str] = []
         new_files: list[str] = []
         deleted_files: list[str] = []
+        subpath = _git_subpath()
         for line in porcelain.splitlines():
             if not line.strip() or line.startswith("#") or line.startswith("##"):
                 continue
@@ -1182,7 +1183,16 @@ def git_status() -> dict:
             if len(parts) < 3:
                 continue
             x, y = parts[1], parts[2]
-            filepath = parts[-1].strip('"').strip("'")
+            raw_path = parts[-1].strip('"').strip("'")
+            if not raw_path:
+                continue
+            # Strip the git subpath prefix so paths are relative to _config_dir()
+            filepath = raw_path
+            if subpath and subpath != "/":
+                sep = os.sep
+                prefix = subpath + sep
+                if filepath == subpath or filepath.startswith(prefix):
+                    filepath = filepath[len(subpath):].lstrip(sep)
             if not filepath:
                 continue
             # y ? = untracked → "new"
