@@ -2097,3 +2097,297 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         mock_get_all_logs.assert_called_once_with(
             ["camera"], lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
         )
+
+# ── Git-backed config ────────────────────────────────────────────────────────────────
+
+class GitConfigTests(unittest.TestCase):
+    """Tests for Git-backed config helpers."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _mock_result(self, stdout="", stderr="", returncode=0):
+        result = MagicMock()
+        result.stdout = stdout
+        result.stderr = stderr
+        result.returncode = returncode
+        return result
+
+    # --- configuration discovery ---
+
+    @patch("modules.services.settings")
+    def test_git_disabled_returns_false(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = False
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        self.assertFalse(services._git_enabled())
+
+    @patch("modules.services.settings")
+    def test_git_enabled_returns_true(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        self.assertTrue(services._git_enabled())
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_without_subpath(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config"
+        self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_with_subpath(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config/sites/obs1"
+        self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_with_nested_subpath(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "cluster/phase/obs1/config"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/cluster/phase/obs1/config"
+        self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs"))
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_uses_explicit_root(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = "/opt/pyobs/config"
+        mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config/sites/obs1"
+        self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
+
+    # --- auto-stage ---
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=False)
+    def test_git_auto_stage_does_nothing_when_disabled(self, mock_enabled, mock_run):
+        services._git_auto_stage()
+        mock_run.assert_not_called()
+
+    # --- git_run ---
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=False)
+    def test_git_run_disabled_returns_true(self, mock_enabled, mock_run):
+        ok, out = services._git_run(["status"])
+        self.assertTrue(ok)
+        self.assertEqual(out, "")
+        mock_run.assert_not_called()
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_run_passes_env(self, mock_enabled, mock_run):
+        mock_run.return_value = self._mock_result("master\n")
+        services._git_run(["rev-parse", "--abbrev-ref", "HEAD"])
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        self.assertEqual(call_kwargs["capture_output"], True)
+        self.assertEqual(call_kwargs["text"], True)
+        self.assertEqual(call_kwargs["timeout"], 60)
+        self.assertIn("GIT_TERMINAL_PROMPT", call_kwargs["env"])
+
+    # --- git_repo_exists ---
+
+    @patch("modules.services._git_enabled", return_value=False)
+    def test_git_repo_exists_false_when_disabled(self, mock_enabled):
+        self.assertFalse(services.git_repo_exists())
+
+    @patch("modules.services._git_repo_dir")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_repo_exists_no_git(self, mock_enabled, mock_repo_dir):
+        mock_repo_dir.return_value = self.tmp_path / "not-a-repo"
+        self.assertFalse(services.git_repo_exists())
+
+    @patch("modules.services._git_repo_dir")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_repo_exists_has_git(self, mock_enabled, mock_repo_dir):
+        repo = self.tmp_path / "test-repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        mock_repo_dir.return_value = repo
+        self.assertTrue(services.git_repo_exists())
+
+    # --- git_clone ---
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_missing_settings(self, mock_repo_dir, mock_run, mock_settings):
+        mock_repo_dir.return_value = self.tmp_path / "clone-target"
+        mock_settings.PYOBS_CONFIG_GIT_REPO = ""
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        ok, msg = services.git_clone()
+        self.assertFalse(ok)
+        self.assertIn("is not set", msg)
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_already_exists(self, mock_repo_dir, mock_run, mock_settings):
+        clone_target = self.tmp_path / "clone-target"
+        mock_repo_dir.return_value = clone_target
+        (clone_target / ".git").mkdir(parents=True, exist_ok=True)
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        ok, msg = services.git_clone()
+        self.assertFalse(ok)
+        self.assertIn("already exists", msg)
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_success(self, mock_repo_dir, mock_run, mock_settings):
+        clone_target = self.tmp_path / "clone-target"
+        mock_repo_dir.return_value = clone_target
+        mock_run.return_value = self._mock_result()
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        with patch("modules.services._config_dir", return_value=clone_target):
+            ok, msg = services.git_clone()
+        self.assertTrue(ok)
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_config_dir_not_in_repo(self, mock_repo_dir, mock_run, mock_settings):
+        clone_target = self.tmp_path / "repo-root"
+        mock_repo_dir.return_value = clone_target
+        config_dir = self.tmp_path / "other" / "config"
+        config_dir.mkdir(parents=True)
+        mock_run.return_value = self._mock_result()
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        with patch("modules.services._config_dir", return_value=config_dir):
+            ok, msg = services.git_clone()
+        self.assertFalse(ok)
+        self.assertIn("not inside", msg)
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    @patch("modules.services._git_repo_dir")
+    @patch("modules.services._config_dir")
+    def test_git_run_config_dir_not_in_repo(
+        self, mock_config_dir, mock_repo_dir, mock_enabled, mock_run
+    ):
+        config_dir = self.tmp_path / "other" / "config"
+        config_dir.mkdir(parents=True)
+        repo_dir = self.tmp_path / "repo-root"
+        mock_repo_dir.return_value = repo_dir
+        mock_config_dir.return_value = config_dir
+        ok, msg = services._git_run(["status"])
+        self.assertFalse(ok)
+        self.assertIn("not inside", msg)
+        mock_run.assert_not_called()
+
+    # --- git_fetch ---
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_fetch_success(self, mock_enabled, mock_run):
+        mock_run.return_value = self._mock_result()
+        ok, msg = services.git_fetch()
+        self.assertTrue(ok)
+        self.assertIn("fetch", mock_run.call_args[0][0])
+
+    # --- git_pull ---
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_pull(self, mock_enabled, mock_run):
+        ok = self._mock_result()
+        mock_run.side_effect = [ok]
+        ok, _ = services.git_pull()
+        self.assertTrue(ok)
+        self.assertEqual(mock_run.call_count, 1)
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        self.assertTrue(any("pull" in c for c in calls))
+
+    # --- git_status ---
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_status_branch_and_commit(self, mock_enabled, mock_run):
+        def side_effect(args, **kwargs):
+            if "rev-parse" in args and any("abbrev-ref" in a for a in args):
+                return self._mock_result(stdout="main\n")
+            if "rev-parse" in args and any("short" in a for a in args):
+                return self._mock_result(stdout="abc1234\n")
+            if "rev-list" in args:
+                return self._mock_result(stdout="0\n")
+            if "log" in args:
+                return self._mock_result(stdout="2025-01-01 00:00:00\n")
+            if "status" in args:
+                return self._mock_result(stdout="## main...origin/main\n")
+            return self._mock_result()
+
+        mock_run.side_effect = side_effect
+        status = services.git_status()
+        self.assertEqual(status["branch"], "main")
+        self.assertEqual(status["last_commit"], "abc1234")
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_status_unstaged_changes(self, mock_enabled, mock_run):
+        def side_effect(args, **kwargs):
+            if "status" in args:
+                return self._mock_result(stdout="## main\n1 .M N... 100644 100644 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 camera.yaml\n")
+            if "rev-parse" in args and any("abbrev-ref" in a for a in args):
+                return self._mock_result(stdout="main\n")
+            if "rev-parse" in args and any("short" in a for a in args):
+                return self._mock_result(stdout="abc1234\n")
+            if "rev-list" in args:
+                return self._mock_result(stdout="0\n")
+            if "log" in args:
+                return self._mock_result(stdout="2025-01-01 00:00:00\n")
+            return self._mock_result()
+
+        mock_run.side_effect = side_effect
+        status = services.git_status()
+        self.assertTrue(status["dirty"])
+        self.assertIn("camera.yaml", status["modified_files"])
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_status_staged_changes(self, mock_enabled, mock_run):
+        def side_effect(args, **kwargs):
+            if "status" in args:
+                return self._mock_result(stdout="## main\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 3e757656cf36eca53338e520d134963a44f793f8 telescope.yaml\n")
+            if "rev-parse" in args and any("abbrev-ref" in a for a in args):
+                return self._mock_result(stdout="main\n")
+            if "rev-parse" in args and any("short" in a for a in args):
+                return self._mock_result(stdout="abc1234\n")
+            if "rev-list" in args:
+                return self._mock_result(stdout="0\n")
+            if "log" in args:
+                return self._mock_result(stdout="2025-01-01 00:00:00\n")
+            return self._mock_result()
+
+        mock_run.side_effect = side_effect
+        status = services.git_status()
+        self.assertTrue(status["dirty"])
+        self.assertIn("telescope.yaml", status["new_files"])
+
+    # --- auto-stage on save ---
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_save_config_stages_when_git_enabled(self, mock_enabled, mock_run):
+        config_file = self.tmp_path / "test.yaml"
+        config_file.write_text("---\n")
+        with patch("modules.services._config_dir", return_value=self.tmp_path):
+            services.save_config("test", "---\nupdated\n")
+        mock_run.assert_called_once()
