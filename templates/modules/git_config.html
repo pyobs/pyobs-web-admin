@@ -27,7 +27,7 @@
   </div>
 </div>
 {% elif hub_mode %}
-<div class="card border-secondary mb-3" id="git-card">
+<div class="card border-secondary mb-3" id="git-card" style="display:none">
   <div class="card-header d-flex justify-content-between align-items-center py-1">
     <div class="d-flex align-items-center gap-2">
       <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer"></a>
@@ -40,7 +40,7 @@
       <button class="btn btn-sm btn-outline-primary" id="btn-git-pull" title="Pull changes from remote">
         <i class="bi bi-cloud-arrow-down"></i> Pull
       </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Push local changes to remote">
+      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote">
         <i class="bi bi-cloud-arrow-up"></i> Push
       </button>
     </div>
@@ -49,7 +49,6 @@
     <div id="git-status-row" class="d-flex align-items-center gap-3 flex-wrap">
       <span id="git-ahead" class="text-success small" style="display:none"></span>
       <span id="git-behind" class="text-danger small" style="display:none"></span>
-      <span id="git-dirty" class="badge bg-danger px-2 py-1" style="display:none"></span>
     </div>
     <div id="git-error" class="alert alert-danger d-none py-2 small"></div>
     <div id="git-loading" class="text-center text-secondary py-2 small"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>
@@ -59,34 +58,19 @@
   <div class="card-header py-1">
     <span class="fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>Changes</span>
     <span class="badge bg-secondary ms-2" id="git-change-count">0</span>
-    <button class="btn btn-sm btn-outline-success ms-2" onclick="gitStageAll()" id="btn-git-stage" style="font-size:0.75rem;display:none">
-      <i class="bi bi-check2 me-1"></i>Stage All
-    </button>
   </div>
   <div class="card-body py-2 px-3">
-    <div id="git-staged-list">
-      <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
-        <i class="bi bi-circle-fill text-success me-1"></i>Staged
-      </div>
-      <ul class="list-unstyled" id="git-staged-files"></ul>
-    </div>
-    <div id="git-modified-list">
-      <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
-        <i class="bi bi-pencil text-warning me-1"></i>Modified
-      </div>
-      <ul class="list-unstyled" id="git-modified-files"></ul>
-    </div>
+    <ul class="list-unstyled mb-0" id="git-changed-files"></ul>
     <div id="git-clean-msg" class="text-center text-secondary py-2 small" style="display:none">
       <i class="bi bi-check-circle me-1"></i>Working tree is clean
     </div>
   </div>
 </div>
 {% else %}
-<!-- Local mode: server-rendered initial content, JS updates it -->
 <div class="card border-secondary mb-3" id="git-card">
   <div class="card-header d-flex justify-content-between align-items-center py-1">
     <div class="d-flex align-items-center gap-2">
-      <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer"></a>
+      <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer">{{ git_status.branch }}</a>
       {% if git_status.last_commit %}
       <span class="text-secondary small" id="git-last-commit">
         <i class="bi bi-clock me-1"></i>
@@ -102,7 +86,7 @@
       <button class="btn btn-sm btn-outline-primary" id="btn-git-pull" title="Pull changes from remote">
         <i class="bi bi-cloud-arrow-down"></i> Pull
       </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Push local changes to remote">
+      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote">
         <i class="bi bi-cloud-arrow-up"></i> Push
       </button>
     </div>
@@ -119,60 +103,27 @@
         <i class="bi bi-arrow-down-circle me-1"></i>{{ git_status.behind }}
       </span>
       {% endif %}
-      {% if git_status.dirty %}
-      <span class="badge bg-danger px-2 py-1" id="git-dirty" title="{% if git_status.staged %}Staged changes{% else %}Unstaged changes{% endif %}">
-        {% if git_status.staged %}Staged{% else %}Dirty{% endif %}
-        <i class="bi bi-pen ms-1"></i>
-      </span>
-      {% endif %}
     </div>
     <div id="git-error" class="alert alert-danger d-none py-2 small"></div>
   </div>
 </div>
 
 <!-- File list -->
-{% if git_status.staged_files or git_status.modified_files %}
+{% if git_status.modified_files %}
 <div class="card border-secondary mb-3">
   <div class="card-header py-1">
     <span class="fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>Changes</span>
     <span class="badge bg-secondary ms-2" id="git-change-count">{{ git_status.total_changes }}</span>
-    {% if git_status.staged_files %}
-    <button class="btn btn-sm btn-outline-success ms-2" onclick="gitStageAll()" id="btn-git-stage" style="font-size:0.75rem">
-      <i class="bi bi-check2 me-1"></i>Stage All
-    </button>
-    {% endif %}
   </div>
   <div class="card-body py-2 px-3">
-    {% if git_status.staged_files %}
-    <div class="mb-3">
-      <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
-        <i class="bi bi-circle-fill text-success me-1"></i>Staged ({{ git_status.staged_files|length }})
-      </div>
-      <ul class="list-unstyled mb-0">
-        {% for f in git_status.staged_files %}
-        <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
-          <i class="bi bi-circle-fill text-success me-2" style="font-size:0.5rem"></i>
-          <span class="text-break">{{ f }}</span>
-        </li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
-    {% if git_status.modified_files %}
-    <div class="mb-3">
-      <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
-        <i class="bi bi-pencil text-warning me-1"></i>Modified ({{ git_status.modified_files|length }})
-      </div>
-      <ul class="list-unstyled mb-0">
-        {% for f in git_status.modified_files %}
-        <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
-          <i class="bi bi-pen text-warning me-2" style="font-size:0.55rem"></i>
-          <span class="text-break">{{ f }}</span>
-        </li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
+    <ul class="list-unstyled mb-0">
+      {% for f in git_status.modified_files %}
+      <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
+        <i class="bi bi-pen text-warning me-2" style="font-size:0.55rem"></i>
+        <span class="text-break">{{ f }}</span>
+      </li>
+      {% endfor %}
+    </ul>
   </div>
 </div>
 {% else %}
@@ -234,33 +185,19 @@ function gitClone() {
   gitAction("{% url 'api_git_clone' %}", btn, 'Cloning…');
 }
 
-function gitFetch() { gitAction("{% url 'api_git_fetch' %}", document.getElementById('btn-git-refresh'), 'Fetching…'); }
-function gitPull() { gitAction("{% url 'api_git_pull' %}", document.getElementById('btn-git-pull'), 'Pulling…'); }
-function gitPush() { gitAction("{% url 'api_git_push' %}", document.getElementById('btn-git-push'), 'Pushing…'); }
-
-async function gitStageAll() {
-  try {
-    const resp = await fetch("{% url 'api_git_stage' %}", {
-      method: 'POST',
-      headers: {'X-CSRFToken': getCsrfToken()},
-    });
-    const data = await resp.json();
-    if (!data.success) {
-      gitShowError(data.message || 'Stage failed');
-      return;
-    }
-    window.gitFetchStatus();
-  } catch (e) {
-    gitShowError('Request failed: ' + e.message);
-  }
+function gitFetch() {
+  gitAction("{% url 'api_git_fetch' %}", document.getElementById('btn-git-refresh'), 'Fetching…');
+}
+function gitPull() {
+  gitAction("{% url 'api_git_pull' %}", document.getElementById('btn-git-pull'), 'Pulling…');
+}
+function gitPush() {
+  gitAction("{% url 'api_git_push' %}", document.getElementById('btn-git-push'), 'Pushing…');
 }
 
-// Hub mode: server has empty git_status, JS renders everything from scratch
-{% if hub_mode %}
-const HUB_MODE = true;
-{% else %}
-const HUB_MODE = false;
-{% endif %}
+// ── Hub mode (server has empty git_status): JS renders everything ──
+
+const HUB_MODE = {{ hub_mode|lower }};
 
 async function gitFetchStatus() {
   try {
@@ -307,11 +244,11 @@ function _updateButtons(data) {
   }
 
   if (pushBtn) {
-    const canPush = data.ahead > 0 && !data.clean;
-    pushBtn.disabled = !canPush;
-    pushBtn.title = canPush
-      ? `Push ${data.ahead} commit(s) to remote`
-      : data.ahead === 0 ? 'Up to date — nothing to push' : 'Nothing committed to push';
+    const hasChanges = (data.modified_files || []).length > 0 || data.ahead > 0;
+    pushBtn.disabled = !hasChanges;
+    pushBtn.title = pushBtn.disabled
+      ? 'Up to date — nothing to push'
+      : 'Auto-commit and push';
   }
 }
 
@@ -328,7 +265,6 @@ function _updateGitStatus(data) {
 
   const ahead = document.getElementById('git-ahead');
   const behind = document.getElementById('git-behind');
-  const dirty = document.getElementById('git-dirty');
 
   if (ahead && data.ahead > 0) {
     ahead.style.display = '';
@@ -346,51 +282,24 @@ function _updateGitStatus(data) {
     behind.style.display = 'none';
   }
 
-  if (dirty) {
-    if (data.dirty) {
-      dirty.style.display = '';
-      dirty.textContent = data.staged ? 'Staged' : 'Dirty';
-      dirty.title = data.staged ? 'Staged changes' : 'Unstaged changes';
-    } else {
-      dirty.style.display = 'none';
-    }
-  }
-
-  document.getElementById('git-staged-files').innerHTML = '';
-  document.getElementById('git-modified-files').innerHTML = '';
-  document.getElementById('git-staged-list').style.display = data.staged_files?.length ? '' : 'none';
-  document.getElementById('git-modified-list').style.display = data.modified_files?.length ? '' : 'none';
-
-  const btnStage = document.getElementById('btn-git-stage');
-  if (btnStage) {
-    btnStage.style.display = data.staged_files?.length ? '' : 'none';
-  }
-
-  const count = (data.staged_files?.length || 0) + (data.modified_files?.length || 0);
+  const allFiles = data.modified_files || [];
+  const count = allFiles.length;
   document.getElementById('git-change-count').textContent = count;
 
-  if (data.staged_files?.length) {
-    data.staged_files.forEach(f => {
-      const li = document.createElement('li');
-      li.className = 'text-monospace small py-1 border-bottom';
-      li.style.fontSize = '0.8rem';
-      li.innerHTML = '<i class="bi bi-circle-fill text-success me-2" style="font-size:0.5rem"></i><span class="text-break">' + f + '</span>';
-      document.getElementById('git-staged-files').appendChild(li);
-    });
-  }
+  const changedList = document.getElementById('git-changed-files');
+  changedList.innerHTML = '';
 
-  if (data.modified_files?.length) {
-    data.modified_files.forEach(f => {
+  if (count === 0) {
+    document.getElementById('git-clean-msg').style.display = '';
+  } else {
+    document.getElementById('git-clean-msg').style.display = 'none';
+    allFiles.forEach(f => {
       const li = document.createElement('li');
       li.className = 'text-monospace small py-1 border-bottom';
       li.style.fontSize = '0.8rem';
       li.innerHTML = '<i class="bi bi-pen text-warning me-2" style="font-size:0.55rem"></i><span class="text-break">' + f + '</span>';
-      document.getElementById('git-modified-files').appendChild(li);
+      changedList.appendChild(li);
     });
-  }
-
-  if (count === 0) {
-    document.getElementById('git-clean-msg').style.display = '';
   }
 
   window._updateButtons(data);

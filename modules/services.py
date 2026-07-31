@@ -1131,7 +1131,7 @@ def git_fetch() -> tuple[bool, str]:
 
 
 def git_status() -> dict:
-    """Get detailed repository status."""
+    """Get repository status."""
     status: dict[str, object] = {
         "branch": "",
         "remote": "origin",
@@ -1139,10 +1139,7 @@ def git_status() -> dict:
         "behind": 0,
         "clean": True,
         "dirty": False,
-        "modified": False,
-        "staged": False,
         "modified_files": [],
-        "staged_files": [],
         "last_commit": "",
         "last_commit_time": "",
     }
@@ -1173,33 +1170,19 @@ def git_status() -> dict:
 
     success, porcelain = _git_run(["status", "--porcelain=v2", "--branch"])
     if success and porcelain:
-        modified_files: list[str] = []
-        staged_files: list[str] = []
-        has_untracked = False
+        changed_files: list[str] = []
         for line in porcelain.splitlines():
             if not line.strip() or line.startswith("#") or line.startswith("##"):
                 continue
             parts = line.split()
             if len(parts) < 3:
                 continue
-            # v2 format: <index> <index_status><worktree_status> <flags> <more_fields...> <filename>
-            # x = index status (parts[1]), y = worktree status (parts[2])
-            x, y = parts[1], parts[2]
             filepath = parts[-1].strip('"').strip("'")
             if not filepath:
                 continue
-            if x != " ":
-                staged_files.append(filepath)
-                status["staged"] = True
-            if x != " " and y != "U":
-                status["modified"] = True
-                modified_files.append(filepath)
-            if (x == "?" or (x == " " and y == "?")):
-                has_untracked = True
-
-        status["modified_files"] = modified_files
-        status["staged_files"] = staged_files
-        status["dirty"] = bool(status["staged"] or status["modified"] or has_untracked)
+            changed_files.append(filepath)
+        status["modified_files"] = changed_files
+        status["dirty"] = bool(changed_files)
         status["clean"] = not status["dirty"]
 
     return status

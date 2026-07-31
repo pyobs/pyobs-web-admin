@@ -64,5 +64,4 @@ urlpatterns = [
     path("api/git/fetch/", views.api_git_fetch, name="api_git_fetch"),
     path("api/git/pull/", views.api_git_pull, name="api_git_pull"),
     path("api/git/push/", views.api_git_push, name="api_git_push"),
-    path("api/git/stage/", views.api_git_stage, name="api_git_stage"),
 ]
