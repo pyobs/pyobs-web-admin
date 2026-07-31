@@ -26,51 +26,18 @@
     </button>
   </div>
 </div>
-{% elif hub_mode %}
-<div class="card border-secondary mb-3" id="git-card" style="display:none">
-  <div class="card-header d-flex justify-content-between align-items-center py-1">
-    <div class="d-flex align-items-center gap-2">
-      <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer"></a>
-      <span class="text-secondary small" id="git-last-commit"><i class="bi bi-hourglass-split me-1"></i>Loading…</span>
-    </div>
-    <div class="d-flex gap-1">
-      <button class="btn btn-sm btn-outline-secondary" onclick="gitFetch()" id="btn-git-refresh" title="Refresh status from remote">
-        <i class="bi bi-arrow-repeat"></i>
-      </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-pull" title="Pull changes from remote">
-        <i class="bi bi-cloud-arrow-down"></i> Pull
-      </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote">
-        <i class="bi bi-cloud-arrow-up"></i> Push
-      </button>
-    </div>
-  </div>
-  <div class="card-body py-2">
-    <div id="git-status-row" class="d-flex align-items-center gap-3 flex-wrap">
-      <span id="git-ahead" class="text-success small" style="display:none"></span>
-      <span id="git-behind" class="text-danger small" style="display:none"></span>
-    </div>
-    <div id="git-error" class="alert alert-danger d-none py-2 small"></div>
-    <div id="git-loading" class="text-center text-secondary py-2 small"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>
-  </div>
-</div>
-<div class="card border-secondary mb-3" id="git-files-card" style="display:none">
-  <div class="card-header py-1">
-    <span class="fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>Changes</span>
-    <span class="badge bg-secondary ms-2" id="git-change-count">0</span>
-  </div>
-  <div class="card-body py-2 px-3">
-    <ul class="list-unstyled mb-0" id="git-changed-files"></ul>
-    <div id="git-clean-msg" class="text-center text-secondary py-2 small" style="display:none">
-      <i class="bi bi-check-circle me-1"></i>Working tree is clean
-    </div>
-  </div>
-</div>
 {% else %}
-<div class="card border-secondary mb-3" id="git-card">
+<div class="card border-secondary mb-3" id="git-card"
+     data-branch="{{ git_status.branch }}"
+     data-ahead="{{ git_status.ahead }}"
+     data-behind="{{ git_status.behind }}"
+     data-clean="{{ git_status.clean|lower }}"
+     data-last-commit="{{ git_status.last_commit }}"
+     data-last-commit-time="{{ git_status.last_commit_time }}">
   <div class="card-header d-flex justify-content-between align-items-center py-1">
     <div class="d-flex align-items-center gap-2">
-      <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer">{{ git_status.branch }}</a>
+      <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer"
+         {% if git_status.branch %}title="{{ git_status.branch }}"{% endif %}>{{ git_status.branch|default:"—" }}</a>
       {% if git_status.last_commit %}
       <span class="text-secondary small" id="git-last-commit">
         <i class="bi bi-clock me-1"></i>
@@ -83,10 +50,10 @@
       <button class="btn btn-sm btn-outline-secondary" onclick="gitFetch()" id="btn-git-refresh" title="Refresh status from remote">
         <i class="bi bi-arrow-repeat"></i>
       </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-pull" title="Pull changes from remote">
+      <button class="btn btn-sm btn-outline-primary" id="btn-git-pull" title="Pull changes from remote"{% if pull_disabled %} disabled{% endif %}>
         <i class="bi bi-cloud-arrow-down"></i> Pull
       </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote">
+      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote"{% if push_disabled %} disabled{% endif %}>
         <i class="bi bi-cloud-arrow-up"></i> Push
       </button>
     </div>
@@ -108,26 +75,75 @@
   </div>
 </div>
 
-<!-- File list -->
-{% if git_status.modified_files %}
-<div class="card border-secondary mb-3">
+{% if git_status.new_files or git_status.deleted_files or git_status.modified_files %}
+<div class="card border-secondary mb-3" id="git-files-card">
   <div class="card-header py-1">
     <span class="fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>Changes</span>
-    <span class="badge bg-secondary ms-2" id="git-change-count">{{ git_status.total_changes }}</span>
+    <span class="badge bg-secondary ms-2" id="git-change-count">{{ git_change_count }}</span>
   </div>
   <div class="card-body py-2 px-3">
-    <ul class="list-unstyled mb-0">
-      {% for f in git_status.modified_files %}
-      <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
-        <i class="bi bi-pen text-warning me-2" style="font-size:0.55rem"></i>
-        <span class="text-break">{{ f }}</span>
-      </li>
-      {% endfor %}
-    </ul>
+    <div id="git-new-section">
+      {% if git_status.new_files %}
+      <div class="mb-3">
+        <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
+          <i class="bi bi-plus-circle text-info me-1"></i>New ({{ git_status.new_files|length }})
+        </div>
+        <ul class="list-unstyled mb-0" id="git-new-files">
+          {% for f in git_status.new_files %}
+          <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
+            <i class="bi bi-plus-circle text-info me-2" style="font-size:0.55rem"></i>
+            <span class="text-break">{{ f }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% else %}
+      <ul class="list-unstyled mb-0" id="git-new-files" style="display:none"></ul>
+      {% endif %}
+    </div>
+    <div id="git-deleted-section">
+      {% if git_status.deleted_files %}
+      <div class="mb-3">
+        <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
+          <i class="bi bi-trash text-secondary me-1"></i>Deleted ({{ git_status.deleted_files|length }})
+        </div>
+        <ul class="list-unstyled mb-0" id="git-deleted-files">
+          {% for f in git_status.deleted_files %}
+          <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
+            <i class="bi bi-trash text-secondary me-2" style="font-size:0.55rem"></i>
+            <span class="text-break">{{ f }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% else %}
+      <ul class="list-unstyled mb-0" id="git-deleted-files" style="display:none"></ul>
+      {% endif %}
+    </div>
+    <div id="git-modified-section">
+      {% if git_status.modified_files %}
+      <div class="mb-3">
+        <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
+          <i class="bi bi-pencil text-warning me-1"></i>Modified ({{ git_status.modified_files|length }})
+        </div>
+        <ul class="list-unstyled mb-0" id="git-modified-files">
+          {% for f in git_status.modified_files %}
+          <li class="text-monospace small py-1 border-bottom" style="font-size:0.8rem">
+            <i class="bi bi-pencil text-warning me-2" style="font-size:0.55rem"></i>
+            <span class="text-break">{{ f }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% else %}
+      <ul class="list-unstyled mb-0" id="git-modified-files" style="display:none"></ul>
+      {% endif %}
+    </div>
   </div>
 </div>
 {% else %}
-<div class="card border-success mb-3">
+<!-- Clean state: card will be created by JS when changes appear -->
+<div class="card border-success mb-3" id="git-clean-msg">
   <div class="card-body py-3 text-center text-secondary small">
     <i class="bi bi-check-circle-fill text-success me-2"></i>Working tree is clean — all changes committed
   </div>
@@ -169,7 +185,7 @@ async function gitAction(url, btn, label) {
     const data = await resp.json();
     if (!data.success) {
       gitShowError(data.message || 'Operation failed');
-      window.gitFetchStatus();
+      window._updateGitPanel();
       return;
     }
     window.location.reload();
@@ -195,114 +211,194 @@ function gitPush() {
   gitAction("{% url 'api_git_push' %}", document.getElementById('btn-git-push'), 'Pushing…');
 }
 
-// ── Hub mode (server has empty git_status): JS renders everything ──
-
-const HUB_MODE = {{ hub_mode|lower }};
+// ── Panel updates ──
 
 async function gitFetchStatus() {
+  const branchEl = document.getElementById('git-branch-badge');
+  if (!branchEl) return;
+
+  const initialBranch = branchEl.textContent.trim();
+  if (initialBranch === '—') {
+    // Hub mode: server rendered placeholder, fetch real data
+    try {
+      const resp = await fetch("{% url 'api_git_status' %}");
+      const data = await resp.json();
+      if (data.error || !data.branch) {
+        document.getElementById('git-card')?.style.setProperty('display', 'none');
+        document.getElementById('git-files-card')?.style.setProperty('display', 'none');
+        const cloneCard = document.getElementById('no-repo-card');
+        if (cloneCard) document.getElementById('btn-git-clone').style.display = '';
+        return;
+      }
+      _applyGitData(data);
+    } catch (_) {}
+    return;
+  }
+
+  // Local mode: server has real data, just update panel
   try {
     const resp = await fetch("{% url 'api_git_status' %}");
     const data = await resp.json();
-
-    // No repo found (clone needed)
-    if (data.error || !data.branch) {
-      document.getElementById('git-card')?.style.setProperty('display', 'none');
-      document.getElementById('git-files-card')?.style.setProperty('display', 'none');
-      document.getElementById('git-loading')?.style.setProperty('display', 'none');
-      const cloneCard = document.getElementById('no-repo-card');
-      if (cloneCard) {
-        document.getElementById('btn-git-clone').style.display = '';
-      }
-      return;
-    }
-
-    // Hub mode: server rendered an empty card, JS populates it
-    if (HUB_MODE) {
-      document.getElementById('git-card').style.display = '';
-      document.getElementById('git-loading').style.display = 'none';
-      window._updateGitStatus(data);
-      return;
-    }
-
-    // Local mode: server already has data, just update button states
-    window._updateButtons(data);
+    if (data.error || !data.branch) return;
+    _applyGitData(data);
   } catch (_) {}
 }
 
-function _updateButtons(data) {
+function _applyGitData(data) {
+  // Update attributes + branch badge + last commit
+  const card = document.getElementById('git-card');
+  if (card) {
+    card.dataset.branch = data.branch;
+    card.dataset.ahead = data.ahead;
+    card.dataset.behind = data.behind;
+    card.dataset.clean = data.clean;
+  }
+
+  const branchEl = document.getElementById('git-branch-badge');
+  if (branchEl) {
+    branchEl.textContent = data.branch;
+    branchEl.title = data.branch;
+  }
+
+  const commitEl = document.getElementById('git-last-commit');
+  const commitHashEl = document.getElementById('git-last-commit-hash');
+  if (data.last_commit) {
+    if (commitEl) {
+      commitEl.style.display = '';
+      commitEl.innerHTML = '<i class="bi bi-clock me-1"></i>' +
+        (data.last_commit_time || '—') + ' &middot; <code>' + data.last_commit + '</code>';
+    }
+    if (commitHashEl) commitHashEl.textContent = data.last_commit;
+  } else if (commitEl) {
+    commitEl.style.display = 'none';
+  }
+
+  // Update ahead/behind spans
+  const statusRow = document.getElementById('git-status-row');
+  if (statusRow) {
+    const s1 = statusRow.querySelector(':scope > span.text-success.small');
+    if (data.ahead > 0) {
+      if (s1) { s1.style.display = ''; s1.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>' + data.ahead; s1.title = data.ahead + ' commit(s) ahead'; }
+    } else if (s1) { s1.style.display = 'none'; }
+
+    const s2 = statusRow.querySelector(':scope > span.text-danger.small');
+    if (data.behind > 0) {
+      if (s2) { s2.style.display = ''; s2.innerHTML = '<i class="bi bi-arrow-down-circle me-1"></i>' + data.behind; s2.title = data.behind + ' commit(s) behind'; }
+    } else if (s2) { s2.style.display = 'none'; }
+  }
+
+  // File list
+  const newFiles = data.new_files || [];
+  const modFiles = data.modified_files || [];
+  const delFiles = data.deleted_files || [];
+  const total = newFiles.length + modFiles.length + delFiles.length;
+
+  const cleanMsg = document.getElementById('git-clean-msg');
+  const filesCard = document.getElementById('git-files-card');
+
+  if (total === 0) {
+    if (filesCard) filesCard.style.setProperty('display', 'none');
+    if (cleanMsg) cleanMsg.style.setProperty('display', '');
+  } else {
+    if (cleanMsg) cleanMsg.style.setProperty('display', 'none');
+    if (!filesCard) {
+      // Create files card (switched from clean to dirty state)
+      const el = document.createElement('div');
+      el.className = 'card border-secondary mb-3';
+      el.id = 'git-files-card';
+        el.innerHTML = `
+        <div class="card-header py-1">
+          <span class="fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>Changes</span>
+          <span class="badge bg-secondary ms-2" id="git-change-count">0</span>
+        </div>
+        <div class="card-body py-2 px-3">
+          <div id="git-new-section">
+            <div class="mb-3" style="display:none" id="git-new-outer">
+              <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
+                <i class="bi bi-plus-circle text-info me-1"></i>New
+              </div>
+              <ul class="list-unstyled mb-0" id="git-new-files"></ul>
+            </div>
+          </div>
+          <div id="git-deleted-section">
+            <div class="mb-3" style="display:none" id="git-del-outer">
+              <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
+                <i class="bi bi-trash text-secondary me-1"></i>Deleted
+              </div>
+              <ul class="list-unstyled mb-0" id="git-deleted-files"></ul>
+            </div>
+          </div>
+          <div id="git-modified-section">
+            <div class="mb-3" style="display:none" id="git-mod-outer">
+              <div class="text-uppercase text-muted small fw-semibold mb-1" style="font-size:0.7rem">
+                <i class="bi bi-pencil text-warning me-1"></i>Modified
+              </div>
+              <ul class="list-unstyled mb-0" id="git-modified-files"></ul>
+            </div>
+          </div>
+        </div>
+      `;
+      filesCard.replaceWith(el);
+    }
+
+    const badge = document.getElementById('git-change-count');
+    if (badge) badge.textContent = total;
+
+    const newOuter = document.getElementById('git-new-outer');
+    const newUl = document.getElementById('git-new-files');
+    if (newFiles.length > 0) {
+      if (newOuter) { newUl.innerHTML = ''; newFiles.forEach(f => {
+        const li = document.createElement('li');
+        li.className = 'text-monospace small py-1 border-bottom';
+        li.style.fontSize = '0.8rem';
+        li.innerHTML = '<i class="bi bi-plus-circle text-info me-2" style="font-size:0.55rem"></i><span class="text-break">' + f + '</span>';
+        newUl.appendChild(li);
+      }); newOuter.style.display = ''; }
+    } else if (newOuter) { newOuter.style.display = 'none'; }
+
+    const modOuter = document.getElementById('git-mod-outer');
+    const modUl = document.getElementById('git-modified-files');
+    if (modFiles.length > 0) {
+      if (modOuter) { modUl.innerHTML = ''; modFiles.forEach(f => {
+        const li = document.createElement('li');
+        li.className = 'text-monospace small py-1 border-bottom';
+        li.style.fontSize = '0.8rem';
+        li.innerHTML = '<i class="bi bi-pencil text-warning me-2" style="font-size:0.55rem"></i><span class="text-break">' + f + '</span>';
+        modUl.appendChild(li);
+      }); modOuter.style.display = ''; }
+    } else if (modOuter) { modOuter.style.display = 'none'; }
+
+    // Deleted files
+    const delOuter = document.getElementById('git-del-outer');
+    const delUl = document.getElementById('git-deleted-files');
+    if (delFiles.length > 0) {
+      if (delOuter) { delUl.innerHTML = ''; delFiles.forEach(f => {
+        const li = document.createElement('li');
+        li.className = 'text-monospace small py-1 border-bottom';
+        li.style.fontSize = '0.8rem';
+        li.innerHTML = '<i class="bi bi-trash text-secondary me-2" style="font-size:0.55rem"></i><span class="text-break">' + f + '</span>';
+        delUl.appendChild(li);
+      }); delOuter.style.display = ''; }
+    } else if (delOuter) { delOuter.style.display = 'none'; }
+  }
+
+  // Button states
   const pullBtn = document.getElementById('btn-git-pull');
   const pushBtn = document.getElementById('btn-git-push');
-  const refreshBtn = document.getElementById('btn-git-refresh');
-
-  if (refreshBtn) refreshBtn.style.display = '';
-
   if (pullBtn) {
-    pullBtn.disabled = data.behind === 0;
+    pullBtn.disabled = !data.branch || data.behind === 0;
     pullBtn.title = data.behind > 0
       ? `Pull ${data.behind} commit(s) from remote`
       : 'Up to date';
   }
-
   if (pushBtn) {
-    const hasChanges = (data.modified_files || []).length > 0 || data.ahead > 0;
-    pushBtn.disabled = !hasChanges;
+    const hasChanges = modFiles.length > 0 || newFiles.length > 0;
+    const hasCommits = data.ahead > 0;
+    pushBtn.disabled = !hasChanges && !hasCommits;
     pushBtn.title = pushBtn.disabled
       ? 'Up to date — nothing to push'
       : 'Auto-commit and push';
   }
-}
-
-// ── Hub mode rendering ──
-
-function _updateGitStatus(data) {
-  document.getElementById('git-branch-badge').textContent = data.branch;
-  document.getElementById('git-branch-badge').title = data.branch;
-
-  const commit = document.getElementById('git-last-commit');
-  if (data.last_commit) {
-    commit.innerHTML = '<i class="bi bi-clock me-1"></i>' + (data.last_commit_time || '—') + ' &middot; <code>' + data.last_commit + '</code>';
-  }
-
-  const ahead = document.getElementById('git-ahead');
-  const behind = document.getElementById('git-behind');
-
-  if (ahead && data.ahead > 0) {
-    ahead.style.display = '';
-    ahead.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>' + data.ahead;
-    ahead.title = data.ahead + ' commit(s) ahead';
-  } else if (ahead) {
-    ahead.style.display = 'none';
-  }
-
-  if (behind && data.behind > 0) {
-    behind.style.display = '';
-    behind.innerHTML = '<i class="bi bi-arrow-down-circle me-1"></i>' + data.behind;
-    behind.title = data.behind + ' commit(s) behind';
-  } else if (behind) {
-    behind.style.display = 'none';
-  }
-
-  const allFiles = data.modified_files || [];
-  const count = allFiles.length;
-  document.getElementById('git-change-count').textContent = count;
-
-  const changedList = document.getElementById('git-changed-files');
-  changedList.innerHTML = '';
-
-  if (count === 0) {
-    document.getElementById('git-clean-msg').style.display = '';
-  } else {
-    document.getElementById('git-clean-msg').style.display = 'none';
-    allFiles.forEach(f => {
-      const li = document.createElement('li');
-      li.className = 'text-monospace small py-1 border-bottom';
-      li.style.fontSize = '0.8rem';
-      li.innerHTML = '<i class="bi bi-pen text-warning me-2" style="font-size:0.55rem"></i><span class="text-break">' + f + '</span>';
-      changedList.appendChild(li);
-    });
-  }
-
-  window._updateButtons(data);
 }
 
 // ── Init ──

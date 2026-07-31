@@ -2393,7 +2393,7 @@ class GitConfigTests(unittest.TestCase):
         mock_run.side_effect = side_effect
         status = services.git_status()
         self.assertTrue(status["dirty"])
-        self.assertIn("telescope.yaml", status["modified_files"])
+        self.assertIn("telescope.yaml", status["new_files"])
 
     # --- auto-stage on save ---
 

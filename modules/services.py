@@ -1140,6 +1140,8 @@ def git_status() -> dict:
         "clean": True,
         "dirty": False,
         "modified_files": [],
+        "new_files": [],
+        "deleted_files": [],
         "last_commit": "",
         "last_commit_time": "",
     }
@@ -1170,19 +1172,35 @@ def git_status() -> dict:
 
     success, porcelain = _git_run(["status", "--porcelain=v2", "--branch"])
     if success and porcelain:
-        changed_files: list[str] = []
+        modified_files: list[str] = []
+        new_files: list[str] = []
+        deleted_files: list[str] = []
         for line in porcelain.splitlines():
             if not line.strip() or line.startswith("#") or line.startswith("##"):
                 continue
             parts = line.split()
             if len(parts) < 3:
                 continue
+            x, y = parts[1], parts[2]
             filepath = parts[-1].strip('"').strip("'")
             if not filepath:
                 continue
-            changed_files.append(filepath)
-        status["modified_files"] = changed_files
-        status["dirty"] = bool(changed_files)
+            # y ? = untracked → "new"
+            if y == "?":
+                new_files.append(filepath)
+            # x has D = deleted from git tracking → "deleted"
+            elif x.startswith("D"):
+                deleted_files.append(filepath)
+            # x has A or R = newly added/renamed to git tracking → "new"
+            elif x.startswith(("A", "R")):
+                new_files.append(filepath)
+            # everything else = modified
+            elif x != " ":
+                modified_files.append(filepath)
+        status["modified_files"] = modified_files
+        status["new_files"] = new_files
+        status["deleted_files"] = deleted_files
+        status["dirty"] = bool(modified_files or new_files or deleted_files)
         status["clean"] = not status["dirty"]
 
     return status

@@ -184,20 +184,21 @@ def git_config_page(request):
     host = _active_host(request)
     if host:
         ctx["git_enabled"] = True
-        ctx["hub_mode"] = True
         ctx["config_dir"] = ""
-        ctx["git_status"] = {}
+        ctx["git_status"] = {"branch": "", "ahead": 0, "behind": 0, "clean": True, "dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "last_commit": "", "last_commit_time": ""}
         ctx["git_repo_exists"] = False
     else:
         ctx["git_enabled"] = getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
-        ctx["hub_mode"] = False
         ctx["git_repo_exists"] = services.git_repo_exists() if ctx["git_enabled"] else False
         ctx["config_dir"] = str(services._config_dir())
         if ctx["git_enabled"]:
             ctx["git_status"] = services.git_status()
-            ctx["git_status"]["total_changes"] = len(ctx["git_status"].get("modified_files", []))
+            ctx["pull_disabled"] = not ctx["git_status"]["branch"] or ctx["git_status"]["behind"] == 0
+            ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"]["ahead"] == 0)
+            ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
         else:
-            ctx["git_status"] = {"dirty": False, "modified_files": [], "clean": True, "total_changes": 0}
+            ctx["git_status"] = {"dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "clean": True}
+            ctx["git_change_count"] = 0
     return render(request, "modules/git_config.html", ctx)
 
 
