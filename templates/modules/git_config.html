@@ -36,8 +36,8 @@
      data-last-commit-time="{{ git_status.last_commit_time }}">
   <div class="card-header d-flex justify-content-between align-items-center py-1">
     <div class="d-flex align-items-center gap-2">
-      <a id="git-branch-badge" class="badge bg-secondary" style="cursor:pointer"
-         {% if git_status.branch %}title="{{ git_status.branch }}"{% endif %}>{{ git_status.branch|default:"—" }}</a>
+      <span id="git-branch-badge" class="badge bg-secondary"
+         {% if git_status.branch %}title="{{ git_status.branch }}"{% endif %}>{{ git_status.branch|default:"—" }}</span>
       {% if git_status.last_commit %}
       <span class="text-secondary small" id="git-last-commit">
         <i class="bi bi-clock me-1"></i>
