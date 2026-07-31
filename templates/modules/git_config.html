@@ -208,6 +208,20 @@ function gitFetch() {
   gitAction("{% url 'api_git_fetch' %}", document.getElementById('btn-git-refresh'), 'Fetching…');
 }
 function gitPull() {
+  const s = _latestGitStatus;
+  const total = (s.new_files || []).length + (s.modified_files || []).length + (s.deleted_files || []).length;
+  const hasChanges = total > 0 || s.ahead > 0;
+  if (hasChanges) {
+    const parts = [];
+    if (total > 0) parts.push(total + ' change' + (total > 1 ? 's' : '') + ' locally');
+    if (s.ahead > 0) parts.push(s.ahead + ' committed but unpushed');
+    const msg =
+      'There are local changes:\n' +
+      '\n• ' + parts.join('\n• ') + '\n' +
+      '\nPlease push them first, or revert. Then try pulling again.';
+    alert(msg);
+    return;
+  }
   gitAction("{% url 'api_git_pull' %}", document.getElementById('btn-git-pull'), 'Pulling…');
 }
 function gitPush() {
@@ -219,6 +233,9 @@ function gitReset() {
 }
 
 // ── Panel updates ──
+
+// Store the latest status data globally so gitPull can check it
+let _latestGitStatus = {};
 
 async function gitFetchStatus() {
   const branchEl = document.getElementById('git-branch-badge');
@@ -252,6 +269,7 @@ async function gitFetchStatus() {
 }
 
 function _applyGitData(data) {
+  _latestGitStatus = data;
   // Update attributes + branch badge + last commit
   const card = document.getElementById('git-card');
   if (card) {
@@ -299,6 +317,7 @@ function _applyGitData(data) {
   const modFiles = data.modified_files || [];
   const delFiles = data.deleted_files || [];
   const total = newFiles.length + modFiles.length + delFiles.length;
+  data._hasChanges = total > 0;
 
   const cleanMsg = document.getElementById('git-clean-msg');
   const filesCard = document.getElementById('git-files-card');
