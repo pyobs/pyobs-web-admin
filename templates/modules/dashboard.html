@@ -70,6 +70,7 @@
   </div>
   {% endif %}
 </div>
+{% endif %}
 
 {% if git_enabled %}
 <div class="card border-secondary mb-3" id="git-card">
@@ -107,6 +108,7 @@
 </div>
 {% endif %}
 
+{% if modules %}
 <table class="table table-hover align-middle mb-0" id="module-grid">
   <colgroup>
     <col style="width:1%">       <!-- status -->
