@@ -95,7 +95,7 @@ def dashboard(request):
         except Exception:
             modules = []
     else:
-        modules = services.list_modules()
+        modules = [n for n in services.list_modules() if services._is_valid_module_name(n)]
     return render(request, "modules/dashboard.html", {
         "modules": modules,
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),

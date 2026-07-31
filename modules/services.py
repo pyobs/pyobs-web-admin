@@ -195,8 +195,15 @@ def _log_backend() -> str:
 _JOURNALD_PRIORITY_TO_LEVEL = {0: "CRITICAL", 3: "ERROR", 4: "WARNING", 6: "INFO", 7: "DEBUG"}
 
 
+_is_module_name_re = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _is_valid_module_name(name: str) -> bool:
+    return bool(_is_module_name_re.match(name))
+
+
 def validate_name(name: str) -> None:
-    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+    if not _is_valid_module_name(name):
         raise ValueError(f"Invalid module name: {name!r}")
 
 

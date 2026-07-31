@@ -22,10 +22,11 @@ def sidebar_modules(request):
             modules = []
         shared = []
     else:
-        names = services.list_modules()
+        raw_names = services.list_modules()
         modules = _sort_modules([
             {"name": n, "status": services.get_module_status(n)}
-            for n in names
+            for n in raw_names
+            if services._is_valid_module_name(n)
         ])
         shared = services.list_shared_configs()
 
