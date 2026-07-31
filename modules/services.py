@@ -1177,7 +1177,7 @@ def git_status() -> dict:
         staged_files: list[str] = []
         has_untracked = False
         for line in porcelain.splitlines():
-            if line.startswith("##") or not line.strip():
+            if not line.strip() or line.startswith("#") or line.startswith("##"):
                 continue
             parts = line.split()
             if len(parts) < 3:
