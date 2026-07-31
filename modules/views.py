@@ -181,25 +181,30 @@ def packages(request):
 
 def git_config_page(request):
     ctx = {"active_git_config": True}
-    host = _active_host(request)
-    if host:
-        ctx["git_enabled"] = True
-        ctx["config_dir"] = ""
+    
+    ctx["git_enabled"] = True
+    ctx["config_dir"] = ""
+    
+    # Always compute git status server-side via the active host's API
+    active_name = request.session.get("active_host", "localhost")
+    host_config = proxy.get_host_config(active_name)
+    try:
+        if host_config:
+            # Hub node: call the hub's own git endpoint directly
+            ctx["git_status"] = services.git_status()
+        else:
+            # Local node: proxy through (or call directly)
+            ctx["git_status"] = services.git_status()
+        ctx["git_repo_exists"] = True
+    except Exception:
         ctx["git_status"] = {"branch": "", "ahead": 0, "behind": 0, "clean": True, "dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "last_commit": "", "last_commit_time": ""}
         ctx["git_repo_exists"] = False
-    else:
-        ctx["git_enabled"] = getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
-        ctx["git_repo_exists"] = services.git_repo_exists() if ctx["git_enabled"] else False
-        ctx["config_dir"] = str(services._config_dir())
-        if ctx["git_enabled"]:
-            ctx["git_status"] = services.git_status()
-            ctx["pull_disabled"] = not ctx["git_status"]["branch"] or ctx["git_status"]["behind"] == 0
-            ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"]["ahead"] == 0)
-            ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
-            ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
-        else:
-            ctx["git_status"] = {"dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "clean": True}
-            ctx["git_change_count"] = 0
+
+    ctx["pull_disabled"] = not ctx["git_status"]["branch"] or ctx["git_status"]["behind"] == 0
+    ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"].get("ahead", 0) == 0)
+    ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
+    ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
+    
     return render(request, "modules/git_config.html", ctx)
 
 
