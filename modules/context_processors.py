@@ -40,5 +40,6 @@ def sidebar_modules(request):
         # individual views (dashboard, module_detail) also set this in their own context,
         # which takes precedence over this processor when both provide it.
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
+        "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
     }
 
