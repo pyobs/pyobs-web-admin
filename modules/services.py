@@ -32,6 +32,13 @@ _ACL_YAML.default_flow_style = False
 
 
 def _config_dir() -> Path:
+    if getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False):
+        root = getattr(settings, "PYOBS_CONFIG_GIT_ROOT", "")
+        subpath = getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
+        if root and subpath:
+            candidate = Path(root) / subpath
+            if candidate.exists():
+                return candidate
     return Path(settings.PYOBS_CONFIG_DIR)
 
 

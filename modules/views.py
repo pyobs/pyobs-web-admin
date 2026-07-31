@@ -216,9 +216,9 @@ def module_detail(request, name: str):
         "module_name": name,
         "config": config or "",
         "active_module": name,
-        "config_dir": settings.PYOBS_CONFIG_DIR,
+        "config_dir": str(services._config_dir()),
         "log_dir": settings.PYOBS_LOG_DIR,
-        "other_modules": [m for m in services.list_modules() if m != name],
+        "other_modules": [m for m in services.list_modules() if services._is_valid_module_name(m) and m != name],
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
     })
 
@@ -229,7 +229,7 @@ def shared_detail(request, name: str):
         "config_name": name,
         "config": services.get_shared_config(name) or "",
         "active_shared": name,
-        "config_dir": settings.PYOBS_CONFIG_DIR,
+        "config_dir": str(services._config_dir()),
     })
 
 
