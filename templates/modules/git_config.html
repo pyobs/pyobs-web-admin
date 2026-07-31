@@ -56,6 +56,9 @@
       <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote"{% if push_disabled %} disabled{% endif %}>
         <i class="bi bi-cloud-arrow-up"></i> Push
       </button>
+      <button class="btn btn-sm btn-outline-danger" onclick="gitReset()" id="btn-git-reset" title="Discard all uncommitted changes"{% if reset_disabled %} disabled{% endif %}>
+        <i class="bi bi-arrow-counterclockwise"></i> Revert
+      </button>
     </div>
   </div>
   <div class="card-body py-2">
@@ -209,6 +212,10 @@ function gitPull() {
 }
 function gitPush() {
   gitAction("{% url 'api_git_push' %}", document.getElementById('btn-git-push'), 'Pushing…');
+}
+function gitReset() {
+  if (!confirm('Discard all uncommitted changes?')) return;
+  gitAction("{% url 'api_git_reset' %}", document.getElementById('btn-git-reset'), 'Reverting…');
 }
 
 // ── Panel updates ──
@@ -398,6 +405,15 @@ function _applyGitData(data) {
     pushBtn.title = pushBtn.disabled
       ? 'Up to date — nothing to push'
       : 'Auto-commit and push';
+  }
+  // Reset button: enabled when there are uncommitted changes
+  const resetBtn = document.getElementById('btn-git-reset');
+  if (resetBtn) {
+    const totalFiles = newFiles.length + modFiles.length + delFiles.length;
+    resetBtn.disabled = totalFiles === 0;
+    resetBtn.title = totalFiles > 0
+      ? `Discard ${totalFiles} uncommitted change(s)`
+      : 'No changes to revert';
   }
 }
 

@@ -195,6 +195,7 @@ def git_config_page(request):
             ctx["git_status"] = services.git_status()
             ctx["pull_disabled"] = not ctx["git_status"]["branch"] or ctx["git_status"]["behind"] == 0
             ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"]["ahead"] == 0)
+            ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
             ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
         else:
             ctx["git_status"] = {"dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "clean": True}
@@ -1467,6 +1468,17 @@ def api_git_push(request):
             if "nothing to commit" not in lower and "no changes" not in lower:
                 return JsonResponse({"success": False, "message": message}, status=502)
         success, message = services.git_push()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_reset(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/reset/")
+    success, message = services.git_reset()
     if success:
         return JsonResponse({"success": True})
     return JsonResponse({"success": False, "message": message}, status=502)

@@ -1259,6 +1259,11 @@ def git_init_if_needed() -> tuple[bool, str]:
     return True, "Repository already exists"
 
 
+def git_reset() -> tuple[bool, str]:
+    """Discard all uncommitted changes (reset working tree to HEAD)."""
+    return _git_run(["reset", "--hard", "HEAD"])
+
+
 # ── ACL resolution ────────────────────────────────────────────────────────────
 
 _TOP_LEVEL_KEY_RE = re.compile(r"^(\S+):(.*)$")
