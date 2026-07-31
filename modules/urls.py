@@ -15,6 +15,7 @@ urlpatterns = [
     path("logs/", views.all_logs, name="all_logs"),
     path("xmpp-users/", views.xmpp_users, name="xmpp_users"),
     path("packages/", views.packages, name="packages"),
+    path("git-config/", views.git_config_page, name="git_config"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
     path("api/packages/", views.api_packages, name="api_packages"),
@@ -63,4 +64,5 @@ urlpatterns = [
     path("api/git/fetch/", views.api_git_fetch, name="api_git_fetch"),
     path("api/git/pull/", views.api_git_pull, name="api_git_pull"),
     path("api/git/push/", views.api_git_push, name="api_git_push"),
+    path("api/git/stage/", views.api_git_stage, name="api_git_stage"),
 ]

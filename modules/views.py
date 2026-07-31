@@ -99,7 +99,6 @@ def dashboard(request):
     return render(request, "modules/dashboard.html", {
         "modules": modules,
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
-        "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
     })
 
 
@@ -178,6 +177,29 @@ def packages(request):
     since the PyPI lookups are slow enough that rendering them synchronously here would
     block the page load."""
     return render(request, "modules/packages.html", {"active_packages": True})
+
+
+def git_config_page(request):
+    ctx = {"active_git_config": True}
+    host = _active_host(request)
+    if host:
+        ctx["git_enabled"] = True
+        ctx["hub_mode"] = True
+        ctx["config_dir"] = ""
+        ctx["git_status"] = {}
+        ctx["git_repo_exists"] = False
+    else:
+        ctx["git_enabled"] = getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
+        ctx["hub_mode"] = False
+        ctx["git_repo_exists"] = services.git_repo_exists() if ctx["git_enabled"] else False
+        ctx["config_dir"] = str(services._config_dir())
+        if ctx["git_enabled"]:
+            ctx["git_status"] = services.git_status()
+            total_changes = len(ctx["git_status"].get("staged_files", [])) + len(ctx["git_status"].get("modified_files", []))
+            ctx["git_status"]["total_changes"] = total_changes
+        else:
+            ctx["git_status"] = {"dirty": False, "staged": False, "staged_files": [], "modified_files": [], "clean": True, "total_changes": 0}
+    return render(request, "modules/git_config.html", ctx)
 
 
 def new_module(request):
@@ -1436,6 +1458,17 @@ def api_git_push(request):
     if host:
         return _proxy(host, "POST", "/api/git/push/")
     success, message = services.git_push()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_stage(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/stage/")
+    success, message = services.git_stage_all()
     if success:
         return JsonResponse({"success": True})
     return JsonResponse({"success": False, "message": message}, status=502)
