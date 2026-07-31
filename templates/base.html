@@ -281,6 +281,13 @@ document.querySelectorAll('.sidebar-link[href^="/modules/"]').forEach(link => {
     }
   });
 });
+
+// ── Remember current page when switching host ─────────────────────────────────
+document.querySelectorAll('.sidebar-link[href^="/set-host/"]').forEach(link => {
+  const url = new URL(link.href, window.location.origin);
+  url.searchParams.set('next', location.pathname + location.search);
+  link.href = url.toString();
+});
 </script>
 {% block scripts %}{% endblock %}
 </body>
