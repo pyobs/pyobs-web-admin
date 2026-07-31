@@ -1229,22 +1229,8 @@ def git_commit(message: str) -> tuple[bool, str]:
 
 
 def git_pull() -> tuple[bool, str]:
-    """Auto-commit pending changes, then pull with autostash (if configured).
-
-    When GIT_PULL_AUTO_STASH is True (default), auto-commits staged changes first,
-    then performs a regular pull. When False, falls back to `git pull --autostash`
-    which stashes and re-applies uncommitted changes.
-    """
-    _auto_stash = getattr(settings, "GIT_PULL_AUTO_STASH", True)
-    if _auto_stash:
-        # Auto-commit staged changes
-        success, output = git_commit("Auto-commit config changes before pull")
-        if not success:
-            # "nothing to commit" is fine — proceed to pull
-            lower = output.lower()
-            if "nothing to commit" not in lower and "no changes" not in lower:
-                return False, output
-    return _git_run(["pull", "--autostash"])
+    """Pull from origin."""
+    return _git_run(["pull"])
 
 
 def git_push() -> tuple[bool, str]:

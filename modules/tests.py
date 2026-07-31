@@ -2307,28 +2307,14 @@ class GitConfigTests(unittest.TestCase):
 
     @patch("modules.services.subprocess.run")
     @patch("modules.services._git_enabled", return_value=True)
-    def test_git_pull_commits_then_pulls(self, mock_enabled, mock_run):
-        commit_ok = self._mock_result(returncode=1, stderr="nothing to commit")
-        pull_ok = self._mock_result()
-        mock_run.side_effect = [commit_ok, pull_ok]
+    def test_git_pull(self, mock_enabled, mock_run):
+        ok = self._mock_result()
+        mock_run.side_effect = [ok]
         ok, _ = services.git_pull()
         self.assertTrue(ok)
-        self.assertEqual(mock_run.call_count, 2)
-
-    @patch("modules.services._git_enabled", return_value=True)
-    @patch("modules.services.settings")
-    def test_git_pull_auto_stash_off(self, mock_settings, mock_enabled):
-        mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
-        mock_settings.GIT_PULL_AUTO_STASH = False
-        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
-        with patch("modules.services.subprocess.run") as mock_run:
-            mock_run.side_effect = [self._mock_result()]
-            with patch("modules.services._git_repo_dir", return_value=self.tmp_path), \
-                 patch("modules.services._config_dir", return_value=self.tmp_path):
-                services.git_pull()
-                calls = [c[0][0] for c in mock_run.call_args_list]
-                self.assertEqual(len([c for c in calls if "commit" in c]), 0)
-                self.assertTrue(any("pull" in c for c in calls))
+        self.assertEqual(mock_run.call_count, 1)
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        self.assertTrue(any("pull" in c for c in calls))
 
     # --- git_status ---
 
