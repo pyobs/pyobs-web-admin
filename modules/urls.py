@@ -15,6 +15,7 @@ urlpatterns = [
     path("logs/", views.all_logs, name="all_logs"),
     path("xmpp-users/", views.xmpp_users, name="xmpp_users"),
     path("packages/", views.packages, name="packages"),
+    path("git-config/", views.git_config_page, name="git_config"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
     path("api/packages/", views.api_packages, name="api_packages"),
@@ -57,4 +58,11 @@ urlpatterns = [
     path("api/modules/<str:name>/ejabberd/ban/", views.api_module_ejabberd_ban, name="api_module_ejabberd_ban"),
     path("api/modules/<str:name>/ejabberd/unban/", views.api_module_ejabberd_unban, name="api_module_ejabberd_unban"),
     path("api/modules/<str:name>/ejabberd/unregister/", views.api_module_ejabberd_unregister, name="api_module_ejabberd_unregister"),
+    # Git-backed config
+    path("api/git/status/", views.api_git_status, name="api_git_status"),
+    path("api/git/clone/", views.api_git_clone, name="api_git_clone"),
+    path("api/git/fetch/", views.api_git_fetch, name="api_git_fetch"),
+    path("api/git/pull/", views.api_git_pull, name="api_git_pull"),
+    path("api/git/push/", views.api_git_push, name="api_git_push"),
+    path("api/git/reset/", views.api_git_reset, name="api_git_reset"),
 ]

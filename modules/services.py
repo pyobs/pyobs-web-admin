@@ -32,6 +32,13 @@ _ACL_YAML.default_flow_style = False
 
 
 def _config_dir() -> Path:
+    if getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False):
+        root = getattr(settings, "PYOBS_CONFIG_GIT_ROOT", "")
+        subpath = getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
+        if root and subpath:
+            candidate = Path(root) / subpath
+            if candidate.exists():
+                return candidate
     return Path(settings.PYOBS_CONFIG_DIR)
 
 
@@ -45,6 +52,102 @@ def _run_dir() -> Path:
 
 def _pyobs_exec() -> str:
     return settings.PYOBS_EXEC
+
+
+def _git_enabled() -> bool:
+    return getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
+
+
+def _git_root() -> Path | None:
+    """Return the explicit git root, or None if not set."""
+    root = getattr(settings, "PYOBS_CONFIG_GIT_ROOT", "")
+    return Path(root) if root else None
+
+
+def _git_config_ok() -> tuple[bool, str]:
+    """Validate that PYOBS_CONFIG_DIR is inside the configured git root.
+
+    Returns (success, error_message). If git is disabled the check is a no-op.
+    """
+    if not _git_enabled():
+        return True, ""
+    repo_dir = _git_repo_dir()
+    config_dir = _config_dir()
+    try:
+        config_dir.relative_to(repo_dir)
+    except ValueError:
+        return False, (
+            f"PYOBS_CONFIG_DIR ({config_dir}) is not inside "
+            f"PYOBS_CONFIG_GIT_ROOT ({repo_dir}). "
+            "Configuration files must reside within the git repository tree."
+        )
+    return True, ""
+
+
+def _git_subpath() -> str:
+    return getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
+
+
+def _git_repo_dir() -> Path:
+    """Return the directory where .git lives.
+
+    Uses the explicit PYOBS_CONFIG_GIT_ROOT when set; otherwise
+    derives it from ``PYOBS_CONFIG_DIR`` and ``PYOBS_CONFIG_GIT_SUBPATH``.
+    """
+    explicit = _git_root()
+    if explicit:
+        return explicit
+    if _git_enabled():
+        subpath = _git_subpath()
+        if subpath:
+            parts = Path(subpath).parts
+            return _config_dir().parents[len(parts) - 1]
+    return _config_dir()
+
+
+def _git_run(args: list[str]) -> tuple[bool, str]:
+    """Run a git command inside the repository root.
+
+    Returns (success, output). If git is not enabled returns (True, "").
+    """
+    if not _git_enabled():
+        return True, ""
+    ok, msg = _git_config_ok()
+    if not ok:
+        return False, msg
+    repo_dir = _git_repo_dir()
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+    except FileNotFoundError:
+        return False, "git executable not found"
+    except subprocess.TimeoutExpired:
+        return False, "git command timed out (60s)"
+
+
+def _git_auto_stage() -> None:
+    """Best-effort stage all changes after a config write. Never raises."""
+    if not _git_enabled():
+        return
+    try:
+        subprocess.run(
+            ["git", "add", "-A", str(_config_dir())],
+            cwd=_git_repo_dir(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
 
 
 def _log_level() -> str:
@@ -99,8 +202,15 @@ def _log_backend() -> str:
 _JOURNALD_PRIORITY_TO_LEVEL = {0: "CRITICAL", 3: "ERROR", 4: "WARNING", 6: "INFO", 7: "DEBUG"}
 
 
+_is_module_name_re = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _is_valid_module_name(name: str) -> bool:
+    return bool(_is_module_name_re.match(name))
+
+
 def validate_name(name: str) -> None:
-    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+    if not _is_valid_module_name(name):
         raise ValueError(f"Invalid module name: {name!r}")
 
 
@@ -889,6 +999,7 @@ def save_shared_config(name: str, content: str) -> None:
     if not f.exists():
         raise FileNotFoundError(f"Shared config not found: {f}")
     f.write_text(content)
+    _git_auto_stage()
 
 
 def get_config(name: str) -> str | None:
@@ -905,6 +1016,7 @@ def save_config(name: str, content: str) -> None:
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_file}")
     config_file.write_text(content)
+    _git_auto_stage()
 
 
 _NEW_MODULE_TEMPLATE = (
@@ -925,6 +1037,217 @@ def create_module(name: str) -> None:
         raise FileExistsError(f"Module {name!r} already exists")
     _config_dir().mkdir(parents=True, exist_ok=True)
     config_file.write_text(_NEW_MODULE_TEMPLATE)
+    _git_auto_stage()
+
+
+# ── Git-backed config ───────────────────────────────────────────────────────────
+
+
+def git_repo_exists() -> bool:
+    """Check whether a Git working tree exists at the configured repository root."""
+    if not _git_enabled():
+        return False
+    return (_git_repo_dir() / ".git").is_dir()
+
+
+def git_clone() -> tuple[bool, str]:
+    """Clone the configured repository and set up sparse checkout.
+
+    The clone target is the repository root (`_git_repo_dir()`), never
+    `PYOBS_CONFIG_DIR`. Refuses to clone if that directory already
+    contains a Git working tree or non-empty contents.
+
+    Returns (success, message).
+    """
+    repo_dir = _git_repo_dir()
+    repo = settings.PYOBS_CONFIG_GIT_REPO
+    branch = getattr(settings, "PYOBS_CONFIG_GIT_BRANCH", "main")
+    subpath = _git_subpath()
+
+    if not repo:
+        return False, "PYOBS_CONFIG_GIT_REPO is not set"
+    if git_repo_exists():
+        return False, "Repository already exists"
+    if repo_dir.exists() and any(repo_dir.iterdir()):
+        return False, "Repository root is not empty"
+
+    ok, msg = _git_config_ok()
+    if not ok:
+        return False, msg
+
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--branch", branch, repo, str(repo_dir)],
+            cwd=str(repo_dir.parent),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+    except FileNotFoundError:
+        return False, "git executable not found"
+    except subprocess.TimeoutExpired:
+        return False, "git clone timed out (120s)"
+
+    if result.returncode != 0:
+        return False, (result.stdout + result.stderr).strip()
+
+    if subpath:
+        sp = subprocess.run(
+            ["git", "sparse-checkout", "init", "--cone"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if sp.returncode != 0:
+            import shutil
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            return False, sp.stderr.strip()
+
+        ss = subprocess.run(
+            ["git", "sparse-checkout", "set", subpath],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if ss.returncode != 0:
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            return False, ss.stderr.strip()
+
+    return True, "Repository cloned successfully"
+
+
+def git_fetch() -> tuple[bool, str]:
+    """Fetch remote updates without modifying the working tree."""
+    return _git_run(["fetch", "--tags"])
+
+
+def git_status() -> dict:
+    """Get repository status."""
+    status: dict[str, object] = {
+        "branch": "",
+        "remote": "origin",
+        "ahead": 0,
+        "behind": 0,
+        "clean": True,
+        "dirty": False,
+        "modified_files": [],
+        "new_files": [],
+        "deleted_files": [],
+        "last_commit": "",
+        "last_commit_time": "",
+    }
+
+    success, branch = _git_run(["rev-parse", "--abbrev-ref", "HEAD"])
+    if success and branch:
+        status["branch"] = branch.strip()
+        local = branch.strip()
+        remote_ref = f"origin/{local}"
+        success, ahead = _git_run(["rev-list", "--count", f"{local}..{remote_ref}"])
+        success, behind = _git_run(["rev-list", "--count", f"{remote_ref}..{local}"])
+        try:
+            status["ahead"] = int(ahead.strip())
+        except (ValueError, AttributeError):
+            pass
+        try:
+            status["behind"] = int(behind.strip())
+        except (ValueError, AttributeError):
+            pass
+
+    success, hash_out = _git_run(["rev-parse", "--short", "HEAD"])
+    if success and hash_out:
+        status["last_commit"] = hash_out.strip()
+
+    success, time_out = _git_run(["log", "-1", "--format=%ci"])
+    if success and time_out:
+        status["last_commit_time"] = time_out.strip()
+
+    success, porcelain = _git_run(["status", "--porcelain=v2", "--branch"])
+    if success and porcelain:
+        modified_files: list[str] = []
+        new_files: list[str] = []
+        deleted_files: list[str] = []
+        subpath = _git_subpath()
+        for line in porcelain.splitlines():
+            if not line.strip() or line.startswith("#") or line.startswith("##"):
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            x, y = parts[1], parts[2]
+            raw_path = parts[-1].strip('"').strip("'")
+            if not raw_path:
+                continue
+            # Strip the git subpath prefix so paths are relative to _config_dir()
+            filepath = raw_path
+            if subpath and subpath != "/":
+                sep = os.sep
+                prefix = subpath + sep
+                if filepath == subpath or filepath.startswith(prefix):
+                    filepath = filepath[len(subpath):].lstrip(sep)
+            if not filepath:
+                continue
+            # y ? = untracked → "new"
+            if y == "?":
+                new_files.append(filepath)
+            # x has D = deleted from git tracking → "deleted"
+            elif x.startswith("D"):
+                deleted_files.append(filepath)
+            # x has A or R = newly added/renamed to git tracking → "new"
+            elif x.startswith(("A", "R")):
+                new_files.append(filepath)
+            # everything else = modified
+            elif x != " ":
+                modified_files.append(filepath)
+        status["modified_files"] = modified_files
+        status["new_files"] = new_files
+        status["deleted_files"] = deleted_files
+        status["dirty"] = bool(modified_files or new_files or deleted_files)
+        status["clean"] = not status["dirty"]
+
+    return status
+
+
+def git_stage_all() -> tuple[bool, str]:
+    """Stage all changes."""
+    return _git_run(["add", "-A", str(_config_dir())])
+
+
+def git_commit(message: str) -> tuple[bool, str]:
+    """Commit all staged changes."""
+    if not message:
+        message = "Auto-commit config changes before pull"
+    return _git_run(["commit", "-m", message, "--allow-empty"])
+
+
+def git_pull() -> tuple[bool, str]:
+    """Pull from origin."""
+    return _git_run(["pull"])
+
+
+def git_push() -> tuple[bool, str]:
+    """Push current branch to origin."""
+    return _git_run(["push"])
+
+
+def git_init_if_needed() -> tuple[bool, str]:
+    """Lazy init: clone if the repository doesn't exist yet."""
+    if not git_repo_exists():
+        return git_clone()
+    return True, "Repository already exists"
+
+
+def git_reset() -> tuple[bool, str]:
+    """Discard all uncommitted changes (reset working tree to HEAD)."""
+    return _git_run(["reset", "--hard", "HEAD"])
 
 
 # ── ACL resolution ────────────────────────────────────────────────────────────
@@ -1005,7 +1328,10 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     config_file = _config_dir() / f"{name}.yaml"
     if not config_file.exists():
         return None, None
-    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    try:
+        resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    except (OSError, yaml.YAMLError):
+        return None, None
     acl = resolved.get("acl")
     if acl is None:
         return None, None
@@ -1044,7 +1370,7 @@ def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
         return None, None, None
     try:
         resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
-    except OSError:
+    except (OSError, yaml.YAMLError):
         return None, None, None
     comm = resolved.get("comm")
     if not isinstance(comm, dict):

@@ -95,7 +95,7 @@ def dashboard(request):
         except Exception:
             modules = []
     else:
-        modules = services.list_modules()
+        modules = [n for n in services.list_modules() if services._is_valid_module_name(n)]
     return render(request, "modules/dashboard.html", {
         "modules": modules,
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
@@ -179,6 +179,30 @@ def packages(request):
     return render(request, "modules/packages.html", {"active_packages": True})
 
 
+def git_config_page(request):
+    ctx = {"active_git_config": True}
+    host = _active_host(request)
+    if host:
+        ctx["git_enabled"] = True
+        ctx["config_dir"] = ""
+        ctx["git_status"] = {"branch": "", "ahead": 0, "behind": 0, "clean": True, "dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "last_commit": "", "last_commit_time": ""}
+        ctx["git_repo_exists"] = False
+    else:
+        ctx["git_enabled"] = getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False)
+        ctx["git_repo_exists"] = services.git_repo_exists() if ctx["git_enabled"] else False
+        ctx["config_dir"] = str(services._config_dir())
+        if ctx["git_enabled"]:
+            ctx["git_status"] = services.git_status()
+            ctx["pull_disabled"] = not ctx["git_status"]["branch"] or ctx["git_status"]["behind"] == 0
+            ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"]["ahead"] == 0)
+            ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
+            ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
+        else:
+            ctx["git_status"] = {"dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "clean": True}
+            ctx["git_change_count"] = 0
+    return render(request, "modules/git_config.html", ctx)
+
+
 def new_module(request):
     """A dedicated page (not a modal -- this app's own established mobile-friendliness
     convention, see DEV_EJABBERD_USER_MANAGEMENT.md's Users page) for the one-field "create a
@@ -215,9 +239,9 @@ def module_detail(request, name: str):
         "module_name": name,
         "config": config or "",
         "active_module": name,
-        "config_dir": settings.PYOBS_CONFIG_DIR,
+        "config_dir": str(services._config_dir()),
         "log_dir": settings.PYOBS_LOG_DIR,
-        "other_modules": [m for m in services.list_modules() if m != name],
+        "other_modules": [m for m in services.list_modules() if services._is_valid_module_name(m) and m != name],
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
     })
 
@@ -228,7 +252,7 @@ def shared_detail(request, name: str):
         "config_name": name,
         "config": services.get_shared_config(name) or "",
         "active_shared": name,
-        "config_dir": settings.PYOBS_CONFIG_DIR,
+        "config_dir": str(services._config_dir()),
     })
 
 
@@ -1385,3 +1409,76 @@ def api_ejabberd_users_kick(request, user: str):
         return JsonResponse({"success": True})
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=502)
+
+
+# ── Git-backed config API ───────────────────────────────────────────────────────
+
+def api_git_status(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", "/api/git/status/")
+    return JsonResponse(services.git_status())
+
+
+@require_POST
+def api_git_clone(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/clone/")
+    success, message = services.git_clone()
+    if success:
+        return JsonResponse({"success": True, "message": message})
+    return JsonResponse({"success": False, "message": message}, status=409)
+
+
+@require_POST
+def api_git_fetch(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/fetch/")
+    success, message = services.git_fetch()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_pull(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/pull/")
+    success, message = services.git_pull()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_push(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/push/")
+    # Auto-stage + commit, then push
+    success, message = services.git_stage_all()
+    if success:
+        success, message = services.git_commit("Auto-commit config changes before push")
+        # "nothing to commit" is fine
+        if not success:
+            lower = message.lower()
+            if "nothing to commit" not in lower and "no changes" not in lower:
+                return JsonResponse({"success": False, "message": message}, status=502)
+        success, message = services.git_push()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
+
+
+@require_POST
+def api_git_reset(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", "/api/git/reset/")
+    success, message = services.git_reset()
+    if success:
+        return JsonResponse({"success": True})
+    return JsonResponse({"success": False, "message": message}, status=502)
