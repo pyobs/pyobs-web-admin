@@ -1337,7 +1337,10 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     config_file = _config_dir() / f"{name}.yaml"
     if not config_file.exists():
         return None, None
-    resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    try:
+        resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    except (OSError, yaml.YAMLError):
+        return None, None
     acl = resolved.get("acl")
     if acl is None:
         return None, None
@@ -1376,7 +1379,7 @@ def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
         return None, None, None
     try:
         resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
-    except OSError:
+    except (OSError, yaml.YAMLError):
         return None, None, None
     comm = resolved.get("comm")
     if not isinstance(comm, dict):
