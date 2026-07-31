@@ -142,6 +142,10 @@ PYOBS_CONFIG_GIT_SUBPATH = ""
 PYOBS_CONFIG_GIT_REPO = ""
 PYOBS_CONFIG_GIT_BRANCH = "main"
 
+# ACL Matrix -- fleet-wide view of which module can call which. Off by default: not all
+# fleets need this visibility. Set True to enable the /acl/ page and sidebar entry.
+PYOBS_CONFIG_ACL_MATRIX_ENABLED = False
+
 # ejabberd integration -- see DEV_EJABBERD_INTEGRATION.md. Off by default: not every fleet has
 # ejabberd co-located. EJABBERD_HOST names whichever host in HUB_HOSTS (or "localhost")
 # actually runs it -- every other host proxies through to that one rather than talking to
