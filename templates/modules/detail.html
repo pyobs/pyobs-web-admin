@@ -120,6 +120,10 @@
         <input class="form-check-input" type="checkbox" id="auto-refresh" role="switch">
         <label class="form-check-label ms-2" for="auto-refresh">Auto-refresh</label>
       </div>
+      <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
+        <input class="form-check-input" type="checkbox" id="unacked-only" role="switch">
+        <label class="form-check-label ms-2" for="unacked-only">Unacknowledged only</label>
+      </div>
     </div>
     <small class="text-muted d-block mb-1">Click a line to set start time · Shift+click to set end time</small>
     <div id="log-older-status" class="text-muted small mb-1" style="min-height:1.2em"></div>
@@ -605,13 +609,15 @@ function renderLine(line) {
 }
 
 function applyFilters(lines) {
-  const text      = document.getElementById('log-filter').value.toLowerCase();
-  const startVal  = document.getElementById('time-start').value;
-  const endVal    = document.getElementById('time-end').value;
-  const startDate = startVal ? new Date(startVal) : null;
-  const endDate   = endVal   ? new Date(endVal)   : null;
+  const text        = document.getElementById('log-filter').value.toLowerCase();
+  const startVal    = document.getElementById('time-start').value;
+  const endVal      = document.getElementById('time-end').value;
+  const startDate   = startVal ? new Date(startVal) : null;
+  const endDate     = endVal   ? new Date(endVal)   : null;
+  const unackedOnly = document.getElementById('unacked-only').checked;
 
   return lines.filter(line => {
+    if (unackedOnly && !isNewIssue(line)) return false;
     if (text && !line.toLowerCase().includes(text)) return false;
     if (startDate || endDate) {
       const t = parseLogTime(line);
@@ -710,15 +716,17 @@ function clearTimeFilter() {
 }
 
 // ── Persist log settings ──────────────────────────────────────────────────────
-const autoRefreshEl = document.getElementById('auto-refresh');
-const filterEl      = document.getElementById('log-filter');
-const timeStartEl   = document.getElementById('time-start');
-const timeEndEl     = document.getElementById('time-end');
+const autoRefreshEl  = document.getElementById('auto-refresh');
+const filterEl       = document.getElementById('log-filter');
+const timeStartEl    = document.getElementById('time-start');
+const timeEndEl      = document.getElementById('time-end');
+const unackedOnlyEl  = document.getElementById('unacked-only');
 
-autoRefreshEl.checked = localStorage.getItem('log-auto-refresh') !== 'false';
-filterEl.value        = localStorage.getItem('log-filter')       || '';
-timeStartEl.value     = localStorage.getItem('log-time-start')   || '';
-timeEndEl.value       = localStorage.getItem('log-time-end')     || '';
+autoRefreshEl.checked  = localStorage.getItem('log-auto-refresh') !== 'false';
+filterEl.value         = localStorage.getItem('log-filter')       || '';
+timeStartEl.value      = localStorage.getItem('log-time-start')   || '';
+timeEndEl.value        = localStorage.getItem('log-time-end')     || '';
+unackedOnlyEl.checked  = localStorage.getItem('log-unacked-only') === 'true';
 
 autoRefreshEl.addEventListener('change', function () {
   localStorage.setItem('log-auto-refresh', this.checked);
@@ -727,6 +735,10 @@ autoRefreshEl.addEventListener('change', function () {
 });
 filterEl.addEventListener('input', function () {
   localStorage.setItem('log-filter', this.value);
+  renderLogs();
+});
+unackedOnlyEl.addEventListener('change', function () {
+  localStorage.setItem('log-unacked-only', this.checked);
   renderLogs();
 });
 timeStartEl.addEventListener('change', function () {
