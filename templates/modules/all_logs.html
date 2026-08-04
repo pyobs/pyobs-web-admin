@@ -113,7 +113,9 @@ function toDatetimeLocal(d) {
 // Per-module "last acknowledged" timestamp in localStorage (key shared with the per-module
 // Logs tab), since this fleet-wide view merges lines from many modules at once.
 function lineModule(line) {
-  const m = line.match(/^\S+ \S+ \[\w+\] \(([^)]*)\)/);
+  // The optional "[host]" tag inserted by _tag_host() for fleet-wide (multi-host) views
+  // sits between the "[LEVEL]" tag and "(module)", so it must be skipped here too.
+  const m = line.match(/^\S+ \S+ \[\w+\](?:\s*\[[^\]]*\])?\s*\(([^)]*)\)/);
   return m ? m[1] : null;
 }
 

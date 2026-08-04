@@ -500,18 +500,20 @@ def api_log_stats(request, name: str):
 
 
 _LOG_TS_PREFIX_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+_LOG_TS_LEVEL_PREFIX_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[\w+\])')
 
 
 def _tag_host(line: str, host_name: str) -> str:
-    """Inserts a "[host]" tag right after the line's own leading timestamp, so a line stays
-    parseable by the same client-side "timestamp must lead the line" regex the single-host
-    page already relies on (see all_logs.html's parseLogTime) while still showing which host
-    it came from once more than one host is merged into one view."""
-    m = _LOG_TS_PREFIX_RE.match(line)
+    """Inserts a "[host]" tag right after the line's leading "TS [LEVEL]" prefix, so it stays
+    parseable by the client-side parseLogLevel regex (all_logs.html/detail.html), which expects
+    the "[LEVEL]" tag immediately after the timestamp -- inserting the host tag before it would
+    make that regex capture the host name instead of the actual level, silently disabling color
+    coding on this fleet-wide view."""
+    m = _LOG_TS_LEVEL_PREFIX_RE.match(line)
     if not m:
         return f"[{host_name}] {line}"
-    ts = m.group(1)
-    return f"{ts} [{host_name}]{line[len(ts):]}"
+    prefix = m.group(1)
+    return f"{prefix} [{host_name}]{line[len(prefix):]}"
 
 
 @require_GET
