@@ -326,11 +326,95 @@ def _install_spec_for(name: str) -> str:
 def _is_vcs_managed(name: str) -> bool:
     """Whether `name` is a PYOBS_MANAGED_PACKAGES entry with a PEP 508 direct URL reference
     (e.g. a git+ URL) rather than a plain PyPI-resolved name -- such a package has no PyPI
-    release history, so get_package_overview skips the PyPI lookup for it entirely rather
-    than reporting a spurious "unknown"/mismatched result.
+    release history, so get_package_overview looks at its git remote instead (see
+    _vcs_update_status) rather than reporting a spurious "unknown"/mismatched PyPI result.
     """
     spec = _managed_package_specs().get(_normalize_package_name(name))
     return spec is not None and spec.is_vcs
+
+
+def _python_exec() -> str:
+    """python from the same environment as _pip_exec (sibling binary in the same bin/ dir) --
+    needed to introspect an installed distribution's own PEP 610 direct_url.json via
+    importlib.metadata (see _vcs_direct_url_info), which no pip subcommand surfaces directly.
+    """
+    d = os.path.dirname(_pyobs_exec())
+    if d:
+        python_path = os.path.join(d, "python")
+        if os.path.exists(python_path):
+            return python_path
+    return "python3"
+
+
+def _vcs_direct_url_info(name: str) -> dict | None:
+    """The PEP 610 direct_url.json pip recorded for `name` at install time, read via
+    importlib.metadata run through pyobs's own environment (_python_exec) -- not this app's
+    own interpreter, which may be a completely different environment. Returns None if the
+    package isn't installed there, wasn't installed from git, or the metadata can't be read
+    (e.g. an old pip that predates direct_url.json).
+    """
+    script = (
+        "import importlib.metadata, sys\n"
+        "try:\n"
+        "    print(importlib.metadata.distribution(sys.argv[1]).read_text('direct_url.json') or '')\n"
+        "except importlib.metadata.PackageNotFoundError:\n"
+        "    pass\n"
+    )
+    try:
+        result = subprocess.run(
+            [_python_exec(), "-c", script, name],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    vcs_info = data.get("vcs_info")
+    if not vcs_info or vcs_info.get("vcs") != "git" or not vcs_info.get("commit_id"):
+        return None
+    return {"url": data.get("url", ""), "ref": vcs_info.get("requested_revision"), "commit_id": vcs_info["commit_id"]}
+
+
+def _git_remote_commit(url: str, ref: str | None) -> str | None:
+    """The commit SHA `ref` (or the remote's default branch, if no ref was pinned at install
+    time) currently points to on `url`, via `git ls-remote` -- doesn't require cloning the
+    repo just to check whether a newer commit exists. None on any failure (unreachable remote,
+    stale ref, git missing, timeout): same "never fail the whole page over one lookup" policy
+    as _pypi_latest_version.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", url, ref or "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout.split()[0]
+
+
+def _vcs_update_status(name: str) -> dict:
+    """Compares the commit `name` was installed at (from direct_url.json) against its git
+    remote's current commit for the same ref. installed_commit/remote_commit are None (and
+    update_available False) whenever either half of that comparison isn't available -- e.g.
+    an old pip with no direct_url.json, or an unreachable remote -- rather than guessing.
+    """
+    info = _vcs_direct_url_info(name)
+    if not info:
+        return {"ref": None, "installed_commit": None, "remote_commit": None, "update_available": False}
+    remote_commit = _git_remote_commit(info["url"], info["ref"])
+    return {
+        "ref": info["ref"],
+        "installed_commit": info["commit_id"],
+        "remote_commit": remote_commit,
+        "update_available": remote_commit is not None and remote_commit != info["commit_id"],
+    }
 
 
 def list_pyobs_packages() -> list[dict]:
@@ -468,33 +552,42 @@ def _is_update_available(installed: str, latest: str | None) -> bool:
         return latest != installed
 
 
+def _package_overview_entry(pkg: dict) -> dict:
+    """One get_package_overview() row for an already-installed pkg ({"name", "version"}). Split
+    out so the PyPI HTTP call and the git-remote lookup -- both single-package, single-round-trip
+    operations -- can be dispatched identically through the same thread pool regardless of which
+    kind a given package needs.
+    """
+    if _is_vcs_managed(pkg["name"]):
+        status = _vcs_update_status(pkg["name"])
+        return {
+            "name": pkg["name"],
+            "installed_version": status["installed_commit"][:8] if status["installed_commit"] else pkg["version"],
+            "latest_version": status["remote_commit"][:8] if status["remote_commit"] else None,
+            "update_available": status["update_available"],
+            "vcs": True,
+        }
+    latest = _pypi_latest_version(pkg["name"], pkg["version"])
+    return {
+        "name": pkg["name"],
+        "installed_version": pkg["version"],
+        "latest_version": latest,
+        "update_available": _is_update_available(pkg["version"], latest),
+        "vcs": False,
+    }
+
+
 def get_package_overview() -> list[dict]:
-    """list_pyobs_packages() plus each package's latest PyPI release, fetched in parallel
-    since PyPI's JSON API is one HTTP round-trip per package and this page's whole point is
-    showing every pyobs-* package at once. Skips the PyPI lookup entirely for a package
-    installed via a PYOBS_MANAGED_PACKAGES git/URL spec (_is_vcs_managed) -- it isn't
-    published on PyPI, so the lookup would either fail or (worse) hit an unrelated
-    same-named package there; "vcs": True lets the Packages page offer a manual
-    reinstall-to-pick-up-latest-commit action instead of a version comparison it can't make.
+    """list_pyobs_packages() plus each package's latest available version, fetched in parallel
+    since each lookup (a PyPI JSON round-trip, or a `git ls-remote` for a package installed via
+    a PYOBS_MANAGED_PACKAGES git/URL spec -- see _is_vcs_managed) is its own network call and
+    this page's whole point is showing every pyobs-* package at once.
     """
     installed = list_pyobs_packages()
     if not installed:
         return []
     with ThreadPoolExecutor(max_workers=min(8, len(installed))) as pool:
-        latest_versions = list(pool.map(
-            lambda p: None if _is_vcs_managed(p["name"]) else _pypi_latest_version(p["name"], p["version"]),
-            installed,
-        ))
-    return [
-        {
-            "name": pkg["name"],
-            "installed_version": pkg["version"],
-            "latest_version": latest,
-            "update_available": _is_update_available(pkg["version"], latest),
-            "vcs": _is_vcs_managed(pkg["name"]),
-        }
-        for pkg, latest in zip(installed, latest_versions)
-    ]
+        return list(pool.map(_package_overview_entry, installed))
 
 
 def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict:
@@ -558,6 +651,13 @@ def update_package(name: str, installed_version: str) -> tuple[bool, str]:
     args = [_pip_exec(), "install", "--upgrade", "--upgrade-strategy=only-if-needed", "--no-input"]
     if _is_prerelease(installed_version):
         args.append("--pre")
+    if _is_vcs_managed(name):
+        # For a git+ URL, pip's own upgrade check only compares against the version it computed
+        # at install time and has no way to notice the remote has moved on -- it silently treats
+        # "already installed" as satisfying the requirement, so Update would otherwise no-op
+        # even when _vcs_update_status found a newer remote commit. --no-deps confines the
+        # forced reinstall to this package alone, not a full dependency re-resolve.
+        args += ["--force-reinstall", "--no-deps"]
     args.append(_install_spec_for(name))
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=120)

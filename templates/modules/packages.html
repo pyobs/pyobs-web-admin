@@ -10,7 +10,7 @@
   </button>
 </div>
 
-<p class="text-secondary small">Installed <code>pyobs-*</code> packages and their latest release on PyPI.</p>
+<p class="text-secondary small">Installed <code>pyobs-*</code> packages and their latest release (PyPI, or the git remote's current commit for git-installed packages).</p>
 
 <div id="packages-error" class="alert alert-danger d-none"></div>
 
@@ -49,17 +49,14 @@ function pkgRow(pkg) {
   const latestTd = document.createElement('td');
   latestTd.className = 'text-secondary';
   latestTd.textContent = pkg.latest_version ?? '—';
-
   if (pkg.vcs) {
-    latestTd.textContent = 'git';
+    latestTd.classList.add('font-monospace');
+    instTd.classList.add('font-monospace');
   }
 
   const statusTd = document.createElement('td');
   const badge = document.createElement('span');
-  if (pkg.vcs) {
-    badge.className = 'badge bg-info text-dark';
-    badge.textContent = 'git-installed';
-  } else if (pkg.latest_version === null) {
+  if (pkg.latest_version === null) {
     badge.className = 'badge bg-secondary';
     badge.textContent = 'unknown';
   } else if (pkg.update_available) {
@@ -70,12 +67,22 @@ function pkgRow(pkg) {
     badge.textContent = 'up to date';
   }
   statusTd.appendChild(badge);
+  if (pkg.vcs) {
+    const gitBadge = document.createElement('span');
+    gitBadge.className = 'badge bg-info text-dark ms-1';
+    gitBadge.textContent = 'git';
+    statusTd.appendChild(gitBadge);
+  }
 
   const actionTd = document.createElement('td');
   actionTd.className = 'text-end';
   const btn = document.createElement('button');
   btn.className = 'btn btn-sm btn-outline-primary';
-  btn.disabled = !pkg.vcs && !pkg.update_available;
+  // A vcs package whose remote lookup failed (latest_version === null) leaves
+  // update_available false with no way to tell "confirmed current" from "unknown" --
+  // keep the manual reinstall option available in that case rather than locking the
+  // user out of ever forcing an update just because the one-off remote check failed.
+  btn.disabled = pkg.vcs ? (pkg.latest_version !== null && !pkg.update_available) : !pkg.update_available;
   btn.innerHTML = pkg.vcs
     ? '<i class="bi bi-arrow-repeat"></i> Reinstall'
     : '<i class="bi bi-cloud-arrow-down"></i> Update';
