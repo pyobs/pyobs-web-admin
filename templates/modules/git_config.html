@@ -44,10 +44,10 @@
       <button class="btn btn-sm btn-outline-secondary" onclick="gitFetch()" id="btn-git-refresh" title="Refresh status from remote">
         <i class="bi bi-arrow-repeat"></i>
       </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-pull" title="Pull changes from remote"{% if pull_disabled %} disabled{% endif %}>
+      <button class="btn btn-sm btn-outline-primary" onclick="gitPull()" id="btn-git-pull" title="Pull changes from remote"{% if pull_disabled %} disabled{% endif %}>
         <i class="bi bi-cloud-arrow-down"></i> Pull
       </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-git-push" title="Auto-commit and push to remote"{% if push_disabled %} disabled{% endif %}>
+      <button class="btn btn-sm btn-outline-primary" onclick="gitPush()" id="btn-git-push" title="Auto-commit and push to remote"{% if push_disabled %} disabled{% endif %}>
         <i class="bi bi-cloud-arrow-up"></i> Push
       </button>
       <button class="btn btn-sm btn-outline-danger" onclick="gitReset()" id="btn-git-reset" title="Discard all uncommitted changes"{% if reset_disabled %} disabled{% endif %}>
