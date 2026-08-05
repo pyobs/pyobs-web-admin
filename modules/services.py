@@ -1322,10 +1322,23 @@ def git_stage_all() -> tuple[bool, str]:
 
 
 def git_commit(message: str) -> tuple[bool, str]:
-    """Commit all staged changes."""
+    """Commit all staged changes.
+
+    Passes an explicit author identity via -c rather than relying on a global `git config
+    user.name/user.email` already being set for whichever system user runs pyobs-web-admin --
+    without it, git refuses the commit outright with "Author identity unknown" (this is
+    exactly what PYOBS_CONFIG_GIT_AUTHOR_NAME/EMAIL exist to avoid), and -c only overrides it
+    for this one invocation rather than mutating the repo's/user's actual git config.
+    """
     if not message:
         message = "Auto-commit config changes before pull"
-    return _git_run(["commit", "-m", message, "--allow-empty"])
+    author_name = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_NAME", "pyobs-web-admin")
+    author_email = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_EMAIL", "pyobs-web-admin@localhost")
+    return _git_run([
+        "-c", f"user.name={author_name}",
+        "-c", f"user.email={author_email}",
+        "commit", "-m", message, "--allow-empty",
+    ])
 
 
 def git_pull() -> tuple[bool, str]:
