@@ -1,3 +1,5 @@
+import tomllib
+
 from django.conf import settings
 
 from modules import proxy, services
@@ -5,6 +7,24 @@ from modules import proxy, services
 
 def _sort_modules(modules_with_status: list[dict]) -> list[dict]:
     return sorted(modules_with_status, key=lambda m: (0 if m["status"] == "running" else 1, m["name"]))
+
+
+# Cached for the life of the process: this app isn't installed as a distribution (no
+# [build-system] in pyproject.toml, run straight from source via uv), so there's no
+# importlib.metadata entry to read -- pyproject.toml itself is the only source of truth, and
+# it can't change without a redeploy that restarts the process anyway.
+_web_admin_version_cache: str | None = None
+
+
+def _web_admin_version() -> str | None:
+    global _web_admin_version_cache
+    if _web_admin_version_cache is None:
+        try:
+            data = tomllib.loads((settings.BASE_DIR / "pyproject.toml").read_text())
+            _web_admin_version_cache = data.get("project", {}).get("version", "") or ""
+        except OSError:
+            _web_admin_version_cache = ""
+    return _web_admin_version_cache or None
 
 
 def sidebar_modules(request):
@@ -42,5 +62,6 @@ def sidebar_modules(request):
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
         "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
         "acl_matrix_enabled": getattr(settings, "PYOBS_CONFIG_ACL_MATRIX_ENABLED", False),
+        "web_admin_version": _web_admin_version(),
     }
 

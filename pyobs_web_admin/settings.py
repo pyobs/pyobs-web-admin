@@ -142,6 +142,14 @@ PYOBS_CONFIG_GIT_SUBPATH = ""
 PYOBS_CONFIG_GIT_REPO = ""
 PYOBS_CONFIG_GIT_BRANCH = "main"
 
+# Author identity for the auto-commits the Push button makes. Git has no fallback identity of
+# its own to use, so without these (or a global `git config user.name/user.email` already set
+# for whichever system user runs pyobs-web-admin) the commit step fails outright with "Author
+# identity unknown". Defaults name the commit as coming from this app rather than a person, so
+# it isn't attributed to whichever admin happened to be logged in when auto-commit ran.
+PYOBS_CONFIG_GIT_AUTHOR_NAME = "pyobs-web-admin"
+PYOBS_CONFIG_GIT_AUTHOR_EMAIL = "pyobs-web-admin@localhost"
+
 # ACL Matrix -- fleet-wide view of which module can call which. Off by default: not all
 # fleets need this visibility. Set True to enable the /acl/ page and sidebar entry.
 PYOBS_CONFIG_ACL_MATRIX_ENABLED = False
