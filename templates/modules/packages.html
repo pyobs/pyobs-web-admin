@@ -44,7 +44,7 @@ function pkgRow(pkg) {
 
   const instTd = document.createElement('td');
   instTd.className = 'text-secondary';
-  instTd.textContent = pkg.installed_version;
+  instTd.textContent = (pkg.vcs && pkg.version) ? `${pkg.installed_version} (${pkg.version})` : pkg.installed_version;
 
   const latestTd = document.createElement('td');
   latestTd.className = 'text-secondary';

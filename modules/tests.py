@@ -1852,6 +1852,7 @@ class GetPackageOverviewVcsTests(unittest.TestCase):
         self.assertEqual(overview, [{
             "name": "pyobs-iagvt",
             "installed_version": "1.0.0",
+            "version": "1.0.0",
             "latest_version": None,
             "update_available": False,
             "vcs": True,

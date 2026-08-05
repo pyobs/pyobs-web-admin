@@ -91,7 +91,7 @@
     <td class="text-end text-secondary">{{ pkg.latest_version|default:"—" }}</td>
     {% for cell in pkg.cells %}
     <td class="text-end{% if cell.update_available %} text-warning{% endif %}">
-      {% if cell %}{{ cell.installed_version }}{% else %}<span class="text-muted">—</span>{% endif %}
+      {% if cell %}{{ cell.installed_version }}{% if cell.vcs and cell.version %} <span class="text-muted">({{ cell.version }})</span>{% endif %}{% else %}<span class="text-muted">—</span>{% endif %}
     </td>
     {% endfor %}
   </tr>

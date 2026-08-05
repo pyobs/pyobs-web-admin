@@ -563,6 +563,7 @@ def _package_overview_entry(pkg: dict) -> dict:
         return {
             "name": pkg["name"],
             "installed_version": status["installed_commit"][:8] if status["installed_commit"] else pkg["version"],
+            "version": pkg["version"],
             "latest_version": status["remote_commit"][:8] if status["remote_commit"] else None,
             "update_available": status["update_available"],
             "vcs": True,
