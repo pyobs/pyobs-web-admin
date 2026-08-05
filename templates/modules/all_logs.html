@@ -48,6 +48,14 @@
 
 <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
   <input type="text" id="log-filter" class="form-control" style="max-width:220px" placeholder="Filter text…">
+  <select id="log-level-min" class="form-select" style="max-width:160px" title="Minimum log level">
+    <option value="">All levels</option>
+    <option value="DEBUG">DEBUG+</option>
+    <option value="INFO">INFO+</option>
+    <option value="WARNING">WARNING+</option>
+    <option value="ERROR">ERROR+</option>
+    <option value="CRITICAL">CRITICAL only</option>
+  </select>
   <input type="datetime-local" id="time-start" class="form-control" style="max-width:200px" title="Start time">
   <input type="datetime-local" id="time-end"   class="form-control" style="max-width:200px" title="End time">
   <button class="btn btn-outline-secondary btn-sm" onclick="clearTimeFilter()" title="Clear time range">
@@ -94,6 +102,8 @@ function parseLogLevel(line) {
   const m = line.match(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\s*\[(\w+)\]/);
   return m ? m[1].toUpperCase() : null;
 }
+
+const LEVEL_ORDER = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
 
 function parseLogTime(line) {
   const m = line.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
@@ -176,9 +186,16 @@ function applyFilters(lines) {
   const startDate   = startVal ? new Date(startVal) : null;
   const endDate     = endVal   ? new Date(endVal)   : null;
   const unackedOnly = document.getElementById('unacked-only').checked;
+  const minLevel    = document.getElementById('log-level-min').value;
+  const minLevelIdx = minLevel ? LEVEL_ORDER.indexOf(minLevel) : -1;
 
   return lines.filter(line => {
     if (unackedOnly && !isNewIssue(line)) return false;
+    if (minLevelIdx >= 0) {
+      const level = parseLogLevel(line);
+      const levelIdx = level ? LEVEL_ORDER.indexOf(level) : -1;
+      if (levelIdx < minLevelIdx) return false;
+    }
     if (text && !line.toLowerCase().includes(text)) return false;
     if (startDate || endDate) {
       const t = parseLogTime(line);
@@ -323,12 +340,14 @@ const filterEl       = document.getElementById('log-filter');
 const timeStartEl    = document.getElementById('time-start');
 const timeEndEl      = document.getElementById('time-end');
 const unackedOnlyEl  = document.getElementById('unacked-only');
+const levelMinEl     = document.getElementById('log-level-min');
 
 autoRefreshEl.checked  = localStorage.getItem('log-auto-refresh') !== 'false';
 filterEl.value         = localStorage.getItem('log-filter')       || '';
 timeStartEl.value      = localStorage.getItem('log-time-start')   || '';
 timeEndEl.value        = localStorage.getItem('log-time-end')     || '';
 unackedOnlyEl.checked  = localStorage.getItem('log-unacked-only') === 'true';
+levelMinEl.value       = localStorage.getItem('log-level-min')    || '';
 
 autoRefreshEl.addEventListener('change', function () {
   localStorage.setItem('log-auto-refresh', this.checked);
@@ -341,6 +360,10 @@ filterEl.addEventListener('input', function () {
 });
 unackedOnlyEl.addEventListener('change', function () {
   localStorage.setItem('log-unacked-only', this.checked);
+  renderLogs();
+});
+levelMinEl.addEventListener('change', function () {
+  localStorage.setItem('log-level-min', this.value);
   renderLogs();
 });
 timeStartEl.addEventListener('change', function () {
