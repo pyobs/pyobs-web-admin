@@ -7,33 +7,33 @@ collects ideas that haven't been fleshed out into one yet.
 
 ## How this works
 
-Each non-trivial feature gets its own `FEATURE_NAME.md` under `dev-docs/`, following the
-shape `DEV_ACL_MATRIX.md`/`DEV_EJABBERD_INTEGRATION.md` already use: **Status** (one-paragraph
+Each non-trivial feature gets its own `FEATURE_NAME.md` under `specs/design/`, following the
+shape `acl-matrix.md`/`ejabberd-integration.md` already use: **Status** (one-paragraph
 current state, updated as work progresses) → **Motivation** → **Current state** (what's true
 in the codebase before this feature) → **Design** → **Open questions** → **Work Plan**
 (checkboxes, narrated by a **Progress log** as items land). Code comments referencing "the
-design doc" should name the specific file (`DEV_ACL_MATRIX.md`, not `DEVELOPMENT.md`) so they
+design doc" should name the specific file (`acl-matrix.md`, not `README.md`) so they
 keep pointing at the right document as more of these accumulate.
 
 An idea starts as a one-line bullet under **Ideas** below. When someone's ready to actually
 work on it, it gets promoted to its own doc (even a short v0.1 sketch is enough to start —
-see `DEV_EJABBERD_INTEGRATION.md`'s early versions) and gets a line in **Feature docs** instead,
+see `ejabberd-integration.md`'s early versions) and gets a line in **Feature docs** instead,
 linking back here. Ideas don't need to be fully thought through to get listed — half-formed
 is fine, that's what the Design section of the eventual doc is for.
 
 ## Feature docs
 
-- [DEV_ACL_MATRIX.md](DEV_ACL_MATRIX.md) — fleet-wide ACL matrix page: view every module's `acl:`
+- [acl-matrix.md](acl-matrix.md) — fleet-wide ACL matrix page: view every module's `acl:`
   policy in one table, edit it via a structured form (matrix modal or a per-module tab),
   aggregated across hub hosts. **Core (view/edit/hub-aggregation) shipped.** Groups/profiles
   (named caller-list reuse) was fully designed and implemented, then reverted at explicit
-  request — see [DEV_ACL_GROUPS.md](DEV_ACL_GROUPS.md), moved out of this doc entirely.
-- [DEV_EJABBERD_INTEGRATION.md](DEV_EJABBERD_INTEGRATION.md) — read-only visibility into ejabberd's
+  request — see [acl-groups.md](acl-groups.md), moved out of this doc entirely.
+- [ejabberd-integration.md](ejabberd-integration.md) — read-only visibility into ejabberd's
   own state (registered/connected users, per-module session info) on the dashboard and
   module pages, closing the "process running ≠ XMPP connected" and "config vs. reality" gaps.
   **Shipped, all 7 Work Plan items done and verified against a live instance** (including
   the `mod_http_api` config and its security model).
-- [DEV_JOURNALD_LOGS.md](DEV_JOURNALD_LOGS.md) — one switch (`PYOBS_LOG_BACKEND`) that both starts
+- [journald-logs.md](journald-logs.md) — one switch (`PYOBS_LOG_BACKEND`) that both starts
   pyobs modules logging into the systemd journal (`pyobs --syslog`, already supported
   upstream) instead of a flat file, and reads them back from there for the existing log
   viewer. **Implemented and verified live end-to-end.** Only one deploy-time question left
@@ -44,9 +44,9 @@ is fine, that's what the Design section of the eventual doc is for.
   windows (a module's own Logs tab, and fleet-wide All Logs) now auto-load older entries when
   scrolled to the top, via journalctl's `--until` — journald-backed modules only, since the
   file backend has no seek/offset to page further back with.
-- [DEV_EJABBERD_USER_MANAGEMENT.md](DEV_EJABBERD_USER_MANAGEMENT.md) — register/reset-password/ban/
+- [ejabberd-user-management.md](ejabberd-user-management.md) — register/reset-password/ban/
   unregister XMPP accounts for a module's `comm.user` from pyobs-web-admin, closing the
-  write-side gap `DEV_EJABBERD_INTEGRATION.md` deliberately left open. **Implemented and
+  write-side gap `ejabberd-integration.md` deliberately left open. **Implemented and
   verified live end-to-end** (full register → reset-password → ban → unban → unregister
   round trip against a real ejabberd instance, using a disposable test account and a scratch
   module config, never a real one). `ejabberdctl`-only transport needed no ejabberd-side ACL
@@ -114,6 +114,11 @@ is fine, that's what the Design section of the eventual doc is for.
   Config tab with the starter YAML on disk; separately confirmed both error paths (duplicate
   name, invalid name) render inline, and checked the form page at a 390px mobile viewport
   (clean, no overflow).
+- [git-backed-configuration.md](git-backed-configuration.md) — optional Git persistence backend
+  for `PYOBS_CONFIG_DIR`, with a dedicated **Git Config** sidebar page for status and
+  clone/fetch/pull/push/reset. **Implemented**, off by default. Two known gaps left open (see
+  that doc's Open questions): `git_pull()` doesn't auto-stage/commit first as originally
+  planned, and the page ignores `PYOBS_CONFIG_GIT_ENABLED` when visited directly.
 
 ## Ideas (not yet designed)
 
@@ -123,7 +128,7 @@ None currently.
 
 - No database — sessions are signed cookies (`SESSION_ENGINE` in `pyobs_web_admin/settings.py`).
   Any feature needing persisted app-local state (not `pyobs` config, not session data) needs
-  its own storage decision, documented in that feature's own doc (see `DEV_ACL_GROUPS.md` for one
+  its own storage decision, documented in that feature's own doc (see `acl-groups.md` for one
   such call already made: a flat JSON file, not a new DB dependency).
 - Hub mode (`HUB_HOSTS` in settings, `modules/proxy.py`) is normally "one active host at a
   time" (dashboard/config/logs switch to whichever host the sidebar has selected) — a feature

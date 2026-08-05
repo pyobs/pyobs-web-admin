@@ -187,7 +187,7 @@ def _log_backend() -> str:
     if its syslog key is true, "file" otherwise -- matching pyobsd's own --syslog default of
     False. Auto-detecting instead of requiring this configured a second time removes the
     risk of PYOBS_LOG_BACKEND silently drifting out of sync with what pyobsd actually starts
-    modules with -- see DEV_JOURNALD_LOGS.md."""
+    modules with -- see journald-logs.md."""
     configured = getattr(settings, "PYOBS_LOG_BACKEND", None)
     if configured:
         return configured
@@ -198,7 +198,7 @@ def _log_backend() -> str:
 # logging.CRITICAL and logging.FATAL are the same int (50) in Python's logging module, so
 # logging_journald.JournaldLogHandler.LEVELS's dict literal silently collapses to
 # LEVELS[50] == 0, not 2. Verified live against a real emitted CRITICAL record -- see
-# DEV_JOURNALD_LOGS.md, Design, for the full trail. 2/1/5 never occur in practice.
+# journald-logs.md, Design, for the full trail. 2/1/5 never occur in practice.
 _JOURNALD_PRIORITY_TO_LEVEL = {0: "CRITICAL", 3: "ERROR", 4: "WARNING", 6: "INFO", 7: "DEBUG"}
 
 
@@ -851,7 +851,7 @@ def restart_module(name: str) -> tuple[bool, str]:
 # local pyobs-core install (see api_all_logs' hub delegation: a remote host's logs are always
 # fetched by *that host's own* instance, never read out of its journal directly), so there's
 # no cross-host version mixing to worry about within a single journalctl call. See
-# DEV_JOURNALD_LOGS.md, Current state.
+# journald-logs.md, Current state.
 _PYOBS_CORE_STRIPS_MODULE_UNDERSCORE = Version("2.0.0.dev41")
 
 
@@ -1381,12 +1381,12 @@ def _block_source_file(raw: str, key: str) -> str | None:
     via {include}. Returns the shared fragment's name (as used by list_shared_configs()),
     or None if the block (if any) is defined locally. Generalized from what used to be
     acl:-only (`_acl_source_file`) so `get_resolved_comm` can reuse the exact same
-    detection for `comm:` -- see DEV_EJABBERD_USER_MANAGEMENT.md's config write-back, which needs
+    detection for `comm:` -- see ejabberd-user-management.md's config write-back, which needs
     the same "is this locally editable or does it live in a shared fragment" answer for
     comm.password that get_resolved_acl already gives for acl:.
 
     Only recognizes the two patterns pyobs-web-admin's own editor can produce (see
-    DEV_ACL_MATRIX.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
+    acl-matrix.md, "Editing from the matrix"): a bare top-level `{include x.shared.yaml}`
     whose target's own top-level content defines `<key>:`, or a `<key>:` key whose entire
     value is a single `{include x.shared.yaml}`. A more deeply nested include structure
     (e.g. an include reaching into a dotted sub-key of a larger fragment) falls back to
@@ -1459,11 +1459,11 @@ def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
 
     comm_user/comm_password are None if the module has no comm: block at all (confirmed real
     example: HttpFileCache) or the respective sub-key is missing -- not an error, just "this
-    module was never expected to have an XMPP identity" (see DEV_EJABBERD_INTEGRATION.md, "Where
+    module was never expected to have an XMPP identity" (see ejabberd-integration.md, "Where
     it surfaces"). source is None if comm: is defined directly in the module's own file, or
     the shared fragment's name if pulled in via {include}.
 
-    The password is needed (not just user) for DEV_EJABBERD_USER_MANAGEMENT.md's register
+    The password is needed (not just user) for ejabberd-user-management.md's register
     action: it registers a new XMPP account using whatever password the module's config
     *already* declares, rather than prompting for a new one -- the whole point is making an
     existing comm.user/comm.password config actually work, not choosing a fresh credential.
@@ -1502,7 +1502,7 @@ def get_comm_user(name: str) -> str | None:
     comm: {user: camera, ...}. Display-only convenience wrapper around get_resolved_comm,
     dropping the password/source -- most callers (dashboard, module page) only ever show
     this value, they don't edit it or need its credential. See get_resolved_comm for the
-    fuller resolution DEV_EJABBERD_USER_MANAGEMENT.md's write actions need.
+    fuller resolution ejabberd-user-management.md's write actions need.
     """
     return get_resolved_comm(name)[0]
 
@@ -1510,9 +1510,9 @@ def get_comm_user(name: str) -> str | None:
 def find_modules_sharing_comm_user(user: str) -> list[str]:
     """Every locally-configured module whose resolved comm.user equals user.
 
-    Needed because DEV_EJABBERD_USER_MANAGEMENT.md's write actions (register/change_password/
+    Needed because ejabberd-user-management.md's write actions (register/change_password/
     ban_account/unban_account/unregister) affect *every* module sharing an XMPP identity,
-    not just whichever module's page an action was triggered from -- DEV_EJABBERD_INTEGRATION.md's
+    not just whichever module's page an action was triggered from -- ejabberd-integration.md's
     own "third bug" documents _test and camera sharing one comm.user for real, in this exact
     fleet, not a hypothetical edge case.
     """
@@ -1563,7 +1563,7 @@ def _replace_comm_password(raw: str, new_password: str) -> str:
     None, see get_resolved_comm) and already has its own password: sub-key. Raises
     ValueError if no top-level comm: block or no password: sub-key is found -- this doesn't
     handle adding a password: key that doesn't exist yet, matching this feature's scope of
-    managing an *existing* comm.user (see DEV_EJABBERD_USER_MANAGEMENT.md, "Modules with no
+    managing an *existing* comm.user (see ejabberd-user-management.md, "Modules with no
     comm: block").
     """
     lines = raw.splitlines()
@@ -1603,7 +1603,7 @@ def save_comm_password(user: str, new_password: str) -> list[str]:
     All-or-nothing: if *any* matching module's comm: resolves to a shared fragment, raises
     before writing to *any* of them -- a partial write (some modules updated, others left
     with a now-stale password) would be a worse outcome than not writing at all, exactly the
-    risk DEV_EJABBERD_USER_MANAGEMENT.md's Design section calls out for a shared comm.user. If
+    risk ejabberd-user-management.md's Design section calls out for a shared comm.user. If
     verification fails partway through (some files written, a later one doesn't check out),
     rolls back every file this call itself wrote, mirroring save_local_acl's safety net but
     extended across the whole matching set.
@@ -1659,7 +1659,7 @@ def _replace_local_acl_block(raw: str, acl: dict | None) -> str:
     text, leaving every other line -- other keys, {include ...} directives, comments, blank
     lines -- byte-for-byte untouched. Only valid to call when the acl: block is known to be
     defined directly in this file rather than pulled in via {include} (callers must check
-    get_resolved_acl's source is None first -- see DEV_ACL_MATRIX.md, "Editing from the
+    get_resolved_acl's source is None first -- see acl-matrix.md, "Editing from the
     matrix", for why writing through a shared fragment must never happen silently).
 
     Locates the block the same way _block_source_file does (walk top-level keys, a "acl:"
@@ -1709,7 +1709,7 @@ def save_local_acl(name: str, acl: dict | None) -> None:
     Refuses to write if the module's acl: currently comes from a shared fragment; callers
     must route that edit to the fragment's own file instead (get_resolved_acl's source).
     After writing, re-resolves the module's acl: and rolls back to the original content if
-    it doesn't match what was requested -- seeing DEV_ACL_MATRIX.md's note on the splice's
+    it doesn't match what was requested -- seeing acl-matrix.md's note on the splice's
     simplifying assumption, this is the safety net against a silent bad write rather than
     trying to make the splice logic exhaustively correct up front.
     """
@@ -1738,7 +1738,7 @@ _INTERFACE_NAME_RE = re.compile(r"^I[A-Z]\w*$")
 def _is_interface_name(entry: str) -> bool:
     """Heuristic for telling an interface-name shorthand entry (e.g. "ICamera") in an acl
     allow list apart from a plain method name, without importing pyobs-core's own
-    pyobs.interfaces to check against (see DEV_ACL_MATRIX.md, "Interface-name shorthand").
+    pyobs.interfaces to check against (see acl-matrix.md, "Interface-name shorthand").
     Relies on pyobs's own naming convention: interfaces are always IPascalCase, method
     names are always snake_case, so the two can never collide.
     """
@@ -1747,7 +1747,7 @@ def _is_interface_name(entry: str) -> bool:
 
 def _acl_cell(acl: dict | None, caller: str) -> dict:
     """Computes one (target, caller) cell's value from the target's resolved acl: block,
-    per the table in DEV_ACL_MATRIX.md, "What the matrix shows"."""
+    per the table in acl-matrix.md, "What the matrix shows"."""
     if not acl:
         return {"kind": "open", "methods": None, "mode": "enforce"}
 
@@ -1847,7 +1847,7 @@ def build_acl_matrix() -> dict:
 
 def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
     """Combines each host's build_acl_matrix()-shaped result into one fleet-wide matrix --
-    see DEV_ACL_MATRIX.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
+    see acl-matrix.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
     pairs, e.g. [("localhost", build_acl_matrix()), ("MONETS", <that host's own matrix,
     fetched via the hub proxy>), ...].
 

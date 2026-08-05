@@ -127,7 +127,7 @@ matches how those are already global, not per-module; this app has no existing m
 per-module settings (every per-module distinction today comes from that module's own YAML
 config, and log backend isn't part of the `acl:`/`comm:` surface). **Settled: global-only, no
 per-module override** — revisit only if a real fleet needs a migrate-one-module-at-a-time mix,
-same reasoning `DEV_ACL_GROUPS.md` uses for deferring its own similar questions.
+same reasoning `acl-groups.md` uses for deferring its own similar questions.
 
 **v1.1: auto-detected from `pyobsd`'s own config, not a manual setting by default.**
 `pyobsd` (`pyobs-core`'s daemon manager, `pyobs-core/pyobs/cli/pyobsd.py`) reads a global
@@ -144,7 +144,7 @@ auto-detection, so any existing deployment that already set this keeps working u
 **Settled: switching backends is a clean cutover, not a migration.** A module's log history
 written under the old backend becomes invisible to `get_logs` once `PYOBS_LOG_BACKEND` flips —
 no dual-read, no "check both, merge" reader. Matches this app's existing "no silent fallback
-across backends" preference (see `DEV_EJABBERD_INTEGRATION.md`'s HTTP-vs-`ejabberdctl` design,
+across backends" preference (see `ejabberd-integration.md`'s HTTP-vs-`ejabberdctl` design,
 which picks one path deterministically and never catches failures to fall back). An operator
 who wants old file logs preserved keeps the file itself around externally; this app makes no
 attempt to reconcile the two.
@@ -342,7 +342,7 @@ None remaining as of v1.3.
   text shape via the verified priority reverse-map above. Unit tests against **real captured
   `journalctl -o json` output**, not invented JSON shapes — this doc already found one real
   surprise (the `CRITICAL`→`0` collapse) that an invented fixture would have missed, the same
-  lesson `DEV_EJABBERD_INTEGRATION.md`'s Work Plan item 3 drew from its own trailing-tab bug. →
+  lesson `ejabberd-integration.md`'s Work Plan item 3 drew from its own trailing-tab bug. →
   `modules/services.py`, tests in `modules/tests.py`. Caught a second real bug along the way
   (`CODE_FILE` full-path-vs-basename mismatch) that even the real fixtures missed — see
   Progress log.
@@ -355,7 +355,7 @@ None remaining as of v1.3.
   permission" section.
 - [x] `README.md`: document `PYOBS_LOG_BACKEND` once the above is implemented and verified
   live end-to-end — not before, matching this repo's existing practice of not documenting a
-  setting in README before it's actually consumed by code (see `DEV_EJABBERD_INTEGRATION.md`'s
+  setting in README before it's actually consumed by code (see `ejabberd-integration.md`'s
   Progress log, Work Plan item 2, for the same reasoning applied there).
 - [x] **v1.1, not in the original plan.** Auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own
   config file instead of requiring it set a second time — see Progress log.

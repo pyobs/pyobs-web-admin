@@ -210,7 +210,7 @@ def git_config_page(request):
 
 def new_module(request):
     """A dedicated page (not a modal -- this app's own established mobile-friendliness
-    convention, see DEV_EJABBERD_USER_MANAGEMENT.md's Users page) for the one-field "create a
+    convention, see ejabberd-user-management.md's Users page) for the one-field "create a
     brand-new module config" form. Follows the session's active host like module_detail
     itself, since this always operates on one host at a time, not fleet-wide."""
     return render(request, "modules/new_module.html", {"active_new_module": True})
@@ -313,7 +313,7 @@ def all_logs(request):
 def acl_matrix(request):
     if not getattr(settings, "PYOBS_CONFIG_ACL_MATRIX_ENABLED", False):
         raise Http404
-    # Aggregates across every configured hub host (see DEV_ACL_MATRIX.md, "Hub mode
+    # Aggregates across every configured hub host (see acl-matrix.md, "Hub mode
     # interaction") regardless of which host is currently "active" in the session --
     # unlike the rest of this app's hub-mode views, this page's whole point is to show
     # fleet-wide policy in one place, not to view one host at a time.
@@ -681,7 +681,7 @@ def api_shared_config(request, name: str):
 def api_acl_matrix(request):
     """Queried by another pyobs-web-admin instance acting as a hub, to fold this
     installation's own local ACL matrix into its fleet-wide view -- see
-    services.merge_acl_matrices and DEV_ACL_MATRIX.md, "Hub mode interaction"."""
+    services.merge_acl_matrices and acl-matrix.md, "Hub mode interaction"."""
     return JsonResponse(services.build_acl_matrix())
 
 
@@ -699,7 +699,7 @@ def api_acl(request, name: str):
     just be reused for POST here -- a POST with no "host" must mean "localhost" even if the
     session happens to have switched to a remote host elsewhere, since silently consulting
     session state here was a real footgun during the matrix's hub-mode work (see
-    DEV_ACL_MATRIX.md, Work Plan item 8).
+    acl-matrix.md, Work Plan item 8).
     """
     if request.method == "GET":
         host = _active_host(request)
@@ -788,7 +788,7 @@ def _ejabberd_host_config() -> dict | None:
 
 def _ejabberd_status() -> dict:
     """The fleet's ejabberd snapshot, delegating to wherever EJABBERD_HOST points (see
-    DEV_EJABBERD_INTEGRATION.md, Hub-mode delegation) -- calls this instance's own ejabberd.py
+    ejabberd-integration.md, Hub-mode delegation) -- calls this instance's own ejabberd.py
     directly if EJABBERD_HOST is "localhost", otherwise proxies to that host's own
     api_ejabberd_status. Never calls a remote host's EJABBERD_API_URL directly -- mod_http_api
     stays loopback-only wherever it's configured; only the existing hub-token-authenticated
@@ -807,7 +807,7 @@ def _ejabberd_status() -> dict:
 def _ejabberd_user(user: str) -> dict:
     """Live ejabberd state for one JID local-part, delegating to wherever EJABBERD_HOST
     points -- this can be a *different* host than whichever one actually runs the module
-    this JID belongs to (see DEV_EJABBERD_INTEGRATION.md, Hub-mode delegation): a module's
+    this JID belongs to (see ejabberd-integration.md, Hub-mode delegation): a module's
     comm.user is always resolved locally on the host that runs it (services.get_comm_user),
     but the live ejabberd query for that identity always goes through this function
     instead, regardless of which host asked."""
@@ -849,7 +849,7 @@ def _ejabberd_all_users() -> dict:
     return {"users": result}
 
 
-# ── ejabberd write delegation (DEV_EJABBERD_USER_MANAGEMENT.md) ─────────────────────
+# ── ejabberd write delegation (ejabberd-user-management.md) ─────────────────────
 #
 # Same one-hop delegation shape as _ejabberd_status/_ejabberd_user above: call
 # modules.ejabberd directly if EJABBERD_HOST is "localhost", otherwise proxy.call() to that
@@ -914,7 +914,7 @@ def api_ejabberd_status(request):
     """This instance's own local ejabberd snapshot -- queried directly when EJABBERD_HOST
     == "localhost" for whichever instance is rendering the dashboard, or by another
     pyobs-web-admin instance acting as a hub when its own EJABBERD_HOST names this host
-    (see DEV_EJABBERD_INTEGRATION.md, Hub-mode delegation). Always answers using this
+    (see ejabberd-integration.md, Hub-mode delegation). Always answers using this
     instance's own ejabberd.py calls -- like api_acl_matrix, it has no host-awareness of
     its own; the caller decides, via EJABBERD_HOST, that this is the right instance to ask.
     """
@@ -930,7 +930,7 @@ def api_ejabberd_status(request):
 def api_ejabberd_user(request, user: str):
     """Live ejabberd state for one JID local-part -- the delegation target for whichever
     instance actually hosts a module's config once it has resolved that module's
-    comm.user (see DEV_EJABBERD_INTEGRATION.md, Hub-mode delegation: the module's own host and
+    comm.user (see ejabberd-integration.md, Hub-mode delegation: the module's own host and
     EJABBERD_HOST can be two different hosts entirely). No host-awareness here either, same
     reasoning as api_ejabberd_status."""
     return JsonResponse({
@@ -962,14 +962,14 @@ def api_ejabberd_users(request):
     return JsonResponse({"users": result})
 
 
-# ── ejabberd write API -- hub-facing, "dumb" (DEV_EJABBERD_USER_MANAGEMENT.md) ──────
+# ── ejabberd write API -- hub-facing, "dumb" (ejabberd-user-management.md) ──────
 #
 # Delegation targets for _ejabberd_register/_ejabberd_change_password/_ejabberd_ban/
 # _ejabberd_unban/_ejabberd_unregister above, exactly parallel to api_ejabberd_user -- no
 # host-awareness of their own, operate on a bare XMPP username, and always call
 # modules.ejabberd directly against this instance's own configured EJABBERD_API_URL/
 # EJABBERDCTL. modules.ejabberd's write functions raise ValueError on failure (see that
-# module and DEV_EJABBERD_USER_MANAGEMENT.md's "Verified live"); caught here and turned into a
+# module and ejabberd-user-management.md's "Verified live"); caught here and turned into a
 # 400 with ejabberd's own message, which a delegating instance's proxy.call surfaces as an
 # HTTPError for _ejabberd_* above to catch alongside any local ValueError.
 
@@ -1052,13 +1052,13 @@ def api_ejabberd_user_kick(request, user: str):
 # Unlike api_ejabberd_status/api_ejabberd_user above (dumb, hub-facing, always local), these
 # two are what the dashboard/module page's own JS calls directly -- they delegate per
 # EJABBERD_HOST via _ejabberd_status/_ejabberd_user, so they're correct to call regardless
-# of where ejabberd actually lives (see DEV_EJABBERD_INTEGRATION.md, Hub-mode delegation).
+# of where ejabberd actually lives (see ejabberd-integration.md, Hub-mode delegation).
 
 @require_GET
 def api_ejabberd_summary(request):
     """Fleet-wide ejabberd summary for the dashboard's tile + per-module indicator. Not
     host-aware via _active_host like most of this app's other API views -- ejabberd is
-    normally one shared server for the whole fleet (see DEV_EJABBERD_INTEGRATION.md), so this
+    normally one shared server for the whole fleet (see ejabberd-integration.md), so this
     answers the same regardless of which host's dashboard is currently being viewed."""
     if not getattr(settings, "EJABBERD_ENABLED", False):
         return JsonResponse({"enabled": False})
@@ -1089,7 +1089,7 @@ def api_comm_user_map(request):
     own fleet-wide Users page, mirroring api_acl_matrix's role for the ACL matrix. Includes
     each module's running status so the Users page can mark which of several modules
     sharing one identity is actually the one running -- the exact same ambiguity
-    DEV_EJABBERD_INTEGRATION.md's "third bug" already had to resolve for the per-module page."""
+    ejabberd-integration.md's "third bug" already had to resolve for the per-module page."""
     mapping = services.build_comm_user_map()
     result = {
         user: [{"name": name, "status": services.get_module_status(name)} for name in names]
@@ -1104,10 +1104,10 @@ def xmpp_users(request):
     account used by a human, not pyobs) -- aggregates every configured hub host (like
     acl_matrix/all_logs) for the module-ownership side, since a comm.user can be configured
     on any host in the fleet, all normally pointing at the same one shared ejabberd instance
-    (see DEV_EJABBERD_INTEGRATION.md, Hub-mode delegation -- ejabberd itself is queried once via
+    (see ejabberd-integration.md, Hub-mode delegation -- ejabberd itself is queried once via
     api_xmpp_users, not per host).
 
-    Deliberately read-only: DEV_EJABBERD_USER_MANAGEMENT.md's write actions (register/reset
+    Deliberately read-only: ejabberd-user-management.md's write actions (register/reset
     password/ban/unregister) stay on the module page that owns each identity -- this page
     links there rather than duplicating those actions, since several of them (register's
     "use the module's own configured password", the config write-back) are only meaningful
@@ -1162,10 +1162,10 @@ def api_module_ejabberd(request, name: str):
     module is actually the one running. registered/ban_details are account-level facts, not
     session state, so unlike sessions/last they're queried and returned regardless of
     module_running -- registering/resetting/banning an account for a module that isn't
-    running yet (or anymore) is a real, intended use case (DEV_EJABBERD_USER_MANAGEMENT.md), not
+    running yet (or anymore) is a real, intended use case (ejabberd-user-management.md), not
     something that should require starting the module first.
 
-    shared_with (DEV_EJABBERD_USER_MANAGEMENT.md) lists every *other* local module resolving to
+    shared_with (ejabberd-user-management.md) lists every *other* local module resolving to
     the same comm.user -- a config fact, independent of ejabberd/running state, so it's
     always included once comm_user resolves. Feeds the write actions' confirmation UI, which
     must show this before a ban/unregister goes through (see that doc's Design)."""
@@ -1211,7 +1211,7 @@ def api_module_ejabberd_register(request, name: str):
     """Registers module name's comm.user as a new XMPP account, using the password its own
     config already declares -- no password is read from the request body at all. The point
     is making an existing comm.user/comm.password config actually work, not choosing a fresh
-    credential (see DEV_EJABBERD_USER_MANAGEMENT.md, Design).
+    credential (see ejabberd-user-management.md, Design).
 
     Accepts an explicit "host" in the body (see _resolve_action_host) so the Users page can
     target a specific module regardless of the session's active host; the module page's own

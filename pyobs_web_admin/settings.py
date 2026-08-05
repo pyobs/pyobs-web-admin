@@ -99,7 +99,7 @@ PYOBS_LOG_LEVEL = "info"
 # ]
 PYOBS_MANAGED_PACKAGES = []
 
-# Where module logs live -- see DEV_JOURNALD_LOGS.md. "file": pyobs writes to PYOBS_LOG_DIR,
+# Where module logs live -- see specs/design/journald-logs.md. "file": pyobs writes to PYOBS_LOG_DIR,
 # read back with tail. "journald": pyobs is started with --syslog instead of --log-file,
 # read back with journalctl. Fleet-wide switch, not per-module -- see that doc's Design
 # section for why.
@@ -113,7 +113,7 @@ PYOBS_MANAGED_PACKAGES = []
 # override auto-detection.
 PYOBS_LOG_BACKEND = None
 
-# Git-backed configuration -- see dev-docs/PLAN-git-config2.md. Off by default: set these to
+# Git-backed configuration -- see specs/design/git-backed-configuration.md. Off by default: set these to
 # enable Git as a persistence backend for configuration files. Configuration writes are
 # staged automatically after saves, and the Git card on the dashboard shows status.
 # The repository is cloned via sparse checkout so only the configured subpath is checked out.
@@ -154,7 +154,7 @@ PYOBS_CONFIG_GIT_AUTHOR_EMAIL = "pyobs-web-admin@localhost"
 # fleets need this visibility. Set True to enable the /acl/ page and sidebar entry.
 PYOBS_CONFIG_ACL_MATRIX_ENABLED = False
 
-# ejabberd integration -- see DEV_EJABBERD_INTEGRATION.md. Off by default: not every fleet has
+# ejabberd integration -- see specs/design/ejabberd-integration.md. Off by default: not every fleet has
 # ejabberd co-located. EJABBERD_HOST names whichever host in HUB_HOSTS (or "localhost")
 # actually runs it -- every other host proxies through to that one rather than talking to
 # ejabberd's HTTP API directly, which stays loopback-only wherever it's configured.
