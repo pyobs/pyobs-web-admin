@@ -184,10 +184,11 @@ def git_config_page(request):
     
     ctx["git_enabled"] = True
     ctx["config_dir"] = ""
-    
+
     # Always compute git status server-side via the active host's API
     active_name = request.session.get("active_host", "localhost")
     host_config = proxy.get_host_config(active_name)
+    ctx["git_repo_exists"] = services.git_repo_exists()
     try:
         if host_config:
             # Hub node: call the hub's own git endpoint directly
@@ -195,7 +196,6 @@ def git_config_page(request):
         else:
             # Local node: proxy through (or call directly)
             ctx["git_status"] = services.git_status()
-        ctx["git_repo_exists"] = True
     except Exception:
         ctx["git_status"] = {"branch": "", "ahead": 0, "behind": 0, "clean": True, "dirty": False, "modified_files": [], "new_files": [], "deleted_files": [], "last_commit": "", "last_commit_time": ""}
         ctx["git_repo_exists"] = False
