@@ -116,27 +116,32 @@ PYOBS_LOG_BACKEND = None
 # Git-backed configuration -- see specs/design/git-backed-configuration.md. Off by default: set these to
 # enable Git as a persistence backend for configuration files. Configuration writes are
 # staged automatically after saves, and the Git card on the dashboard shows status.
-# The repository is cloned via sparse checkout so only the configured subpath is checked out.
+# The repo is cloned into PYOBS_CONFIG_GIT_SOURCE_DIR with sparse checkout so only the
+# configured subpath is checked out.
 #
-# PYOBS_CONFIG_GIT_ROOT   – directory that contains .git. Set explicitly so the repository
-#                          location is decoupled from PYOBS_CONFIG_DIR (which may point
-#                          inside a sparse checkout). Must remain constant after cloning.
-# PYOBS_CONFIG_GIT_SUBPATH – sparse checkout path kept inside PYOBS_CONFIG_GIT_ROOT, e.g.
-#                          "sites/obs1". The working tree inside this directory is where
-#                          pyobs reads and writes its YAML files via PYOBS_CONFIG_DIR.
+# PYOBS_CONFIG_GIT_SOURCE_DIR – parent directory for all git repos, e.g. /opt/pyobs/src.
+#                               Each repo clones into <source_dir>/<repo_name> (repo name
+#                               derived from the last path segment of PYOBS_CONFIG_GIT_REPO).
+# PYOBS_CONFIG_GIT_ROOT       – override the derived repo root. Optional; derived from
+#                               <source_dir>/<repo_name> when empty.
+# PYOBS_CONFIG_GIT_SUBPATH    – sparse checkout path inside the repo, e.g.
+#                               configs/south/obs1. The working tree inside this directory
+#                               is where pyobs reads and writes its YAML files.
 #
-# Expected layout after clone (with repo root "/opt/pyobs/config", subpath "sites/obs1"):
+# Expected layout after clone (source dir /opt/pyobs/src, repo pyobs-config, subpath configs/south/obs1):
 #
-#   /opt/pyobs/config/           # PYOBS_CONFIG_GIT_ROOT (contains .git)
+#   /opt/pyobs/src/pyobs-config/           # git repo root (contains .git)
 #   ├── .git/
-#   ├── sites/
-#   │   └── obs1/
-#   │       ├── modules/
-#   │       └── comm.yaml
+#   ├── configs/
+#   │   └── south/
+#   │       └── obs1/
+#   │           ├── modules/
+#   │           └── comm.yaml
 #
-#   /opt/pyobs/config/sites/obs1 # PYOBS_CONFIG_DIR (pyobs reads/writes here)
+#   /opt/pyobs/config -> .../obs1          # PYOBS_CONFIG_DIR symlink (pyobs reads/writes here)
 #
 PYOBS_CONFIG_GIT_ENABLED = False
+PYOBS_CONFIG_GIT_SOURCE_DIR = "/opt/pyobs/src"
 PYOBS_CONFIG_GIT_ROOT = ""
 PYOBS_CONFIG_GIT_SUBPATH = ""
 PYOBS_CONFIG_GIT_REPO = ""

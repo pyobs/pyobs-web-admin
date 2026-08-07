@@ -33,10 +33,10 @@ _ACL_YAML.default_flow_style = False
 
 def _config_dir() -> Path:
     if getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False):
-        root = getattr(settings, "PYOBS_CONFIG_GIT_ROOT", "")
-        subpath = getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
-        if root and subpath:
-            candidate = Path(root) / subpath
+        subpath = _git_subpath()
+        if subpath:
+            repo_dir = _git_repo_dir()
+            candidate = repo_dir / subpath
             if candidate.exists():
                 return candidate
     return Path(settings.PYOBS_CONFIG_DIR)
@@ -65,7 +65,7 @@ def _git_root() -> Path | None:
 
 
 def _git_config_ok() -> tuple[bool, str]:
-    """Validate that PYOBS_CONFIG_DIR is inside the configured git root.
+    """Validate that PYOBS_CONFIG_DIR resolves to a path inside the configured git root.
 
     Returns (success, error_message). If git is disabled the check is a no-op.
     """
@@ -73,8 +73,9 @@ def _git_config_ok() -> tuple[bool, str]:
         return True, ""
     repo_dir = _git_repo_dir()
     config_dir = _config_dir()
+    # Resolve symlinks so PYOBS_CONFIG_DIR -> repo/subpath still passes the "inside repo" check.
     try:
-        config_dir.relative_to(repo_dir)
+        config_dir.resolve().relative_to(repo_dir.resolve())
     except ValueError:
         return False, (
             f"PYOBS_CONFIG_DIR ({config_dir}) is not inside "
@@ -88,21 +89,84 @@ def _git_subpath() -> str:
     return getattr(settings, "PYOBS_CONFIG_GIT_SUBPATH", "")
 
 
+def _repo_name() -> str:
+    """Extract the repo name from PYOBS_CONFIG_GIT_REPO.
+
+    Strips trailing ".git" and takes the last path segment.
+    Examples:
+        "https://github.com/pyobs/pyobs-config.git" -> "pyobs-config"
+        "git@github.com:pyobs/pyobs-config.git" -> "pyobs-config"
+        "/absolute/path/to/my-config" -> "my-config"
+    """
+    repo = getattr(settings, "PYOBS_CONFIG_GIT_REPO", "")
+    name = repo.rstrip("/")
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name.rsplit("/", 1)[-1] or name.rsplit(":", 1)[-1]
+
+
+def _ensure_symlink() -> tuple[bool, str]:
+    """Create (or verify) the symlink from PYOBS_CONFIG_DIR to the repo's config subpath.
+
+    Idempotent: no-op if the symlink already exists with the correct target.
+    Returns (success, message).
+    """
+    if not _git_enabled():
+        return True, ""
+
+    link_path = Path(settings.PYOBS_CONFIG_DIR)
+    subpath = _git_subpath()
+    if not subpath:
+        return False, "Cannot create symlink: PYOBS_CONFIG_GIT_SUBPATH is not set"
+
+    repo = _git_repo_dir()
+    target = repo / subpath
+
+    if not target.exists():
+        return False, (
+            f"Symlink target does not exist yet: {target}. "
+            "Run git clone first, or create the symlink manually."
+        )
+
+    if link_path.is_symlink():
+        if link_path.resolve() == target.resolve():
+            return True, "Symlink already correct"
+        return False, (
+            f"PYOBS_CONFIG_DIR ({link_path}) is a symlink but points to "
+            f"{link_path.resolve()}, expected {target}"
+        )
+
+    if link_path.exists():
+        return False, (
+            f"PYOBS_CONFIG_DIR exists but is not a symlink: {link_path}. "
+            "Remove or rename it before cloning."
+        )
+
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    link_path.symlink_to(target)
+    return True, f"Created symlink {link_path} -> {target}"
+
+
 def _git_repo_dir() -> Path:
     """Return the directory where .git lives.
 
-    Uses the explicit PYOBS_CONFIG_GIT_ROOT when set; otherwise
-    derives it from ``PYOBS_CONFIG_DIR`` and ``PYOBS_CONFIG_GIT_SUBPATH``.
+    Priority:
+    1. Explicit PYOBS_CONFIG_GIT_ROOT when set.
+    2. Derived from PYOBS_CONFIG_GIT_SOURCE_DIR / _repo_name().
+    3. Fallback: derives from PYOBS_CONFIG_DIR and PYOBS_CONFIG_GIT_SUBPATH.
     """
     explicit = _git_root()
     if explicit:
         return explicit
     if _git_enabled():
-        subpath = _git_subpath()
-        if subpath:
-            parts = Path(subpath).parts
-            return _config_dir().parents[len(parts) - 1]
-    return _config_dir()
+        source_dir = getattr(settings, "PYOBS_CONFIG_GIT_SOURCE_DIR", "")
+        if source_dir:
+            return Path(source_dir) / _repo_name()
+    subpath = _git_subpath()
+    if subpath:
+        parts = Path(subpath).parts
+        return Path(settings.PYOBS_CONFIG_DIR).parents[len(parts) - 1]
+    return Path(settings.PYOBS_CONFIG_DIR)
 
 
 def _git_run(args: list[str]) -> tuple[bool, str]:
@@ -1152,11 +1216,14 @@ def git_repo_exists() -> bool:
 
 
 def git_clone() -> tuple[bool, str]:
-    """Clone the configured repository and set up sparse checkout.
+    """Clone the configured repository, set up sparse checkout, and create config symlink.
 
     The clone target is the repository root (`_git_repo_dir()`), never
     `PYOBS_CONFIG_DIR`. Refuses to clone if that directory already
     contains a Git working tree or non-empty contents.
+
+    After a successful clone, creates a symlink from `PYOBS_CONFIG_DIR` to
+    `<repo_dir>/<subpath>` so pyobs can read configs via its standard path.
 
     Returns (success, message).
     """
@@ -1222,6 +1289,13 @@ def git_clone() -> tuple[bool, str]:
         if ss.returncode != 0:
             shutil.rmtree(repo_dir, ignore_errors=True)
             return False, ss.stderr.strip()
+
+    # Create symlink from PYOBS_CONFIG_DIR -> repo_dir/subpath
+    ok, msg = _ensure_symlink()
+    if not ok:
+        import shutil
+        shutil.rmtree(repo_dir, ignore_errors=True)
+        return False, f"Failed to create config symlink: {msg}"
 
     return True, "Repository cloned successfully"
 

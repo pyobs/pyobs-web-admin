@@ -2136,6 +2136,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = ""
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
         mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config"
         self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
 
@@ -2144,6 +2146,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "sites/obs1"
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = ""
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
         mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/config/sites/obs1"
         self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs/config"))
 
@@ -2152,6 +2156,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_ENABLED = True
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "cluster/phase/obs1/config"
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = ""
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
         mock_settings.PYOBS_CONFIG_DIR = "/opt/pyobs/cluster/phase/obs1/config"
         self.assertEqual(services._git_repo_dir(), Path("/opt/pyobs"))
 
@@ -2225,7 +2231,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
-        ok, msg = services.git_clone()
+        with patch("modules.services._git_enabled", return_value=True):
+            ok, msg = services.git_clone()
         self.assertFalse(ok)
         self.assertIn("is not set", msg)
 
@@ -2240,7 +2247,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
-        ok, msg = services.git_clone()
+        with patch("modules.services._git_enabled", return_value=True):
+            ok, msg = services.git_clone()
         self.assertFalse(ok)
         self.assertIn("already exists", msg)
 
@@ -2256,7 +2264,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         with patch("modules.services._config_dir", return_value=clone_target):
-            ok, msg = services.git_clone()
+            with patch("modules.services._git_enabled", return_value=False):
+                ok, msg = services.git_clone()
         self.assertTrue(ok)
 
     @patch("modules.services.settings")
@@ -2273,7 +2282,8 @@ class GitConfigTests(unittest.TestCase):
         mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
         with patch("modules.services._config_dir", return_value=config_dir):
-            ok, msg = services.git_clone()
+            with patch("modules.services._git_enabled", return_value=True):
+                ok, msg = services.git_clone()
         self.assertFalse(ok)
         self.assertIn("not inside", msg)
 
@@ -2293,6 +2303,169 @@ class GitConfigTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("not inside", msg)
         mock_run.assert_not_called()
+
+    # --- _repo_name ---
+
+    @patch("modules.services.settings")
+    def test_repo_name_https(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://github.com/pyobs/pyobs-config.git"
+        self.assertEqual(services._repo_name(), "pyobs-config")
+
+    @patch("modules.services.settings")
+    def test_repo_name_ssh(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "git@github.com:pyobs/pyobs-config.git"
+        self.assertEqual(services._repo_name(), "pyobs-config")
+
+    @patch("modules.services.settings")
+    def test_repo_name_absolute_path(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "/opt/repo/my-config"
+        self.assertEqual(services._repo_name(), "my-config")
+
+    @patch("modules.services.settings")
+    def test_repo_name_no_git_suffix(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/config"
+        self.assertEqual(services._repo_name(), "config")
+
+    # --- _ensure_symlink ---
+
+    def test_ensure_symlink_creates_when_missing(self):
+        with patch.object(services.settings, "PYOBS_CONFIG_DIR", str(self.tmp_path / "config")):
+            with patch("modules.services._git_enabled", return_value=True):
+                with patch("modules.services._git_subpath", return_value="configs/obs1"):
+                    repo_dir = self.tmp_path / "src" / "pyobs-config"
+                    target = repo_dir / "configs" / "obs1"
+                    target.mkdir(parents=True)
+                    (target / "test.yaml").write_text("ok")
+                    with patch("modules.services._git_repo_dir", return_value=repo_dir):
+                        ok, msg = services._ensure_symlink()
+                    self.assertTrue(ok)
+                    self.assertTrue((self.tmp_path / "config").is_symlink())
+                    self.assertEqual(
+                        (self.tmp_path / "config").resolve(),
+                        target.resolve()
+                    )
+
+    def test_ensure_symlink_noop_when_correct(self):
+        with patch.object(services.settings, "PYOBS_CONFIG_DIR", str(self.tmp_path / "config")):
+            with patch("modules.services._git_enabled", return_value=True):
+                with patch("modules.services._git_subpath", return_value="configs/obs1"):
+                    repo_dir = self.tmp_path / "src" / "pyobs-config"
+                    target = repo_dir / "configs" / "obs1"
+                    target.mkdir(parents=True)
+                    link = self.tmp_path / "config"
+                    link.symlink_to(target)
+                    with patch("modules.services._git_repo_dir", return_value=repo_dir):
+                        ok, msg = services._ensure_symlink()
+                    self.assertTrue(ok)
+                    self.assertIn("already correct", msg)
+
+    def test_ensure_symlink_errors_when_wrong_target(self):
+        repo_dir = self.tmp_path / "src" / "pyobs-config"
+        target = repo_dir / "configs" / "obs1"
+        target.mkdir(parents=True)
+        wrong = self.tmp_path / "wrong"
+        wrong.mkdir()
+        with patch.object(services.settings, "PYOBS_CONFIG_DIR", str(self.tmp_path / "config")):
+            with patch("modules.services._git_enabled", return_value=True):
+                with patch("modules.services._git_subpath", return_value="configs/obs1"):
+                    with patch("modules.services._git_repo_dir", return_value=repo_dir):
+                        link = self.tmp_path / "config"
+                        link.symlink_to(wrong)
+                        ok, msg = services._ensure_symlink()
+                    self.assertFalse(ok)
+                    self.assertIn("points to", msg)
+
+    def test_ensure_symlink_errors_when_regular_dir(self):
+        repo_dir = self.tmp_path / "src" / "pyobs-config"
+        target = repo_dir / "configs" / "obs1"
+        target.mkdir(parents=True)
+        with patch.object(services.settings, "PYOBS_CONFIG_DIR", str(self.tmp_path / "config")):
+            with patch("modules.services._git_enabled", return_value=True):
+                with patch("modules.services._git_subpath", return_value="configs/obs1"):
+                    with patch("modules.services._git_repo_dir", return_value=repo_dir):
+                        (self.tmp_path / "config").mkdir()
+                        ok, msg = services._ensure_symlink()
+                    self.assertFalse(ok)
+                    self.assertIn("not a symlink", msg)
+
+    # --- _git_repo_dir with new layout ---
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_derives_from_source_dir(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = "/opt/pyobs/src"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo/pyobs-config.git"
+        with patch("modules.services._git_enabled", return_value=True):
+            self.assertEqual(
+                services._git_repo_dir(),
+                Path("/opt/pyobs/src/pyobs-config")
+            )
+
+    @patch("modules.services.settings")
+    def test_git_repo_dir_explicit_root_wins(self, mock_settings):
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = "/opt/pyobs/src"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = "/explicit/path"
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo/pyobs-config.git"
+        with patch("modules.services._git_enabled", return_value=True):
+            self.assertEqual(services._git_repo_dir(), Path("/explicit/path"))
+
+    # --- git_clone with symlink ---
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_creates_symlink(self, mock_repo_dir, mock_run, mock_settings):
+        clone_target = self.tmp_path / "clone-target"
+        config_target = clone_target / "configs" / "obs1"
+        config_link = self.tmp_path / "config-link"
+        mock_repo_dir.return_value = clone_target
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "configs/obs1"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = str(self.tmp_path / "src")
+        mock_settings.PYOBS_CONFIG_DIR = str(config_link)
+        # Subprocess mock: the sparse-checkout set call creates the config_target dir
+        def side_effect(args, **kwargs):
+            if "sparse-checkout" in args and "set" in args:
+                config_target.mkdir(parents=True)
+            return self._mock_result()
+        mock_run.side_effect = side_effect
+        with patch("modules.services._git_enabled", return_value=True):
+            with patch("modules.services._git_config_ok", return_value=(True, "")):
+                ok, msg = services.git_clone()
+        self.assertTrue(ok)
+        self.assertTrue(config_link.is_symlink())
+        self.assertEqual(config_link.resolve(), config_target.resolve())
+
+    @patch("modules.services.settings")
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_repo_dir")
+    def test_git_clone_rolls_back_on_symlink_failure(
+        self, mock_repo_dir, mock_run, mock_settings
+    ):
+        clone_target = self.tmp_path / "clone-target"
+        config_target = clone_target / "configs" / "obs1"
+        config_link = self.tmp_path / "config-link"
+        (config_link / "existing").mkdir(parents=True)
+        mock_repo_dir.return_value = clone_target
+        mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
+        mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "configs/obs1"
+        mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = str(self.tmp_path / "src")
+        mock_settings.PYOBS_CONFIG_DIR = str(config_link)
+        def side_effect(args, **kwargs):
+            if "sparse-checkout" in args and "set" in args:
+                config_target.mkdir(parents=True)
+            return self._mock_result()
+        mock_run.side_effect = side_effect
+        with patch("modules.services._git_enabled", return_value=True):
+            with patch("modules.services._git_config_ok", return_value=(True, "")):
+                ok, msg = services.git_clone()
+        self.assertFalse(ok)
+        self.assertIn("symlink", msg)
+        self.assertFalse(clone_target.exists())
 
     # --- git_fetch ---
 
