@@ -2271,38 +2271,47 @@ class GitConfigTests(unittest.TestCase):
     @patch("modules.services.settings")
     @patch("modules.services.subprocess.run")
     @patch("modules.services._git_repo_dir")
-    def test_git_clone_config_dir_not_in_repo(self, mock_repo_dir, mock_run, mock_settings):
+    def test_git_clone_config_dir_outside_repo_allowed(self, mock_repo_dir, mock_run, mock_settings):
+        """Pre-symlink state: config dir outside repo is allowed through the check."""
         clone_target = self.tmp_path / "repo-root"
+        config_target = clone_target / "configs" / "obs1"
+        config_link = self.tmp_path / "config-link"
         mock_repo_dir.return_value = clone_target
-        config_dir = self.tmp_path / "other" / "config"
-        config_dir.mkdir(parents=True)
-        mock_run.return_value = self._mock_result()
         mock_settings.PYOBS_CONFIG_GIT_REPO = "https://example.com/repo.git"
         mock_settings.PYOBS_CONFIG_GIT_BRANCH = "main"
-        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = ""
+        mock_settings.PYOBS_CONFIG_GIT_SUBPATH = "configs/obs1"
         mock_settings.PYOBS_CONFIG_GIT_ROOT = ""
-        with patch("modules.services._config_dir", return_value=config_dir):
-            with patch("modules.services._git_enabled", return_value=True):
-                ok, msg = services.git_clone()
-        self.assertFalse(ok)
-        self.assertIn("not inside", msg)
+        mock_settings.PYOBS_CONFIG_GIT_SOURCE_DIR = str(self.tmp_path / "src")
+        mock_settings.PYOBS_CONFIG_DIR = str(config_link)
+        def side_effect(args, **kwargs):
+            if "sparse-checkout" in args and "set" in args:
+                config_target.mkdir(parents=True)
+            return self._mock_result()
+        mock_run.side_effect = side_effect
+        with patch("modules.services._git_enabled", return_value=True):
+            ok, msg = services.git_clone()
+        self.assertTrue(ok)
 
     @patch("modules.services.subprocess.run")
     @patch("modules.services._git_enabled", return_value=True)
     @patch("modules.services._git_repo_dir")
     @patch("modules.services._config_dir")
-    def test_git_run_config_dir_not_in_repo(
+    def test_git_run_config_dir_regular_dir_allows_through(
         self, mock_config_dir, mock_repo_dir, mock_enabled, mock_run
     ):
+        """A regular PYOBS_CONFIG_DIR outside the repo is allowed (pre-symlink state)."""
         config_dir = self.tmp_path / "other" / "config"
         config_dir.mkdir(parents=True)
         repo_dir = self.tmp_path / "repo-root"
         mock_repo_dir.return_value = repo_dir
         mock_config_dir.return_value = config_dir
-        ok, msg = services._git_run(["status"])
-        self.assertFalse(ok)
-        self.assertIn("not inside", msg)
-        mock_run.assert_not_called()
+        mock_settings = MagicMock()
+        mock_settings.PYOBS_CONFIG_DIR = str(config_dir)
+        mock_run.return_value = self._mock_result("ok\n")
+        with patch("modules.services.settings", mock_settings):
+            ok, msg = services._git_run(["status"])
+        self.assertTrue(ok)
+        mock_run.assert_called_once()
 
     # --- _repo_name ---
 
