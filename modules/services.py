@@ -1254,7 +1254,10 @@ def git_clone() -> tuple[bool, str]:
     if not ok:
         return False, msg
 
-    repo_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        repo_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, f"Cannot create repository directory {repo_dir}: {e}"
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
 
