@@ -71,17 +71,28 @@ def _git_config_ok() -> tuple[bool, str]:
     """
     if not _git_enabled():
         return True, ""
+
+    link_path = Path(settings.PYOBS_CONFIG_DIR)
     repo_dir = _git_repo_dir()
-    config_dir = _config_dir()
-    # Resolve symlinks so PYOBS_CONFIG_DIR -> repo/subpath still passes the "inside repo" check.
-    try:
-        config_dir.resolve().relative_to(repo_dir.resolve())
-    except ValueError:
+
+    # Symlink: verify it points inside the repo.
+    if link_path.is_symlink():
+        resolved = link_path.resolve()
+        if resolved.is_relative_to(repo_dir.resolve()):
+            return True, ""
         return False, (
-            f"PYOBS_CONFIG_DIR ({config_dir}) is not inside "
-            f"PYOBS_CONFIG_GIT_ROOT ({repo_dir}). "
+            f"PYOBS_CONFIG_DIR ({link_path}) is a symlink pointing to "
+            f"{resolved}, which is not inside PYOBS_CONFIG_GIT_ROOT ({repo_dir}). "
             "Configuration files must reside within the git repository tree."
         )
+
+    # No symlink and path doesn't exist: pre-clone state. The clone + _ensure_symlink() will
+    # create the proper symlink. Allow through so the admin can reach the "Clone" button.
+    if not link_path.exists():
+        return True, ""
+
+    # Regular directory (legacy / pre-symlink setup): allow through. The existing dir
+    # is where pyobs reads configs, and it works fine. Symlink migration is optional.
     return True, ""
 
 
