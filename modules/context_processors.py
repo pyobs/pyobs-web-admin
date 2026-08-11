@@ -1,6 +1,7 @@
 import tomllib
 
 from django.conf import settings
+from django.templatetags.static import static
 
 from modules import proxy, services
 
@@ -63,5 +64,10 @@ def sidebar_modules(request):
         "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
         "acl_matrix_enabled": getattr(settings, "PYOBS_CONFIG_ACL_MATRIX_ENABLED", False),
         "web_admin_version": _web_admin_version(),
+        # Deployments can point these at their own logo via settings/env; default to
+        # the bundled pyobs logo. Two variants because the wordmark's "py" is black -
+        # invisible on a dark sidebar without a light-on-dark version to swap in.
+        "pyobs_logo_light_url": getattr(settings, "PYOBS_LOGO_LIGHT_URL", None) or static("img/pyobs-logo-light.gif"),
+        "pyobs_logo_dark_url": getattr(settings, "PYOBS_LOGO_DARK_URL", None) or static("img/pyobs-logo-dark.gif"),
     }
 
