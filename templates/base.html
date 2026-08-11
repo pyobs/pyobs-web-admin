@@ -110,6 +110,9 @@
       z-index: 1044;
     }
     .sidebar-overlay.active { display: block; }
+    .pyobs-logo-dark { display: none; }
+    [data-bs-theme="dark"] .pyobs-logo-light { display: none; }
+    [data-bs-theme="dark"] .pyobs-logo-dark { display: inline; }
   </style>
 </head>
 <body>
@@ -137,7 +140,8 @@
     <!-- Desktop header -->
     <div class="p-3 border-bottom border-secondary-subtle d-none d-lg-block">
       <div class="d-flex align-items-center gap-2">
-        <i class="bi bi-telescope fs-5 text-primary"></i>
+        <img src="{{ pyobs_logo_light_url }}" alt="pyobs" class="pyobs-logo-light" style="height:28px;width:auto;object-fit:contain">
+        <img src="{{ pyobs_logo_dark_url }}" alt="pyobs" class="pyobs-logo-dark" style="height:28px;width:auto;object-fit:contain">
         <div>
           <div class="fw-semibold text-body lh-1">pyobs</div>
           <div class="text-muted" style="font-size:0.7rem">Web Admin{% if web_admin_version %} v{{ web_admin_version }}{% endif %}</div>
@@ -147,7 +151,8 @@
 
     <!-- Mobile header with close button -->
     <div class="p-3 border-bottom border-secondary-subtle d-flex d-lg-none align-items-center gap-2">
-      <i class="bi bi-telescope fs-5 text-primary"></i>
+      <img src="{{ pyobs_logo_light_url }}" alt="pyobs" class="pyobs-logo-light" style="height:28px;width:auto;object-fit:contain">
+      <img src="{{ pyobs_logo_dark_url }}" alt="pyobs" class="pyobs-logo-dark" style="height:28px;width:auto;object-fit:contain">
       <div class="me-auto">
         <div class="fw-semibold text-body lh-1">pyobs</div>
         <div class="text-muted" style="font-size:0.7rem">Web Admin</div>
