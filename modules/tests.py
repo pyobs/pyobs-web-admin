@@ -1823,6 +1823,65 @@ class InstallSpecForTests(unittest.TestCase):
             self.assertEqual(services._install_spec_for("pyobs-iagvt"), entry)
 
 
+class ConfiguredVcsRefTests(unittest.TestCase):
+    def test_extracts_ref_pinned_on_git_url(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git@develop"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertEqual(services._configured_vcs_ref("pyobs-iagvt"), "develop")
+
+    def test_none_when_url_pins_no_ref(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-iagvt"))
+
+    def test_none_for_non_vcs_spec(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-core"))
+
+    def test_none_for_unmanaged_package(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-iagvt"))
+
+
+class VcsUpdateStatusTests(unittest.TestCase):
+    """Regression coverage for a real prod report: switching pyobs-iagvt's branch in
+    PYOBS_MANAGED_PACKAGES showed no update available and left "Reinstall" disabled, because
+    the remote lookup used the ref recorded at install time (the *old* branch) instead of the
+    newly configured one -- so it kept comparing the old branch against itself."""
+
+    @patch("modules.services._git_remote_commit")
+    @patch("modules.services._vcs_direct_url_info")
+    def test_branch_switch_in_config_is_detected_even_if_old_ref_unchanged(self, mock_info, mock_remote):
+        mock_info.return_value = {
+            "url": "https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git",
+            "ref": "main",
+            "commit_id": "008dae0c" * 5,
+        }
+        mock_remote.return_value = "abc12345" * 5
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git@develop"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            status = services._vcs_update_status("pyobs-iagvt")
+        mock_remote.assert_called_once_with("https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git", "develop")
+        self.assertEqual(status["ref"], "develop")
+        self.assertTrue(status["update_available"])
+
+    @patch("modules.services._git_remote_commit")
+    @patch("modules.services._vcs_direct_url_info")
+    def test_falls_back_to_installed_ref_when_config_pins_none(self, mock_info, mock_remote):
+        mock_info.return_value = {
+            "url": "https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git",
+            "ref": "main",
+            "commit_id": "008dae0c" * 5,
+        }
+        mock_remote.return_value = "008dae0c" * 5
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            status = services._vcs_update_status("pyobs-iagvt")
+        mock_remote.assert_called_once_with("https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git", "main")
+        self.assertEqual(status["ref"], "main")
+        self.assertFalse(status["update_available"])
+
+
 class IsVcsManagedTests(unittest.TestCase):
     def test_true_for_git_url_spec(self):
         entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
