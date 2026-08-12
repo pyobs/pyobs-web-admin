@@ -2624,6 +2624,37 @@ class GitConfigTests(unittest.TestCase):
         self.assertTrue(status["dirty"])
         self.assertIn("telescope.yaml", status["new_files"])
 
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_status_ahead_and_behind_are_not_swapped(self, mock_enabled, mock_run):
+        """Regression test: ahead/behind used to be computed with the rev-list ranges
+        swapped, so status["behind"] actually held local's own unpushed-commit count (usually
+        0), which left the Pull button on the git config page permanently disabled even when
+        the remote genuinely had commits the local repo didn't."""
+
+        def side_effect(args, **kwargs):
+            if "rev-list" in args:
+                range_arg = args[-1]
+                if range_arg == "origin/main..main":
+                    return self._mock_result(stdout="2\n")  # local's own unpushed commits
+                if range_arg == "main..origin/main":
+                    return self._mock_result(stdout="5\n")  # commits only on the remote
+                return self._mock_result(stdout="0\n")
+            if "rev-parse" in args and any("abbrev-ref" in a for a in args):
+                return self._mock_result(stdout="main\n")
+            if "rev-parse" in args and any("short" in a for a in args):
+                return self._mock_result(stdout="abc1234\n")
+            if "log" in args:
+                return self._mock_result(stdout="2025-01-01 00:00:00\n")
+            if "status" in args:
+                return self._mock_result(stdout="## main...origin/main\n")
+            return self._mock_result()
+
+        mock_run.side_effect = side_effect
+        status = services.git_status()
+        self.assertEqual(status["ahead"], 2)
+        self.assertEqual(status["behind"], 5)
+
     # --- auto-stage on save ---
 
     @patch("modules.services.subprocess.run")

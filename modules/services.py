@@ -1367,8 +1367,11 @@ def git_status() -> dict:
         status["branch"] = branch.strip()
         local = branch.strip()
         remote_ref = f"origin/{local}"
-        success, ahead = _git_run(["rev-list", "--count", f"{local}..{remote_ref}"])
-        success, behind = _git_run(["rev-list", "--count", f"{remote_ref}..{local}"])
+        # "A..B" counts commits reachable from B but not A -- ahead is local's own unpushed
+        # commits (in local, not in remote_ref), behind is what the remote has that local
+        # doesn't (in remote_ref, not in local).
+        success, ahead = _git_run(["rev-list", "--count", f"{remote_ref}..{local}"])
+        success, behind = _git_run(["rev-list", "--count", f"{local}..{remote_ref}"])
         try:
             status["ahead"] = int(ahead.strip())
         except (ValueError, AttributeError):
