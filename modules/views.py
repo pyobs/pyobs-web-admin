@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from django.conf import settings
+from django.contrib.auth import login as auth_login
 from django.contrib.auth.hashers import check_password
+from django.contrib.auth.models import User
 from django.http import Http404, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -26,6 +28,24 @@ def login_view(request):
                 and check_password(password, settings.ADMIN_PASSWORD_HASH)):
             request.session["authenticated"] = True
             request.session["username"] = username
+            # Also a real django.contrib.auth login, so the same shared credential works for
+            # /admin/ (is_staff-gated) too, without a second account to create/remember. Synced
+            # on every login rather than get_or_create-only, so a settings.py rename of
+            # ADMIN_USERNAME/ADMIN_PASSWORD_HASH or a stray manual edit can't leave a stale row
+            # behind. ADMIN_PASSWORD_HASH is already a Django-format hash (make_password() output,
+            # per settings.py's own instructions) - assigned straight to User.password rather than
+            # re-hashed, so Django's own /admin/ login form (ModelBackend, checks User.password)
+            # accepts the same credential this view just checked.
+            admin_user, _ = User.objects.update_or_create(
+                username=username,
+                defaults={
+                    "is_active": True,
+                    "is_staff": True,
+                    "is_superuser": True,
+                    "password": settings.ADMIN_PASSWORD_HASH,
+                },
+            )
+            auth_login(request, admin_user, backend="django.contrib.auth.backends.ModelBackend")
             return redirect(request.POST.get("next") or "/")
         error = True
     return render(request, "registration/login.html", {

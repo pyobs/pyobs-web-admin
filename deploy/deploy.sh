@@ -53,6 +53,9 @@ sed -i "s|ADMIN_PASSWORD_HASH = \"\"|ADMIN_PASSWORD_HASH = \"$PASSWORD_HASH\"|" 
 
 echo "Written: $SETTINGS"
 
+# --- Database (Keycloak-linked Users only; the shared admin/password login stays DB-free) ---
+uv run python manage.py migrate
+
 # --- systemd service ---
 cp "$INSTALL_DIR/deploy/pyobs-web-admin.service" /etc/systemd/system/
 systemctl daemon-reload

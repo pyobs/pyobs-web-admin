@@ -10,12 +10,21 @@ ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.admin",
+    "pyobs_auth",
+    "pyobs_web_admin.authentication",
     "modules",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.common.CommonMiddleware",
     "modules.middleware.HubTokenMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -33,6 +42,8 @@ TEMPLATES = [
         "OPTIONS": {
             "context_processors": [
                 "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
                 "modules.context_processors.sidebar_modules",
             ],
         },
@@ -41,7 +52,16 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "pyobs_web_admin.wsgi.application"
 
-# Sessions stored in signed cookies — no database needed
+# SQLite: only used for the Keycloak-linked User table (django.contrib.auth) - the shared
+# admin/password login below stays fully DB-free.
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+}
+
+# Sessions themselves stay in signed cookies regardless (no session table needed)
 SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
 
 LANGUAGE_CODE = "en-us"
@@ -54,8 +74,26 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Single-user credentials — set ADMIN_PASSWORD_HASH in local_settings.py:
 #   uv run python -c "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"
+# Break-glass fallback once Keycloak (below) is configured — kept working rather than removed,
+# since it's the only way in if Keycloak itself is unreachable.
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = ""
+
+# Keycloak login (optional addon on top of the shared admin/password login above, not a
+# replacement - leave SERVER_URL unset to disable it entirely; the login page won't show the
+# button either). Unlike the shared admin account, each Keycloak-linked User can be individually
+# deactivated (Django admin, or `manage.py shell`) without affecting anyone else - see
+# pyobs_web_admin.authentication.keycloak.resolve_user. New accounts mint inactive by default and
+# need local activation before they can log in.
+PYOBS_AUTH = {
+    "SERVER_URL": "",
+    "REALM": "pyobs",
+    "CLIENT_ID": "web-admin",
+    "CLIENT_SECRET": "",
+    "REDIRECT_URI": "",
+    "POST_LOGOUT_REDIRECT_URI": "",
+    "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
+}
 
 # Hub: list of remote hosts this instance can control
 # Each entry: {"name": "obs1", "url": "http://obs1:8765", "token": "shared-secret"}

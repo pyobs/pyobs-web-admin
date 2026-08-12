@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from django.contrib.auth.hashers import make_password
+from django.contrib.auth.models import User
+from django.test import Client as DjangoClient
 from django.test import RequestFactory, override_settings
+from django.test import TestCase as DjangoTestCase
 from packaging.version import Version
 
 from modules import ejabberd, services, views
@@ -2732,3 +2736,36 @@ class SetHostNextRedirectTests(unittest.TestCase):
         response = views.set_host(self._request("https://evil.example/"), "localhost")
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/")
+
+
+@override_settings(ADMIN_USERNAME="admin", ADMIN_PASSWORD_HASH=make_password("admin"))
+class LoginViewSyncsDjangoUserTests(DjangoTestCase):
+    """The shared admin/password login (session["authenticated"]) also logs in a real
+    django.contrib.auth User, so the same credential works for /admin/ too - see login_view's
+    own comment for why. Regression coverage for a real bug: the synced User's password field
+    was never set, so it looked right (staff+superuser) but couldn't actually authenticate
+    through Django's own admin login form."""
+
+    def test_login_syncs_a_staff_superuser_with_a_working_password(self):
+        response = self.client.post("/login/", {"username": "admin", "password": "admin"})
+        self.assertEqual(response.status_code, 302)
+
+        user = User.objects.get(username="admin")
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password("admin"))
+
+    def test_synced_user_can_then_log_into_django_admin_directly(self):
+        self.client.post("/login/", {"username": "admin", "password": "admin"})
+
+        fresh_client = DjangoClient()
+        response = fresh_client.post("/admin/login/", {"username": "admin", "password": "admin", "next": "/admin/"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/admin/")
+
+    def test_wrong_password_does_not_create_or_touch_any_user(self):
+        response = self.client.post("/login/", {"username": "admin", "password": "wrong"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(username="admin").exists())
