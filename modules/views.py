@@ -47,7 +47,29 @@ def set_host(request, name: str):
     if name in valid:
         request.session["active_host"] = name
     next_url = request.GET.get("next")
-    return redirect(next_url if next_url and next_url.startswith("/") else "/")
+    active = request.session.get("active_host", "localhost")
+    if next_url and next_url.startswith("/") and _module_page_exists_for_host(next_url, active):
+        return redirect(next_url)
+    return redirect("/")
+
+
+def _module_page_exists_for_host(next_url: str, host_name: str) -> bool:
+    """A "next" redirect target only carries over across a host switch if it points at a
+    module page and that module actually exists on the newly active host -- otherwise
+    module_detail() 404s (see issue #46: switching host away from a module-specific page
+    landed on a 404 instead of falling back to the dashboard)."""
+    match = re.match(r"^/modules/([^/]+)/$", next_url)
+    if not match:
+        return True
+    module_name = match.group(1)
+    host = proxy.get_host_config(host_name)
+    if host:
+        try:
+            data = proxy.call(host, "GET", "/api/statuses/")
+        except Exception:
+            return False
+        return any(m["name"] == module_name for m in data.get("modules", []))
+    return module_name in services.list_modules()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

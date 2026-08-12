@@ -163,7 +163,7 @@ class GetResolvedAclTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -220,7 +220,7 @@ class ResolveAndValidateAclTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -258,7 +258,7 @@ class GetCommUserTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -364,7 +364,7 @@ class BuildAclMatrixTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -475,7 +475,7 @@ class SaveLocalAclTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -558,7 +558,7 @@ class CreateModuleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -596,7 +596,7 @@ class SaveCommPasswordTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
-        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path))
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
         self._settings.enable()
 
     def tearDown(self):
@@ -1138,6 +1138,7 @@ class StartModuleLogBackendTests(unittest.TestCase):
             PYOBS_LOG_DIR=str(self.tmp_path / "log"),
             PYOBS_EXEC="pyobs",
             PYOBS_LOG_LEVEL="info",
+            PYOBS_CONFIG_GIT_ENABLED=False,
         )
         self._settings.enable()
 
@@ -1643,7 +1644,7 @@ class GetAllLogsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "camera.yaml").write_text("class: pyobs.modules.Module\n")
             (Path(tmp) / "camera.log").write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n")
-            with override_settings(PYOBS_CONFIG_DIR=tmp, PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+            with override_settings(PYOBS_CONFIG_DIR=tmp, PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file", PYOBS_CONFIG_GIT_ENABLED=False):
                 lines = services.get_all_logs(lines=300)
             self.assertEqual(lines, ["2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera"])
 
@@ -1698,7 +1699,7 @@ class TagHostTests(unittest.TestCase):
         line = "2026-07-04 09:00:00 [INFO] (camera1) x.py:1 hello"
         self.assertEqual(
             _tag_host(line, "spoke1"),
-            "2026-07-04 09:00:00 [spoke1] [INFO] (camera1) x.py:1 hello",
+            "2026-07-04 09:00:00 [INFO] [spoke1] (camera1) x.py:1 hello",
         )
 
     def test_falls_back_to_prefix_when_no_leading_timestamp(self):
@@ -2574,3 +2575,70 @@ class GitConfigTests(unittest.TestCase):
         with patch("modules.services._config_dir", return_value=self.tmp_path):
             services.save_config("test", "---\nupdated\n")
         mock_run.assert_called_once()
+
+
+class SetHostNextRedirectTests(unittest.TestCase):
+    """Issue #46: switching hub host while on a module page (e.g. astro159's "fts") used to
+    blindly redirect to the same path on the new host, 404ing when that module doesn't exist
+    there. set_host() must now only carry the "next" path over if the target module actually
+    exists on the newly active host, falling back to "/" otherwise."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.hosts = [{"name": "astro159", "url": "http://astro159", "token": "tok"}]
+
+    def _request(self, next_url: str | None):
+        params = {"next": next_url} if next_url is not None else {}
+        request = self.factory.get("/set-host/dummy/", params)
+        request.session = {}
+        return request
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159", "token": "tok"}])
+    @patch("modules.services.list_modules")
+    def test_switching_to_host_without_the_module_falls_back_to_dashboard(self, mock_list_modules):
+        mock_list_modules.return_value = ["camera"]  # "fts" not present locally
+        response = views.set_host(self._request("/modules/fts/"), "localhost")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159", "token": "tok"}])
+    @patch("modules.services.list_modules")
+    def test_switching_to_host_with_the_module_preserves_next(self, mock_list_modules):
+        mock_list_modules.return_value = ["camera", "fts"]
+        response = views.set_host(self._request("/modules/fts/"), "localhost")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/modules/fts/")
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159", "token": "tok"}])
+    @patch("modules.proxy.call")
+    def test_switching_to_remote_host_checks_its_status_list(self, mock_call):
+        mock_call.return_value = {"modules": [{"name": "camera"}]}  # no "fts" on astro159
+        response = views.set_host(self._request("/modules/fts/"), "astro159")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
+        mock_call.assert_called_once_with(self.hosts[0], "GET", "/api/statuses/")
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159", "token": "tok"}])
+    @patch("modules.proxy.call")
+    def test_remote_host_error_falls_back_to_dashboard(self, mock_call):
+        mock_call.side_effect = Exception("connection refused")
+        response = views.set_host(self._request("/modules/fts/"), "astro159")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
+
+    @patch("modules.services.list_modules")
+    def test_non_module_next_paths_are_unaffected(self, mock_list_modules):
+        mock_list_modules.return_value = []
+        response = views.set_host(self._request("/shared/acl.shared/"), "localhost")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/shared/acl.shared/")
+
+    def test_missing_next_defaults_to_dashboard(self):
+        response = views.set_host(self._request(None), "localhost")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
+
+    def test_unsafe_next_is_rejected(self):
+        response = views.set_host(self._request("https://evil.example/"), "localhost")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
