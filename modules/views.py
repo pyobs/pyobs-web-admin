@@ -29,14 +29,12 @@ def login_view(request):
             request.session["authenticated"] = True
             request.session["username"] = username
             # Also a real django.contrib.auth login, so the same shared credential works for
-            # /admin/ (is_staff-gated) too, without a second account to create/remember. Synced
-            # on every login rather than get_or_create-only, so a settings.py rename of
-            # ADMIN_USERNAME/ADMIN_PASSWORD_HASH or a stray manual edit can't leave a stale row
-            # behind. ADMIN_PASSWORD_HASH is already a Django-format hash (make_password() output,
-            # per settings.py's own instructions) - assigned straight to User.password rather than
-            # re-hashed, so Django's own /admin/ login form (ModelBackend, checks User.password)
-            # accepts the same credential this view just checked.
-            admin_user, _ = User.objects.update_or_create(
+            # /admin/ (is_staff-gated) too, without a second account to create/remember. The
+            # matching superuser User is normally already synced by
+            # pyobs_web_admin.authentication.admin_sync (post_migrate signal, same mechanism as
+            # archive/robotic-backend) - get_or_create here is just a safety net for a fresh
+            # install that hasn't run `migrate` since ADMIN_PASSWORD_HASH was set.
+            admin_user, _ = User.objects.get_or_create(
                 username=username,
                 defaults={
                     "is_active": True,

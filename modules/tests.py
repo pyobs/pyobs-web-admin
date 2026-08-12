@@ -18,6 +18,7 @@ from modules import ejabberd, services, views
 from modules.middleware import HubTokenMiddleware
 from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
+from pyobs_web_admin.authentication.admin_sync import sync_admin_user
 
 
 # ── include_parts ─────────────────────────────────────────────────────────────
@@ -2738,34 +2739,75 @@ class SetHostNextRedirectTests(unittest.TestCase):
         self.assertEqual(response.url, "/")
 
 
-@override_settings(ADMIN_USERNAME="admin", ADMIN_PASSWORD_HASH=make_password("admin"))
+# A distinct, unlikely-to-collide username -- not "admin", since a real local_settings.py
+# (e.g. a developer's own ADMIN_USERNAME="admin") would already have synced an "admin" User via
+# admin_sync's post_migrate hook by the time the test database exists, before any of this
+# module's own override_settings is active.
+_TEST_ADMIN_USERNAME = "test-sync-admin"
+
+
+@override_settings(ADMIN_USERNAME=_TEST_ADMIN_USERNAME, ADMIN_PASSWORD_HASH=make_password("admin"))
 class LoginViewSyncsDjangoUserTests(DjangoTestCase):
     """The shared admin/password login (session["authenticated"]) also logs in a real
     django.contrib.auth User, so the same credential works for /admin/ too - see login_view's
-    own comment for why. Regression coverage for a real bug: the synced User's password field
-    was never set, so it looked right (staff+superuser) but couldn't actually authenticate
-    through Django's own admin login form."""
+    own comment for why. The primary sync path is admin_sync.sync_admin_user (post_migrate
+    signal, see AdminSyncTests below); this covers login_view's fallback get_or_create for a
+    fresh install that hasn't run `migrate` since ADMIN_PASSWORD_HASH was set."""
 
-    def test_login_syncs_a_staff_superuser_with_a_working_password(self):
-        response = self.client.post("/login/", {"username": "admin", "password": "admin"})
+    def test_login_creates_a_staff_superuser_with_a_working_password_if_not_already_synced(self):
+        response = self.client.post("/login/", {"username": _TEST_ADMIN_USERNAME, "password": "admin"})
         self.assertEqual(response.status_code, 302)
 
-        user = User.objects.get(username="admin")
+        user = User.objects.get(username=_TEST_ADMIN_USERNAME)
         self.assertTrue(user.is_staff)
         self.assertTrue(user.is_superuser)
         self.assertTrue(user.is_active)
         self.assertTrue(user.check_password("admin"))
 
     def test_synced_user_can_then_log_into_django_admin_directly(self):
-        self.client.post("/login/", {"username": "admin", "password": "admin"})
+        self.client.post("/login/", {"username": _TEST_ADMIN_USERNAME, "password": "admin"})
 
         fresh_client = DjangoClient()
-        response = fresh_client.post("/admin/login/", {"username": "admin", "password": "admin", "next": "/admin/"})
+        response = fresh_client.post(
+            "/admin/login/", {"username": _TEST_ADMIN_USERNAME, "password": "admin", "next": "/admin/"}
+        )
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/admin/")
 
     def test_wrong_password_does_not_create_or_touch_any_user(self):
-        response = self.client.post("/login/", {"username": "admin", "password": "wrong"})
+        response = self.client.post("/login/", {"username": _TEST_ADMIN_USERNAME, "password": "wrong"})
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(User.objects.filter(username="admin").exists())
+        self.assertFalse(User.objects.filter(username=_TEST_ADMIN_USERNAME).exists())
+
+
+@override_settings(ADMIN_USERNAME=_TEST_ADMIN_USERNAME, ADMIN_PASSWORD_HASH=make_password("admin"))
+class AdminSyncTests(DjangoTestCase):
+    """admin_sync.sync_admin_user is the primary way the settings-configured admin account gets
+    created/kept in sync - wired to run after every `manage.py migrate` via the post_migrate
+    signal (AuthenticationConfig.ready()), same mechanism as pyobs-archive/pyobs-robotic-backend,
+    so a fresh deployment doesn't need an interactive `createsuperuser` step."""
+
+    def test_sync_creates_a_staff_superuser_with_a_working_password(self):
+        sync_admin_user(sender=None)
+
+        user = User.objects.get(username=_TEST_ADMIN_USERNAME)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password("admin"))
+
+    def test_sync_updates_an_existing_user_that_drifted(self):
+        User.objects.create(username=_TEST_ADMIN_USERNAME, is_staff=False, is_superuser=False)
+
+        sync_admin_user(sender=None)
+
+        user = User.objects.get(username=_TEST_ADMIN_USERNAME)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.check_password("admin"))
+
+    @override_settings(ADMIN_USERNAME="", ADMIN_PASSWORD_HASH="")
+    def test_sync_does_nothing_when_unconfigured(self):
+        sync_admin_user(sender=None)
+        self.assertFalse(User.objects.filter(username=_TEST_ADMIN_USERNAME).exists())

@@ -246,6 +246,11 @@ the shared admin/password account and any other Django superuser can get in. Und
 toggle **Active** on a Keycloak-linked account to grant or revoke their access; nothing else
 about that page needs touching.
 
+The shared admin/password account works at `/admin/` directly (no prior visit to `/login/`
+needed first) because `manage.py migrate` syncs a matching superuser `User` automatically — see
+`pyobs_web_admin.authentication.admin_sync`, and [Configuration](#configuration) for the
+`ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` settings that drive it.
+
 ---
 
 ## Hub mode
