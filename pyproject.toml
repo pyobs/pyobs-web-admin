@@ -1,6 +1,6 @@
 [project]
 name = "pyobs-web-admin"
-version = "2.0.0.dev2"
+version = "2.0.0.dev3"
 description = "Web-based administration interface for pyobs robotic telescope modules"
 authors = [
     { name = "Tim-Oliver Husser", email = "thusser@uni-goettingen.de" },
@@ -11,6 +11,7 @@ dependencies = [
     "gunicorn>=26.0.0",
     "packaging>=24.0",
     "psutil>=6.0",
+    "pyobs-auth>=2.0.0.dev7",
     "pyyaml>=6.0",
     "requests>=2.32",
     "ruamel.yaml>=0.18",

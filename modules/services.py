@@ -474,18 +474,45 @@ def _git_remote_commit(url: str, ref: str | None) -> str | None:
     return result.stdout.split()[0]
 
 
+def _configured_vcs_ref(name: str) -> str | None:
+    """The ref (branch/tag/commit) pinned in `name`'s *current* PYOBS_MANAGED_PACKAGES entry,
+    e.g. "main" in ".../pyobs-iagvt.git@main" -- the ref a reinstall would actually pull from
+    right now. Takes priority over the ref recorded in the already-installed direct_url.json
+    (see _vcs_update_status): otherwise, an operator switching branches in config sees no
+    update available until the *old* branch itself moves, since the remote lookup would still
+    be checking the branch it's no longer configured to track. Returns None if the spec pins
+    no ref (pip installs from the remote's default branch) or isn't VCS-managed at all.
+    """
+    spec = _managed_package_specs().get(_normalize_package_name(name))
+    if not spec or not spec.is_vcs:
+        return None
+    m = _PACKAGE_SPEC_RE.match(spec.spec)
+    if not m or not m.group(3):
+        return None
+    url_part = m.group(3)  # e.g. "git+https://host/path.git@main" or "git+https://host/path.git"
+    # A ref is a trailing "@ref" on the VCS URL itself, distinct from a "user@host" auth
+    # component that can appear before "://" -- only split on an "@" found after the scheme.
+    scheme_split = url_part.split("://", 1)
+    if len(scheme_split) == 2 and "@" in scheme_split[1]:
+        return scheme_split[1].rsplit("@", 1)[1]
+    return None
+
+
 def _vcs_update_status(name: str) -> dict:
     """Compares the commit `name` was installed at (from direct_url.json) against its git
-    remote's current commit for the same ref. installed_commit/remote_commit are None (and
-    update_available False) whenever either half of that comparison isn't available -- e.g.
-    an old pip with no direct_url.json, or an unreachable remote -- rather than guessing.
+    remote's current commit for the ref it's *currently configured* to track (falling back to
+    the ref it was actually installed from, if the config pins none). installed_commit/
+    remote_commit are None (and update_available False) whenever either half of that
+    comparison isn't available -- e.g. an old pip with no direct_url.json, or an unreachable
+    remote -- rather than guessing.
     """
     info = _vcs_direct_url_info(name)
     if not info:
         return {"ref": None, "installed_commit": None, "remote_commit": None, "update_available": False}
-    remote_commit = _git_remote_commit(info["url"], info["ref"])
+    ref = _configured_vcs_ref(name) or info["ref"]
+    remote_commit = _git_remote_commit(info["url"], ref)
     return {
-        "ref": info["ref"],
+        "ref": ref,
         "installed_commit": info["commit_id"],
         "remote_commit": remote_commit,
         "update_available": remote_commit is not None and remote_commit != info["commit_id"],
@@ -1340,8 +1367,11 @@ def git_status() -> dict:
         status["branch"] = branch.strip()
         local = branch.strip()
         remote_ref = f"origin/{local}"
-        success, ahead = _git_run(["rev-list", "--count", f"{local}..{remote_ref}"])
-        success, behind = _git_run(["rev-list", "--count", f"{remote_ref}..{local}"])
+        # "A..B" counts commits reachable from B but not A -- ahead is local's own unpushed
+        # commits (in local, not in remote_ref), behind is what the remote has that local
+        # doesn't (in remote_ref, not in local).
+        success, ahead = _git_run(["rev-list", "--count", f"{remote_ref}..{local}"])
+        success, behind = _git_run(["rev-list", "--count", f"{local}..{remote_ref}"])
         try:
             status["ahead"] = int(ahead.strip())
         except (ValueError, AttributeError):

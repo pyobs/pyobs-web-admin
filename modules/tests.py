@@ -7,13 +7,18 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from django.contrib.auth.hashers import make_password
+from django.contrib.auth.models import User
+from django.test import Client as DjangoClient
 from django.test import RequestFactory, override_settings
+from django.test import TestCase as DjangoTestCase
 from packaging.version import Version
 
 from modules import ejabberd, services, views
 from modules.middleware import HubTokenMiddleware
 from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
+from pyobs_web_admin.authentication.admin_sync import sync_admin_user
 
 
 # ── include_parts ─────────────────────────────────────────────────────────────
@@ -1823,6 +1828,65 @@ class InstallSpecForTests(unittest.TestCase):
             self.assertEqual(services._install_spec_for("pyobs-iagvt"), entry)
 
 
+class ConfiguredVcsRefTests(unittest.TestCase):
+    def test_extracts_ref_pinned_on_git_url(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git@develop"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertEqual(services._configured_vcs_ref("pyobs-iagvt"), "develop")
+
+    def test_none_when_url_pins_no_ref(self):
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-iagvt"))
+
+    def test_none_for_non_vcs_spec(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-core"))
+
+    def test_none_for_unmanaged_package(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-iagvt"))
+
+
+class VcsUpdateStatusTests(unittest.TestCase):
+    """Regression coverage for a real prod report: switching pyobs-iagvt's branch in
+    PYOBS_MANAGED_PACKAGES showed no update available and left "Reinstall" disabled, because
+    the remote lookup used the ref recorded at install time (the *old* branch) instead of the
+    newly configured one -- so it kept comparing the old branch against itself."""
+
+    @patch("modules.services._git_remote_commit")
+    @patch("modules.services._vcs_direct_url_info")
+    def test_branch_switch_in_config_is_detected_even_if_old_ref_unchanged(self, mock_info, mock_remote):
+        mock_info.return_value = {
+            "url": "https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git",
+            "ref": "main",
+            "commit_id": "008dae0c" * 5,
+        }
+        mock_remote.return_value = "abc12345" * 5
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git@develop"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            status = services._vcs_update_status("pyobs-iagvt")
+        mock_remote.assert_called_once_with("https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git", "develop")
+        self.assertEqual(status["ref"], "develop")
+        self.assertTrue(status["update_available"])
+
+    @patch("modules.services._git_remote_commit")
+    @patch("modules.services._vcs_direct_url_info")
+    def test_falls_back_to_installed_ref_when_config_pins_none(self, mock_info, mock_remote):
+        mock_info.return_value = {
+            "url": "https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git",
+            "ref": "main",
+            "commit_id": "008dae0c" * 5,
+        }
+        mock_remote.return_value = "008dae0c" * 5
+        entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            status = services._vcs_update_status("pyobs-iagvt")
+        mock_remote.assert_called_once_with("https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git", "main")
+        self.assertEqual(status["ref"], "main")
+        self.assertFalse(status["update_available"])
+
+
 class IsVcsManagedTests(unittest.TestCase):
     def test_true_for_git_url_spec(self):
         entry = "pyobs-iagvt[gui] @ git+https://gitlab.gwdg.de/iagvt/pyobs-iagvt.git"
@@ -2565,6 +2629,37 @@ class GitConfigTests(unittest.TestCase):
         self.assertTrue(status["dirty"])
         self.assertIn("telescope.yaml", status["new_files"])
 
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_status_ahead_and_behind_are_not_swapped(self, mock_enabled, mock_run):
+        """Regression test: ahead/behind used to be computed with the rev-list ranges
+        swapped, so status["behind"] actually held local's own unpushed-commit count (usually
+        0), which left the Pull button on the git config page permanently disabled even when
+        the remote genuinely had commits the local repo didn't."""
+
+        def side_effect(args, **kwargs):
+            if "rev-list" in args:
+                range_arg = args[-1]
+                if range_arg == "origin/main..main":
+                    return self._mock_result(stdout="2\n")  # local's own unpushed commits
+                if range_arg == "main..origin/main":
+                    return self._mock_result(stdout="5\n")  # commits only on the remote
+                return self._mock_result(stdout="0\n")
+            if "rev-parse" in args and any("abbrev-ref" in a for a in args):
+                return self._mock_result(stdout="main\n")
+            if "rev-parse" in args and any("short" in a for a in args):
+                return self._mock_result(stdout="abc1234\n")
+            if "log" in args:
+                return self._mock_result(stdout="2025-01-01 00:00:00\n")
+            if "status" in args:
+                return self._mock_result(stdout="## main...origin/main\n")
+            return self._mock_result()
+
+        mock_run.side_effect = side_effect
+        status = services.git_status()
+        self.assertEqual(status["ahead"], 2)
+        self.assertEqual(status["behind"], 5)
+
     # --- auto-stage on save ---
 
     @patch("modules.services.subprocess.run")
@@ -2642,3 +2737,77 @@ class SetHostNextRedirectTests(unittest.TestCase):
         response = views.set_host(self._request("https://evil.example/"), "localhost")
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/")
+
+
+# A distinct, unlikely-to-collide username -- not "admin", since a real local_settings.py
+# (e.g. a developer's own ADMIN_USERNAME="admin") would already have synced an "admin" User via
+# admin_sync's post_migrate hook by the time the test database exists, before any of this
+# module's own override_settings is active.
+_TEST_ADMIN_USERNAME = "test-sync-admin"
+
+
+@override_settings(ADMIN_USERNAME=_TEST_ADMIN_USERNAME, ADMIN_PASSWORD_HASH=make_password("admin"))
+class LoginViewSyncsDjangoUserTests(DjangoTestCase):
+    """The shared admin/password login (session["authenticated"]) also logs in a real
+    django.contrib.auth User, so the same credential works for /admin/ too - see login_view's
+    own comment for why. The primary sync path is admin_sync.sync_admin_user (post_migrate
+    signal, see AdminSyncTests below); this covers login_view's fallback get_or_create for a
+    fresh install that hasn't run `migrate` since ADMIN_PASSWORD_HASH was set."""
+
+    def test_login_creates_a_staff_superuser_with_a_working_password_if_not_already_synced(self):
+        response = self.client.post("/login/", {"username": _TEST_ADMIN_USERNAME, "password": "admin"})
+        self.assertEqual(response.status_code, 302)
+
+        user = User.objects.get(username=_TEST_ADMIN_USERNAME)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password("admin"))
+
+    def test_synced_user_can_then_log_into_django_admin_directly(self):
+        self.client.post("/login/", {"username": _TEST_ADMIN_USERNAME, "password": "admin"})
+
+        fresh_client = DjangoClient()
+        response = fresh_client.post(
+            "/admin/login/", {"username": _TEST_ADMIN_USERNAME, "password": "admin", "next": "/admin/"}
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/admin/")
+
+    def test_wrong_password_does_not_create_or_touch_any_user(self):
+        response = self.client.post("/login/", {"username": _TEST_ADMIN_USERNAME, "password": "wrong"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(username=_TEST_ADMIN_USERNAME).exists())
+
+
+@override_settings(ADMIN_USERNAME=_TEST_ADMIN_USERNAME, ADMIN_PASSWORD_HASH=make_password("admin"))
+class AdminSyncTests(DjangoTestCase):
+    """admin_sync.sync_admin_user is the primary way the settings-configured admin account gets
+    created/kept in sync - wired to run after every `manage.py migrate` via the post_migrate
+    signal (AuthenticationConfig.ready()), same mechanism as pyobs-archive/pyobs-robotic-backend,
+    so a fresh deployment doesn't need an interactive `createsuperuser` step."""
+
+    def test_sync_creates_a_staff_superuser_with_a_working_password(self):
+        sync_admin_user(sender=None)
+
+        user = User.objects.get(username=_TEST_ADMIN_USERNAME)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password("admin"))
+
+    def test_sync_updates_an_existing_user_that_drifted(self):
+        User.objects.create(username=_TEST_ADMIN_USERNAME, is_staff=False, is_superuser=False)
+
+        sync_admin_user(sender=None)
+
+        user = User.objects.get(username=_TEST_ADMIN_USERNAME)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.check_password("admin"))
+
+    @override_settings(ADMIN_USERNAME="", ADMIN_PASSWORD_HASH="")
+    def test_sync_does_nothing_when_unconfigured(self):
+        sync_admin_user(sender=None)
+        self.assertFalse(User.objects.filter(username=_TEST_ADMIN_USERNAME).exists())

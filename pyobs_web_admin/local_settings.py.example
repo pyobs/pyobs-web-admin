@@ -39,8 +39,27 @@ PYOBS_MANAGED_PACKAGES = ["pyobs-core[full]"]
 # Generate the password hash with:
 #   DJANGO_SETTINGS_MODULE=pyobs_web_admin.settings uv run python -c \
 #     "from django.contrib.auth.hashers import make_password; print(make_password('yourpassword'))"
+# Break-glass fallback once Keycloak (below) is configured -- kept working rather than removed,
+# since it's the only way in if Keycloak itself is unreachable. This same credential also works
+# for /admin/ (see modules.views.login_view).
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = ""
+
+# Keycloak login (optional addon on top of the shared admin/password login above, not a
+# replacement -- leave SERVER_URL unset to disable it entirely; the login page won't show the
+# button either). Unlike the shared admin account, each Keycloak-linked User can be individually
+# deactivated at /admin/ without affecting anyone else -- new accounts mint inactive by default
+# and need local activation there before they can log in. Run `manage.py migrate` once before
+# first use (creates db.sqlite3, only used for this User table).
+# PYOBS_AUTH = {
+#     "SERVER_URL": "https://keycloak.example.org",
+#     "REALM": "pyobs",
+#     "CLIENT_ID": "web-admin",
+#     "CLIENT_SECRET": "",
+#     "REDIRECT_URI": "https://your.domain.com/accounts/keycloak/callback/",
+#     "POST_LOGOUT_REDIRECT_URI": "https://your.domain.com/",
+#     "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
+# }
 
 # Hub: allow this instance to be controlled by a hub (leave empty to disable).
 # Deprecated in favour of HUB_CLIENTS below -- kept working as a "default"-named client.

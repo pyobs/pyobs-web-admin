@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="/opt/pyobs/pyobs-web-admin"
+INSTALL_DIR="${1:-/opt/pyobs/pyobs-web-admin}"
 SETTINGS="$INSTALL_DIR/pyobs_web_admin/local_settings.py"
 
 # --- Password ---
@@ -53,8 +53,12 @@ sed -i "s|ADMIN_PASSWORD_HASH = \"\"|ADMIN_PASSWORD_HASH = \"$PASSWORD_HASH\"|" 
 
 echo "Written: $SETTINGS"
 
+# --- Database (Keycloak-linked Users only; the shared admin/password login stays DB-free) ---
+uv run python manage.py migrate
+
 # --- systemd service ---
-cp "$INSTALL_DIR/deploy/pyobs-web-admin.service" /etc/systemd/system/
+sed "s|/opt/pyobs/pyobs-web-admin|$INSTALL_DIR|g" "$INSTALL_DIR/deploy/pyobs-web-admin.service" \
+    > /etc/systemd/system/pyobs-web-admin.service
 systemctl daemon-reload
 systemctl enable --now pyobs-web-admin
 

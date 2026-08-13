@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from django.conf import settings
+from django.contrib.auth import login as auth_login
 from django.contrib.auth.hashers import check_password
+from django.contrib.auth.models import User
 from django.http import Http404, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -26,6 +28,22 @@ def login_view(request):
                 and check_password(password, settings.ADMIN_PASSWORD_HASH)):
             request.session["authenticated"] = True
             request.session["username"] = username
+            # Also a real django.contrib.auth login, so the same shared credential works for
+            # /admin/ (is_staff-gated) too, without a second account to create/remember. The
+            # matching superuser User is normally already synced by
+            # pyobs_web_admin.authentication.admin_sync (post_migrate signal, same mechanism as
+            # archive/robotic-backend) - get_or_create here is just a safety net for a fresh
+            # install that hasn't run `migrate` since ADMIN_PASSWORD_HASH was set.
+            admin_user, _ = User.objects.get_or_create(
+                username=username,
+                defaults={
+                    "is_active": True,
+                    "is_staff": True,
+                    "is_superuser": True,
+                    "password": settings.ADMIN_PASSWORD_HASH,
+                },
+            )
+            auth_login(request, admin_user, backend="django.contrib.auth.backends.ModelBackend")
             return redirect(request.POST.get("next") or "/")
         error = True
     return render(request, "registration/login.html", {
