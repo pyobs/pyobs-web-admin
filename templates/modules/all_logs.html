@@ -119,6 +119,17 @@ function toDatetimeLocal(d) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// The time-start input (datetime-local, no zone) as an ISO-8601 UTC instant for the API's
+// `since` param. Parsing the bare value as local time keeps it consistent with applyFilters'
+// own `new Date(startVal)` interpretation, so the server-side window and the client-side
+// filter agree on the same instant.
+function startTimeParam() {
+  const v = document.getElementById('time-start').value;
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d) ? null : d.toISOString();
+}
+
 // ── Acknowledge (mark warnings/errors as seen) ──────────────────────────────────
 // Per-module "last acknowledged" timestamp in localStorage (key shared with the per-module
 // Logs tab), since this fleet-wide view merges lines from many modules at once.
@@ -242,6 +253,8 @@ async function fetchOlderLogs() {
     const params = new URLSearchParams({
       lines: 300, modules: selectedModules().join(','), before: oldest.toISOString(),
     });
+    const since = startTimeParam();
+    if (since) params.set('since', since);
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
     const data = await resp.json();
     // Dedup by exact line content -- --until is inclusive, so the oldest line already on
@@ -304,6 +317,8 @@ if (savedModules) {
 window.fetchLogs = async function fetchLogs() {
   try {
     const params = new URLSearchParams({lines: 300, modules: selectedModules().join(',')});
+    const since = startTimeParam();
+    if (since) params.set('since', since);
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
     const data = await resp.json();
     rawLogLines = mergeWithOlderHistory(data.lines || []);
@@ -368,7 +383,12 @@ levelMinEl.addEventListener('change', function () {
 });
 timeStartEl.addEventListener('change', function () {
   localStorage.setItem('log-time-start', this.value);
-  renderLogs();
+  // The start date is now a server-side `since` bound, not just a client filter -- drop the
+  // in-memory history (which may predate the new start date) and re-fetch from the server.
+  rawLogLines = [];
+  noMoreOlderLogs = false;
+  setOlderStatus('');
+  fetchLogs();
 });
 timeEndEl.addEventListener('change', function () {
   localStorage.setItem('log-time-end', this.value);

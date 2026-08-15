@@ -17,7 +17,7 @@ filter their logs, and view and edit their configuration files — all from a br
   - Responsive: on small screens the table collapses to status dot + name + log counts + actions
 - **Module detail** — per-module view with four tabs:
   - *Overview* — current status, PID, uptime, CPU and memory usage, per-level log message counts (last 24 h), XMPP connection state (if enabled), start/restart/stop/activate/deactivate control
-  - *Logs* — live log tail with text filter, time-range filter (click a line to set), colour-coded by severity, auto-refresh; scrolling to the top auto-loads older entries (journald-backed modules only, see [journald-logs.md](specs/design/journald-logs.md))
+  - *Logs* — live log tail with text filter, time-range filter (set a start date to load all logs since that instant, or click a line to set it), colour-coded by severity, auto-refresh; scrolling to the top auto-loads older entries (journald-backed modules, or file-backed modules once a start date is set, see [journald-logs.md](specs/design/journald-logs.md))
   - *Config* — YAML editor with syntax highlighting and colour-coded `{include}` lines; included shared configs are shown as clickable links
   - *ACL* — point-and-click editor for the module's `acl:` block: click to allow/deny known modules, add other callers, toggle enforce/log mode
 - **New module** — a "+" next to the sidebar's Modules section creates a brand-new `<name>.yaml` config (a minimal starter with just a `class:` key) and takes you straight to its Config tab to fill in the rest
