@@ -559,12 +559,19 @@ def stale_packages(running: dict[str, str], installed: dict[str, str]) -> list[s
     """Sorted distribution names where `running` (get_module_versions' result for one module)
     disagrees with `installed` (from list_pyobs_packages) -- "outdated" means "upgraded but
     not restarted" (running vs. installed), not running vs. latest-PyPI, which the Packages
-    page already covers. A name present in only one side also counts as differing -- e.g.
-    installed has since dropped a driver the running process still has loaded -- since either
-    way, what's running no longer matches what's installed.
+    page already covers.
+
+    Iterates over `running` only, never `installed`: `running` is pyobs-core's
+    loaded_pyobs_packages(), which only includes what *this module actually imported* (its
+    top-level name present in sys.modules -- pyobs/utils/versions.py), while `installed` is
+    the full host-wide `pip list`. A camera module loading pyobs-core+pyobs-fli has no reason
+    to import pyobs-telescope or pyobs-iagvt just because they happen to be installed on the
+    same host -- unioning the two would flag every such unrelated package as "outdated" and
+    make Restart-outdated restart modules that aren't actually stale. A name missing from
+    `installed` (a driver the process still has loaded that's since been uninstalled) still
+    counts as differing via the `.get(n)` on the installed side.
     """
-    names = set(running) | set(installed)
-    return sorted(n for n in names if running.get(n) != installed.get(n))
+    return sorted(n for n in running if running[n] != installed.get(n))
 
 
 _PYOBS_CORE_VERSION_CACHE_TTL = 60  # seconds
@@ -1118,7 +1125,9 @@ def _get_module_versions_file(name: str) -> dict[str, str] | None:
     stdout, _ = grep.communicate()
     tac.wait()
     line = stdout.strip()
-    return _parse_loaded_packages_line(line) or None if line else None
+    if not line:
+        return None
+    return _parse_loaded_packages_line(line) or None
 
 
 def _get_module_versions_journald(name: str, since_create_time: float) -> dict[str, str] | None:

@@ -1772,10 +1772,21 @@ class StalePackagesTests(unittest.TestCase):
         versions = {"pyobs-core": "2.0.0.dev76"}
         self.assertEqual(services.stale_packages(versions, versions), [])
 
-    def test_name_present_on_only_one_side_counts_as_differing(self):
+    def test_running_only_package_missing_from_installed_counts_as_differing(self):
+        # e.g. installed has since dropped a driver the running process still has loaded.
         running = {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"}
         installed = {"pyobs-core": "2.0.0.dev76"}
         self.assertEqual(services.stale_packages(running, installed), ["pyobs-fli"])
+
+    def test_installed_only_package_the_module_never_loaded_is_not_flagged(self):
+        # `installed` is the full host-wide pip list, `running` only what this module actually
+        # imported (pyobs-core's loaded_pyobs_packages()) -- a camera module loading
+        # pyobs-core+pyobs-fli must not be flagged outdated just because pyobs-telescope also
+        # happens to be installed on the same host. Regression test for a real review finding:
+        # unioning running/installed names instead of iterating running only.
+        running = {"pyobs-core": "2.0.0.dev76"}
+        installed = {"pyobs-core": "2.0.0.dev76", "pyobs-telescope": "2.0.0.dev1"}
+        self.assertEqual(services.stale_packages(running, installed), [])
 
 
 # ── get_all_logs ──────────────────────────────────────────────────────────────
