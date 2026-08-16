@@ -37,14 +37,31 @@ the UI reports failure on an install that actually succeeded.
 
 ### 1. Background job primitives — `modules/services.py`
 
-Three files under `_run_dir()` (`services.py:50`, same directory module PID files already live
-in), all owned by one job at a time and overwritten wholesale by the next `update_package_start`:
+Files under `_run_dir()` (`services.py:50`, same directory module PID files already live in), all
+owned by one job at a time and overwritten wholesale by the next `update_package_start`:
 
-- `pkg-update.json` — lock/metadata: `{"name": <pkg>, "pid": <shell pid>, "started_at": <ts>}`.
+- `pkg-update.lock` — empty file, held via `flock(LOCK_EX | LOCK_NB)` only around the
+  check-then-spawn section of `update_package_start`. Without this, two Update clicks landing on
+  different gunicorn workers close enough together could both observe "no job running" before
+  either has written its lock metadata, and both spawn a `pip install` against the same venv —
+  exactly the race the one-job-at-a-time guarantee above exists to prevent. A second request that
+  can't acquire the flock reports "already updating" immediately rather than blocking.
+- `pkg-update.json` — metadata: `{"name": <pkg>, "pid": <shell pid>, "pid_create_time": <float>,
+  "started_at": <ts>}`.
 - `pkg-update.log` — pip's combined stdout+stderr, written directly by shell redirection (see
   below) so it fills in live, not buffered and dumped at the end.
 - `pkg-update.exit` — plain text return code, written by the spawned shell once pip exits; its
   absence is exactly "still running" (or "interrupted", see below).
+
+`pid_create_time` (`psutil.Process(pid).create_time()`, recorded at spawn) guards against PID
+reuse: a bare liveness check (`_is_alive(pid)`, i.e. `os.kill(pid, 0)`) would report an unrelated
+process as "still running" forever if the host rebooted and the OS later handed the tracked pid
+to something else. `_pkg_update_process_alive(pid, expected_create_time)` compares the live
+process's actual creation time against the recorded one (falling back to plain liveness if the
+field is missing, e.g. an older lock file). This is deliberately not a wall-clock "how long has
+this been running" cutoff — that would reintroduce exactly the arbitrary-timeout guessing this
+whole design exists to avoid; comparing process identity via creation time answers "is this
+really still my job" without needing to guess at how long a slow compile is allowed to take.
 
 `_build_update_args(name, installed_version) -> list[str]` — factor the argument-building out of
 today's `update_package` unchanged (the `pyobs*`/allow-list name check, `--pre` for a pre-release
@@ -53,30 +70,37 @@ This becomes the only caller of that logic; the old blocking `update_package` is
 
 `update_package_start(name, installed_version) -> tuple[bool, str]`:
 
-- Refuse if a job is already active (lock file present, exit file absent, `_is_alive(pid)`
-  true) — `False, f"Already updating {other_name}"`.
-- Otherwise `_build_update_args(...)`, truncate/recreate the three job files, and spawn:
+- Acquire `pkg-update.lock` via non-blocking `flock`; if that fails, another request is inside
+  this same critical section right now — report "already updating" using whatever the metadata
+  file currently says (best-effort; it will be accurate by the time the other request finishes).
+- Inside the lock: refuse if a job is already active (metadata present, exit file absent,
+  `_pkg_update_process_alive(pid, pid_create_time)` true) — `False, f"Already updating
+  {other_name}"`.
+- Otherwise `_build_update_args(...)`, truncate/recreate log+exit, and spawn:
   `subprocess.Popen(["sh", "-c", f"{shlex.join(args)} > {log} 2>&1; echo $? > {exit_file}"],
   start_new_session=True, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL)`. The shell (not us)
   redirects pip's output straight into the log file and appends the exit code once pip finishes —
   no wrapper script, no capturing-then-writing after the fact.
-- Write the lock file with the shell's PID, return `True, f"Started updating {name}"` immediately.
+- Write the metadata file (pid, `psutil.Process(pid).create_time()`, started_at), release the
+  flock, return `True, f"Started updating {name}"` immediately. The flock is held only for this
+  fast check-and-spawn section, never for the install itself.
 
 `get_package_update_status() -> dict`:
 
-- No lock file → `{"active": False}`.
-- Lock present, exit file present → job finished: `{"active": False, "name", "state":
+- No metadata file → `{"active": False}`.
+- Metadata present, exit file present → job finished: `{"active": False, "name", "state":
   "success"/"failed", "log": <tail>}`. Left in place until the next `update_package_start`
   overwrites it, so a page reload right after completion still shows the result.
-- Lock present, exit file absent, pid alive → `{"active": True, "name", "state": "running",
-  "log": <tail>}`.
-- Lock present, exit file absent, pid dead → `{"active": False, "name", "state": "interrupted",
-  "log": <tail>}` — the tracked process is gone without writing an exit code (host rebooted, `sh`
-  itself got killed). Reported distinctly from "failed" so the admin knows to just retry rather
-  than debug pip output that doesn't exist.
+- Metadata present, exit file absent, `_pkg_update_process_alive(pid, pid_create_time)` true →
+  `{"active": True, "name", "state": "running", "log": <tail>}`.
+- Metadata present, exit file absent, process not alive (by pid liveness, or same pid but a
+  mismatched create_time — see the PID-reuse note above) → `{"active": False, "name", "state":
+  "interrupted", "log": <tail>}`. Reported distinctly from "failed" so the admin knows to just
+  retry rather than debug pip output that doesn't exist.
 - `<tail>` is the log file's last ~4000 chars, read fresh every call — cheap, and correct even if
   the poll lands on a different Django worker than the one that started the job, since all state
-  lives on disk rather than in worker memory.
+  lives on disk rather than in worker memory. `get_package_update_status` never touches the flock
+  — it only reads, and reads are safe to run concurrently with the brief write section.
 
 ### 2. Views — `modules/views.py`
 
@@ -115,12 +139,19 @@ poll now that neither blocks on pip.
 
 In `modules/tests.py`:
 
-- `update_package_start`: returns immediately even for a deliberately slow fake pip (`sleep 0.3`
-  via a stubbed `_pip_exec`); a second call while the first is still running is refused and names
-  the in-flight package; log file contains the fake command's output after it completes.
-- `get_package_update_status`: no-job, running (pid alive, no exit file), success (exit file `0`),
-  failed (exit file nonzero), interrupted (lock present, exit file absent, pid not alive) — each
-  asserted from files written directly in the test rather than waiting on a real spawn.
+- `update_package_start`: returns immediately even for a deliberately slow fake pip (`sleep 1`
+  via a stubbed `_build_update_args`); a second call while the first is still running is refused
+  and names the in-flight package; log file contains the fake command's output after it
+  completes; the metadata file's `pid_create_time` matches the spawned process's actual
+  `psutil.Process(pid).create_time()`.
+- `update_package_start` under contention: a second call refused while a test-held `flock` on
+  `pkg-update.lock` simulates a concurrent request inside the same critical section — exercises
+  the atomic-lock path directly rather than only the already-written-metadata path.
+- `get_package_update_status`: no-job, running (pid alive + matching create_time, no exit file),
+  success (exit file `0`), failed (exit file nonzero), interrupted-gone (lock present, exit file
+  absent, pid not alive), interrupted-reused-pid (pid alive but recorded `pid_create_time`
+  doesn't match, using this test process's own pid) — each asserted from files written directly
+  in the test rather than waiting on a real spawn.
 - `api_package_update`: returns `ok: true` immediately (mock `update_package_start`); hub-mode
   branch still proxies.
 - `api_package_update_status`: returns the service dict; hub-mode branch proxies.
@@ -135,6 +166,14 @@ In `modules/tests.py`:
 - **Neutral:** one job at a time, host-wide rather than per-package, because concurrent `pip
   install` invocations against the same venv aren't safe. A second Update click while one is
   running is refused, not queued — matches how an admin doing this by hand would behave anyway.
+  The refusal itself is race-free: the check-then-spawn section is covered by a non-blocking
+  `flock`, not a plain file-existence check, so two requests landing on different gunicorn
+  workers microseconds apart can't both pass the check and spawn two installs.
+- **Neutral:** a rebooted host reusing the tracked pid for an unrelated process would make a bare
+  `os.kill(pid, 0)` liveness check report a long-dead job as "running" forever. Recording
+  `pid_create_time` at spawn and comparing it against the live process's actual creation time on
+  every read catches this without needing a wall-clock staleness cutoff (which would just
+  reintroduce the arbitrary-timeout guessing this whole design avoids).
 - **Accepted trade-off:** the spawned `sh` isn't reaped with an explicit `os.wait()` in the
   request handler; it relies on Python's own `subprocess._cleanup()`, which runs opportunistically
   whenever this same worker next spawns another subprocess (git commands, module start/stop,

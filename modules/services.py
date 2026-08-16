@@ -1,3 +1,4 @@
+import fcntl
 import io
 import json
 import os
@@ -773,11 +774,14 @@ def _build_update_args(name: str, installed_version: str) -> list[str]:
 #
 # A pip install can take far longer than any HTTP request should block for (compiling a package
 # with no prebuilt wheel), so the actual `pip install` runs detached from the Django worker, not
-# inside update_package_start's request. Job state lives entirely in three files under _run_dir(),
-# not in worker memory, so a status poll works regardless of which worker handles it and survives
-# a web-admin restart mid-install:
+# inside update_package_start's request. Job state lives entirely in files under _run_dir(), not
+# in worker memory, so a status poll works regardless of which worker handles it and survives a
+# web-admin restart mid-install:
 #
-#   pkg-update.json  lock/metadata: {"name": <pkg>, "pid": <shell pid>, "started_at": <ts>}
+#   pkg-update.lock  empty file, held via flock() only around the check-then-spawn section of
+#                     update_package_start -- makes "is a job already running?" atomic across
+#                     concurrent requests hitting different gunicorn workers, not just within one
+#   pkg-update.json  metadata: {"name", "pid" (shell pid), "pid_create_time", "started_at"}
 #   pkg-update.log   pip's combined stdout+stderr, written live by shell redirection
 #   pkg-update.exit  the exit code, written by the spawned shell once pip finishes; its absence
 #                     means "still running" (or "interrupted", see get_package_update_status)
@@ -785,6 +789,18 @@ def _build_update_args(name: str, installed_version: str) -> list[str]:
 # Only one job at a time, host-wide (not per-package): concurrent `pip install` invocations
 # against the same venv aren't safe (races in dist-info/RECORD), so a second Update while one is
 # running is refused rather than queued -- the same thing an admin doing this by hand would do.
+#
+# pid_create_time (psutil's Process.create_time(), recorded at spawn) guards against PID reuse:
+# a bare `_is_alive(pid)` would report an unrelated process as "still running" forever if the
+# host rebooted and the OS later handed the tracked pid to something else entirely. Matching the
+# recorded creation time against the live process's actual one confirms it's the same process,
+# not just the same number -- a wall-clock "how long has this been running" cutoff can't do that
+# without guessing at how long a slow compile is allowed to take, which is exactly what this
+# whole design avoids doing.
+
+def _pkg_update_lock_flock_file() -> Path:
+    return _run_dir() / "pkg-update.lock"
+
 
 def _pkg_update_lock_file() -> Path:
     return _run_dir() / "pkg-update.json"
@@ -806,56 +822,93 @@ def _pkg_update_tail(max_chars: int = 4000) -> str:
     return text[-max_chars:]
 
 
+def _pkg_update_process_alive(pid: int, expected_create_time: float | None) -> bool:
+    """Whether pid is not just alive, but the same process update_package_start spawned --
+    guards against a rebooted host having reused the pid for something unrelated. Falls back to
+    plain liveness if expected_create_time is missing (e.g. an older lock file from before this
+    field existed).
+    """
+    if not _is_alive(pid):
+        return False
+    if expected_create_time is None:
+        return True
+    try:
+        actual = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False
+    return abs(actual - expected_create_time) < 1.0
+
+
+def _read_pkg_update_lock() -> dict | None:
+    try:
+        return json.loads(_pkg_update_lock_file().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def update_package_start(name: str, installed_version: str) -> tuple[bool, str]:
     """Starts `pip install --upgrade` for name detached from this request and returns
     immediately. See the module comment above for the on-disk job-state design.
     """
-    lock_file = _pkg_update_lock_file()
-    if lock_file.exists():
+    _run_dir().mkdir(parents=True, exist_ok=True)
+    flock_fd = os.open(_pkg_update_lock_flock_file(), os.O_CREAT | os.O_RDWR)
+    try:
         try:
-            lock = json.loads(lock_file.read_text())
-        except (OSError, json.JSONDecodeError):
-            lock = {}
-        pid = lock.get("pid")
-        if pid and not _pkg_update_exit_file().exists() and _is_alive(pid):
+            fcntl.flock(flock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another request is inside this same critical section right now (started
+            # microseconds apart on a different worker) -- by the time it releases the lock it
+            # will itself be the "already updating" job, so just report that rather than
+            # blocking this request on the flock.
+            lock = _read_pkg_update_lock() or {}
             return False, f"Already updating {lock.get('name', 'a package')}"
 
-    try:
-        args = _build_update_args(name, installed_version)
-    except ValueError as e:
-        return False, str(e)
+        lock = _read_pkg_update_lock()
+        if lock:
+            pid = lock.get("pid")
+            if pid and not _pkg_update_exit_file().exists() and _pkg_update_process_alive(pid, lock.get("pid_create_time")):
+                return False, f"Already updating {lock.get('name', 'a package')}"
 
-    _run_dir().mkdir(parents=True, exist_ok=True)
-    log_file = _pkg_update_log_file()
-    exit_file = _pkg_update_exit_file()
-    exit_file.unlink(missing_ok=True)
+        try:
+            args = _build_update_args(name, installed_version)
+        except ValueError as e:
+            return False, str(e)
 
-    shell_cmd = f"{shlex.join(args)} > {shlex.quote(str(log_file))} 2>&1; echo $? > {shlex.quote(str(exit_file))}"
-    try:
-        proc = subprocess.Popen(
-            ["sh", "-c", shell_cmd],
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        log_file = _pkg_update_log_file()
+        exit_file = _pkg_update_exit_file()
+        exit_file.unlink(missing_ok=True)
+
+        shell_cmd = f"{shlex.join(args)} > {shlex.quote(str(log_file))} 2>&1; echo $? > {shlex.quote(str(exit_file))}"
+        try:
+            proc = subprocess.Popen(
+                ["sh", "-c", shell_cmd],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            return False, "sh executable not found"
+
+        try:
+            pid_create_time = psutil.Process(proc.pid).create_time()
+        except psutil.NoSuchProcess:
+            pid_create_time = None
+        _pkg_update_lock_file().write_text(
+            json.dumps({"name": name, "pid": proc.pid, "pid_create_time": pid_create_time, "started_at": time.time()})
         )
-    except FileNotFoundError:
-        return False, "sh executable not found"
-
-    lock_file.write_text(json.dumps({"name": name, "pid": proc.pid, "started_at": time.time()}))
-    return True, f"Started updating {name}"
+        return True, f"Started updating {name}"
+    finally:
+        fcntl.flock(flock_fd, fcntl.LOCK_UN)
+        os.close(flock_fd)
 
 
 def get_package_update_status() -> dict:
     """Reports the current/last background update job. See the module comment above
-    _pkg_update_lock_file for the on-disk job-state design this reads.
+    _pkg_update_lock_flock_file for the on-disk job-state design this reads.
     """
-    lock_file = _pkg_update_lock_file()
-    if not lock_file.exists():
-        return {"active": False}
-    try:
-        lock = json.loads(lock_file.read_text())
-    except (OSError, json.JSONDecodeError):
+    lock = _read_pkg_update_lock()
+    if lock is None:
         return {"active": False}
 
     name = lock.get("name")
@@ -871,12 +924,13 @@ def get_package_update_status() -> dict:
         state = "success" if code == 0 else "failed"
         return {"active": False, "name": name, "state": state, "log": tail}
 
-    if pid and _is_alive(pid):
+    if pid and _pkg_update_process_alive(pid, lock.get("pid_create_time")):
         return {"active": True, "name": name, "state": "running", "log": tail}
 
-    # Tracked process is gone without ever writing an exit code (host rebooted, `sh` itself
-    # got killed) -- reported distinctly from "failed" so the admin retries instead of reading
-    # pip output that was never produced.
+    # Tracked process is gone without ever writing an exit code -- either genuinely gone (host
+    # rebooted, `sh` itself got killed) or its pid was reused by an unrelated process after a
+    # reboot (see _pkg_update_process_alive). Reported distinctly from "failed" so the admin
+    # retries instead of reading pip output that was never produced.
     return {"active": False, "name": name, "state": "interrupted", "log": tail}
 
 

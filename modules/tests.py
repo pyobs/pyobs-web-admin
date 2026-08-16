@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -6,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import yaml
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import User
@@ -2141,10 +2144,35 @@ class UpdatePackageStartTests(unittest.TestCase):
         self.assertIn("unmanaged", message)
         self.assertFalse(services._pkg_update_lock_file().exists())
 
+    @patch("modules.services._pip_exec", return_value="/bin/echo")
+    def test_lock_records_matching_pid_create_time(self, _mock_pip):
+        services.update_package_start("pyobs-core", "1.54.0")
+        lock = json.loads(services._pkg_update_lock_file().read_text())
+        actual = psutil.Process(lock["pid"]).create_time()
+        self.assertAlmostEqual(lock["pid_create_time"], actual, delta=1.0)
+        self._wait_for_exit_file()
+
+    @patch("modules.services._build_update_args", return_value=["/bin/sleep", "1"])
+    def test_second_start_refused_while_first_holds_the_flock(self, _mock_args):
+        # Simulates two requests landing on different gunicorn workers close enough together
+        # that the second one's flock() call contends with the first's, rather than finding a
+        # fully-written lock file -- the race PR #50 review comment #2 flagged.
+        services._run_dir().mkdir(parents=True, exist_ok=True)
+        services._pkg_update_lock_file().write_text(json.dumps({"name": "pyobs-core", "pid": 1, "pid_create_time": None}))
+        flock_fd = os.open(services._pkg_update_lock_flock_file(), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(flock_fd, fcntl.LOCK_EX)
+        try:
+            ok, message = services.update_package_start("pyobs-fli", "1.0.0")
+        finally:
+            fcntl.flock(flock_fd, fcntl.LOCK_UN)
+            os.close(flock_fd)
+        self.assertFalse(ok)
+        self.assertIn("pyobs-core", message)
+
 
 class GetPackageUpdateStatusTests(unittest.TestCase):
     """Exercises the on-disk state machine directly (no real spawn) for states that
-    UpdatePackageStartTests can't easily force: no job ever run, and interrupted."""
+    UpdatePackageStartTests can't easily force: no job ever run, interrupted, and reused-pid."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -2168,6 +2196,20 @@ class GetPackageUpdateStatusTests(unittest.TestCase):
         self.assertEqual(status["state"], "interrupted")
         self.assertFalse(status["active"])
         self.assertIn("partial output", status["log"])
+
+    def test_interrupted_when_pid_alive_but_create_time_mismatches(self):
+        # A live pid whose actual start time doesn't match what was recorded means the tracked
+        # process is gone and the OS has since reused its pid for something unrelated (e.g. after
+        # a host reboot) -- must not be reported as "running" just because *some* process with
+        # that number exists. Use this test process's own pid, which is guaranteed alive, with a
+        # deliberately wrong recorded create_time.
+        real_create_time = psutil.Process(os.getpid()).create_time()
+        services._pkg_update_lock_file().write_text(
+            json.dumps({"name": "pyobs-core", "pid": os.getpid(), "pid_create_time": real_create_time - 1000, "started_at": 0})
+        )
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "interrupted")
+        self.assertFalse(status["active"])
 
 
 class HubTokenMiddlewareTests(unittest.TestCase):
