@@ -104,9 +104,12 @@ Logs
    * - GET
      - ``/api/modules/<name>/logs/``
      - Query params: ``lines`` (default 300, capped at 2000), ``filter`` (substring/regex
-       applied server-side), ``before`` (ISO-8601 instant -- returns the last ``lines``
-       entries at or before it, for the log pane's scroll-to-top "load older logs" feature;
-       journald-backed modules only, the file backend returns ``[]``). ``{"lines": [...]}``.
+       applied server-side), ``since`` (ISO-8601 instant -- the time-range start date, so
+       only entries at or after it are returned), and ``before`` (ISO-8601 instant -- returns
+       the last ``lines`` entries at or before it, for the log pane's scroll-to-top "load
+       older logs" feature). ``since`` and ``before`` combine into a ``[since, before]``
+       window; ``before`` on its own is journald-only (the file backend returns ``[]``
+       unless ``since`` is also set). ``{"lines": [...]}``.
    * - GET
      - ``/api/modules/<name>/log-stats/``
      - 24h level counts. ``{"stats": {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}}``.
@@ -115,11 +118,11 @@ Logs
      - Fleet-wide merged tail, independent of the active host. Query params: ``lines``,
        ``filter``, ``modules`` -- a comma-separated list of ``<host>:<module>`` tokens
        (``host`` is ``"localhost"`` or a ``HUB_HOSTS`` name); omit ``modules`` entirely for
-       every module on every configured host -- and ``before`` (same "load older logs"
-       semantics as the per-module endpoint above, forwarded unchanged to each configured
-       host). ``{"lines": [...], "unreachable_hosts":
-       [{"name", "error"}, ...]}``; each line is tagged ``[host]`` when more than one host
-       is selected.
+       every module on every configured host -- plus ``since`` and ``before`` (same
+       time-range start date and "load older logs" semantics as the per-module endpoint
+       above, forwarded unchanged to each configured host). ``{"lines": [...],
+       "unreachable_hosts": [{"name", "error"}, ...]}``; each line is tagged ``[host]`` when
+       more than one host is selected.
    * - GET
      - ``/api/log-stats/``
      - All modules' 24h level counts on the active host. ``{"modules": {name: stats, ...}}``.

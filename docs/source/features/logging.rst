@@ -56,9 +56,17 @@ fetch the most recent ``lines`` entries. Scrolling either view's log pane to the
 auto-loads the next page of older entries and prepends them, preserving scroll position so
 the line you were looking at doesn't jump.
 
-This is a ``journald``-only capability for now: it queries ``journalctl`` with the oldest
-currently-loaded line's own timestamp as an ``--until`` cutoff (alongside the existing
-``-n <lines>``), giving the next page of entries immediately before what's already on screen.
-The file backend's plain ``tail -n`` has no equivalent seek/offset to page further back with,
-so on a file-backed module the pane instead reports "Beginning of available logs" the first
-time you scroll to the top, rather than silently re-serving the same tail on every scroll.
+Setting a start date in the time-range filter turns it into a server-side ``since`` bound
+rather than just a client-side filter, so the pane loads logs *since* that date and you can
+page back through them. The initial fetch and every scroll-to-top page-back send the start
+date as ``since``; the server bounds the query accordingly (``journalctl --since`` on the
+journald backend, a timestamp window on the file backend).
+
+Scrolling to the top pages back with ``before`` (the oldest currently-loaded line's own
+timestamp). For the journald backend that's a ``journalctl --until`` cutoff alongside the
+existing ``-n <lines>``, giving the next page of entries immediately before what's already
+on screen. The file backend supports the same page-back once a start date is set (the window
+is bounded by ``since``), but a plain ``tail -n`` has no seek/offset to page further back
+*without* a start date -- so on a file-backed module with no start date the pane reports
+"Beginning of available logs" the first time you scroll to the top, rather than silently
+re-serving the same tail on every scroll.

@@ -1,10 +1,13 @@
+import fcntl
 import io
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -552,6 +555,25 @@ def list_pyobs_packages() -> list[dict]:
     )
 
 
+def stale_packages(running: dict[str, str], installed: dict[str, str]) -> list[str]:
+    """Sorted distribution names where `running` (get_module_versions' result for one module)
+    disagrees with `installed` (from list_pyobs_packages) -- "outdated" means "upgraded but
+    not restarted" (running vs. installed), not running vs. latest-PyPI, which the Packages
+    page already covers.
+
+    Iterates over `running` only, never `installed`: `running` is pyobs-core's
+    loaded_pyobs_packages(), which only includes what *this module actually imported* (its
+    top-level name present in sys.modules -- pyobs/utils/versions.py), while `installed` is
+    the full host-wide `pip list`. A camera module loading pyobs-core+pyobs-fli has no reason
+    to import pyobs-telescope or pyobs-iagvt just because they happen to be installed on the
+    same host -- unioning the two would flag every such unrelated package as "outdated" and
+    make Restart-outdated restart modules that aren't actually stale. A name missing from
+    `installed` (a driver the process still has loaded that's since been uninstalled) still
+    counts as differing via the `.get(n)` on the installed side.
+    """
+    return sorted(n for n in running if running[n] != installed.get(n))
+
+
 _PYOBS_CORE_VERSION_CACHE_TTL = 60  # seconds
 _pyobs_core_version_cache: tuple[float, Version | None] | None = None
 
@@ -728,12 +750,12 @@ def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict
     return {"hosts": host_names, "packages": rows}
 
 
-def update_package(name: str, installed_version: str) -> tuple[bool, str]:
-    """Runs `pip install --upgrade <spec>` in pyobs's own environment (_pip_exec), where
-    <spec> is name itself unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it (see
-    _install_spec_for). Callers (api_package_update) must already have checked name against
-    list_pyobs_packages() -- the name check here is just defense in depth, not the primary
-    access control, so that this function alone can never be used to pip-install something
+def _build_update_args(name: str, installed_version: str) -> list[str]:
+    """Builds the `pip install --upgrade <spec>` argv for `name` in pyobs's own environment
+    (_pip_exec), where <spec> is name itself unless PYOBS_MANAGED_PACKAGES configures a fuller
+    spec for it (see _install_spec_for). Callers (update_package_start) must already have checked
+    name against list_pyobs_packages() -- the name check here is just defense in depth, not the
+    primary access control, so that this function alone can never be used to pip-install something
     arbitrary even if a caller forgot that check. Mirrors list_pyobs_packages' own "pyobs-
     prefixed, or explicitly allow-listed via PYOBS_MANAGED_PACKAGES" rule -- a name only
     reachable here if it could also have shown up on the Packages page in the first place.
@@ -748,9 +770,11 @@ def update_package(name: str, installed_version: str) -> tuple[bool, str]:
     keeps --pre's effect scoped to resolving *this* package -- already-satisfied dependencies
     aren't re-examined for a newer prerelease of their own just because this install allows
     prereleases in general.
+
+    Raises ValueError if name isn't a managed package -- defense in depth, see above.
     """
     if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE) and _normalize_package_name(name) not in _managed_package_specs():
-        return False, f"Refusing to update unmanaged package: {name!r}"
+        raise ValueError(f"Refusing to update unmanaged package: {name!r}")
     args = [_pip_exec(), "install", "--upgrade", "--upgrade-strategy=only-if-needed", "--no-input"]
     if _is_prerelease(installed_version):
         args.append("--pre")
@@ -762,14 +786,171 @@ def update_package(name: str, installed_version: str) -> tuple[bool, str]:
         # forced reinstall to this package alone, not a full dependency re-resolve.
         args += ["--force-reinstall", "--no-deps"]
     args.append(_install_spec_for(name))
+    return args
+
+
+# ── Background package updates ──────────────────────────────────────────────────
+#
+# A pip install can take far longer than any HTTP request should block for (compiling a package
+# with no prebuilt wheel), so the actual `pip install` runs detached from the Django worker, not
+# inside update_package_start's request. Job state lives entirely in files under _run_dir(), not
+# in worker memory, so a status poll works regardless of which worker handles it and survives a
+# web-admin restart mid-install:
+#
+#   pkg-update.lock  empty file, held via flock() only around the check-then-spawn section of
+#                     update_package_start -- makes "is a job already running?" atomic across
+#                     concurrent requests hitting different gunicorn workers, not just within one
+#   pkg-update.json  metadata: {"name", "pid" (shell pid), "pid_create_time", "started_at"}
+#   pkg-update.log   pip's combined stdout+stderr, written live by shell redirection
+#   pkg-update.exit  the exit code, written by the spawned shell once pip finishes; its absence
+#                     means "still running" (or "interrupted", see get_package_update_status)
+#
+# Only one job at a time, host-wide (not per-package): concurrent `pip install` invocations
+# against the same venv aren't safe (races in dist-info/RECORD), so a second Update while one is
+# running is refused rather than queued -- the same thing an admin doing this by hand would do.
+#
+# pid_create_time (psutil's Process.create_time(), recorded at spawn) guards against PID reuse:
+# a bare `_is_alive(pid)` would report an unrelated process as "still running" forever if the
+# host rebooted and the OS later handed the tracked pid to something else entirely. Matching the
+# recorded creation time against the live process's actual one confirms it's the same process,
+# not just the same number -- a wall-clock "how long has this been running" cutoff can't do that
+# without guessing at how long a slow compile is allowed to take, which is exactly what this
+# whole design avoids doing.
+
+def _pkg_update_lock_flock_file() -> Path:
+    return _run_dir() / "pkg-update.lock"
+
+
+def _pkg_update_lock_file() -> Path:
+    return _run_dir() / "pkg-update.json"
+
+
+def _pkg_update_log_file() -> Path:
+    return _run_dir() / "pkg-update.log"
+
+
+def _pkg_update_exit_file() -> Path:
+    return _run_dir() / "pkg-update.exit"
+
+
+def _pkg_update_tail(max_chars: int = 4000) -> str:
+    log_file = _pkg_update_log_file()
+    if not log_file.exists():
+        return ""
+    text = log_file.read_text(errors="replace")
+    return text[-max_chars:]
+
+
+def _pkg_update_process_alive(pid: int, expected_create_time: float | None) -> bool:
+    """Whether pid is not just alive, but the same process update_package_start spawned --
+    guards against a rebooted host having reused the pid for something unrelated. Falls back to
+    plain liveness if expected_create_time is missing (e.g. an older lock file from before this
+    field existed).
+    """
+    if not _is_alive(pid):
+        return False
+    if expected_create_time is None:
+        return True
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        return False, "Timed out waiting for pip install to finish"
-    except FileNotFoundError:
-        return False, f"pip executable not found: {_pip_exec()!r}"
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+        actual = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False
+    return abs(actual - expected_create_time) < 1.0
+
+
+def _read_pkg_update_lock() -> dict | None:
+    try:
+        return json.loads(_pkg_update_lock_file().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def update_package_start(name: str, installed_version: str) -> tuple[bool, str]:
+    """Starts `pip install --upgrade` for name detached from this request and returns
+    immediately. See the module comment above for the on-disk job-state design.
+    """
+    _run_dir().mkdir(parents=True, exist_ok=True)
+    flock_fd = os.open(_pkg_update_lock_flock_file(), os.O_CREAT | os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(flock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another request is inside this same critical section right now (started
+            # microseconds apart on a different worker) -- by the time it releases the lock it
+            # will itself be the "already updating" job, so just report that rather than
+            # blocking this request on the flock.
+            lock = _read_pkg_update_lock() or {}
+            return False, f"Already updating {lock.get('name', 'a package')}"
+
+        lock = _read_pkg_update_lock()
+        if lock:
+            pid = lock.get("pid")
+            if pid and not _pkg_update_exit_file().exists() and _pkg_update_process_alive(pid, lock.get("pid_create_time")):
+                return False, f"Already updating {lock.get('name', 'a package')}"
+
+        try:
+            args = _build_update_args(name, installed_version)
+        except ValueError as e:
+            return False, str(e)
+
+        log_file = _pkg_update_log_file()
+        exit_file = _pkg_update_exit_file()
+        exit_file.unlink(missing_ok=True)
+
+        shell_cmd = f"{shlex.join(args)} > {shlex.quote(str(log_file))} 2>&1; echo $? > {shlex.quote(str(exit_file))}"
+        try:
+            proc = subprocess.Popen(
+                ["sh", "-c", shell_cmd],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            return False, "sh executable not found"
+
+        try:
+            pid_create_time = psutil.Process(proc.pid).create_time()
+        except psutil.NoSuchProcess:
+            pid_create_time = None
+        _pkg_update_lock_file().write_text(
+            json.dumps({"name": name, "pid": proc.pid, "pid_create_time": pid_create_time, "started_at": time.time()})
+        )
+        return True, f"Started updating {name}"
+    finally:
+        fcntl.flock(flock_fd, fcntl.LOCK_UN)
+        os.close(flock_fd)
+
+
+def get_package_update_status() -> dict:
+    """Reports the current/last background update job. See the module comment above
+    _pkg_update_lock_flock_file for the on-disk job-state design this reads.
+    """
+    lock = _read_pkg_update_lock()
+    if lock is None:
+        return {"active": False}
+
+    name = lock.get("name")
+    pid = lock.get("pid")
+    exit_file = _pkg_update_exit_file()
+    tail = _pkg_update_tail()
+
+    if exit_file.exists():
+        try:
+            code = int(exit_file.read_text().strip())
+        except (OSError, ValueError):
+            code = None
+        state = "success" if code == 0 else "failed"
+        return {"active": False, "name": name, "state": state, "log": tail}
+
+    if pid and _pkg_update_process_alive(pid, lock.get("pid_create_time")):
+        return {"active": True, "name": name, "state": "running", "log": tail}
+
+    # Tracked process is gone without ever writing an exit code -- either genuinely gone (host
+    # rebooted, `sh` itself got killed) or its pid was reused by an unrelated process after a
+    # reboot (see _pkg_update_process_alive). Reported distinctly from "failed" so the admin
+    # retries instead of reading pip output that was never produced.
+    return {"active": False, "name": name, "state": "interrupted", "log": tail}
 
 
 # ── PID helpers ───────────────────────────────────────────────────────────────
@@ -907,6 +1088,98 @@ def get_module_stats(name: str) -> dict | None:
         return None
 
 
+_LOADED_PACKAGES_PREFIX = "Loaded pyobs packages: "
+
+
+def _parse_loaded_packages_line(line: str) -> dict[str, str]:
+    """Parses the `{dist}={version}, ...` remainder of a "Loaded pyobs packages: ..." line
+    (pyobs-core's `loaded_pyobs_packages()`, logged at module startup). Versions are
+    semver/dev strings with no `,` or `=`, and distribution names are `pyobs-*` with no `=`
+    either, so a plain split on ", " then "=" is safe."""
+    idx = line.find(_LOADED_PACKAGES_PREFIX)
+    if idx == -1:
+        return {}
+    rest = line[idx + len(_LOADED_PACKAGES_PREFIX):].strip()
+    if not rest:
+        return {}
+    versions = {}
+    for pair in rest.split(", "):
+        dist, sep, version = pair.partition("=")
+        if dist and sep and version:
+            versions[dist] = version
+    return versions
+
+
+def _get_module_versions_file(name: str) -> dict[str, str] | None:
+    """`tac <logfile> | grep -m1 <prefix>` (no shell, piped subprocesses) -- tac reads from
+    the end so the newest occurrence is found without scanning the whole (potentially large,
+    rotated) log file."""
+    log_file = _log_dir() / f"{_active_name(name)}.log"
+    if not log_file.exists():
+        return None
+    tac = subprocess.Popen(["tac", str(log_file)], stdout=subprocess.PIPE)
+    grep = subprocess.Popen(
+        ["grep", "-m1", "-F", _LOADED_PACKAGES_PREFIX], stdin=tac.stdout, stdout=subprocess.PIPE, text=True
+    )
+    tac.stdout.close()
+    stdout, _ = grep.communicate()
+    tac.wait()
+    line = stdout.strip()
+    if not line:
+        return None
+    return _parse_loaded_packages_line(line) or None
+
+
+def _get_module_versions_journald(name: str, since_create_time: float) -> dict[str, str] | None:
+    """Same substring parse as the file backend, applied to the newest matching journal
+    entry's MESSAGE. Bound to `--since @<create_time>` (the module's own psutil
+    create_time(), already used by get_module_stats) -- otherwise --grep scans the entire
+    retained journal, and for a long-running module the version line is old."""
+    since = datetime.fromtimestamp(since_create_time, tz=timezone.utc)
+    entries = _journalctl_json([
+        "SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}",
+        "--since", f"{since:%Y-%m-%d %H:%M:%S} UTC", "--grep", _LOADED_PACKAGES_PREFIX,
+    ])
+    if not entries:
+        return None
+    versions = _parse_loaded_packages_line(entries[-1].get("MESSAGE", ""))
+    return versions or None
+
+
+_module_versions_cache: dict[str, tuple[int, dict[str, str]]] = {}
+
+
+def get_module_versions(name: str) -> dict[str, str] | None:
+    """{distribution: version} from the newest "Loaded pyobs packages:" line in `name`'s log,
+    or None if the module isn't running or its log has no such line yet (started before the
+    pyobs-core change that logs it, or the line has rotated out of retention).
+
+    Cached by PID, mirroring _process_cache: the version set is fixed for the lifetime of a
+    process, so a status poll must not re-shell-out to tac/journalctl every time. A cached
+    entry is reused only while the PID still matches; a stopped module clears it.
+    """
+    pid = _read_pid(name)
+    if pid is None or not _is_alive(pid):
+        _module_versions_cache.pop(name, None)
+        return None
+    cached = _module_versions_cache.get(name)
+    if cached is not None and cached[0] == pid:
+        return cached[1]
+    if _log_backend() == "journald":
+        try:
+            create_time = psutil.Process(pid).create_time()
+        except psutil.NoSuchProcess:
+            _module_versions_cache.pop(name, None)
+            return None
+        versions = _get_module_versions_journald(name, create_time)
+    else:
+        versions = _get_module_versions_file(name)
+    if versions is None:
+        return None
+    _module_versions_cache[name] = (pid, versions)
+    return versions
+
+
 def deactivate_module(name: str) -> tuple[bool, str]:
     validate_name(name)
     if name.startswith("_"):
@@ -1001,8 +1274,10 @@ def _journal_entry_to_line(entry: dict) -> str:
     return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
 
 
-def _get_logs_journald(name: str, lines: int, before: datetime | None = None) -> list[str]:
+def _get_logs_journald(name: str, lines: int, before: datetime | None = None, since: datetime | None = None) -> list[str]:
     args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}"]
+    if since is not None:
+        args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     if before is not None:
         args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
@@ -1028,22 +1303,12 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
     return counts
 
 
-def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime | None = None) -> list[str]:
+def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None) -> list[str]:
     validate_name(name)
     if _log_backend() == "journald":
-        log_lines = _get_logs_journald(name, lines, before)
+        log_lines = _get_logs_journald(name, lines, before, since)
     else:
-        # "Load older logs" (before) isn't supported for the file backend yet -- a plain
-        # `tail -n` has no seek/offset concept to page further back with (see get_all_logs'
-        # analogous file-backend limitation) -- so this reports "nothing older available"
-        # rather than re-returning the same tail on every scroll-to-top.
-        if before is not None:
-            return []
-        log_file = _log_dir() / f"{_active_name(name)}.log"
-        if not log_file.exists():
-            return []
-        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
-        log_lines = result.stdout.splitlines()
+        log_lines = _get_logs_file(name, lines, since, before)
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
     return log_lines
@@ -1052,7 +1317,97 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime
 _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 
 
-def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime | None = None) -> list[str]:
+def _file_line_ts(line: str) -> datetime | None:
+    """The naive-UTC timestamp of a file-backend log line's leading `YYYY-MM-DD HH:MM:SS`
+    prefix, or None if it doesn't parse. Matches get_log_stats' own nested _line_ts; lifted
+    here so the file-backend read path can share it."""
+    m = _TS_RE.match(line)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _naive_utc(dt: datetime) -> datetime:
+    """File-backend timestamps are naive and assumed UTC (see _journal_entry_to_line); convert
+    an aware datetime to that same naive-UTC form before comparing against them."""
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _file_offset_of_last_line_before(f, file_size: int, cutoff: datetime) -> int:
+    """Binary search: the byte offset within `f` (already open in 'rb') of the last line whose
+    timestamp is < `cutoff` (naive UTC), or 0 if the first line already satisfies it. Mirrors
+    get_log_stats' own byte-offset search, just parameterized over the cutoff so the file
+    read path can reuse it for a `since` boundary."""
+    lo, hi = 0, file_size
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        f.seek(mid)
+        f.readline()  # skip a partial line at the seek point
+        line = f.readline().decode("utf-8", errors="replace")
+        ts = _file_line_ts(line)
+        if ts is not None and ts < cutoff:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def _get_logs_file(name: str, lines: int, since: datetime | None, before: datetime | None) -> list[str]:
+    """File-backend read of `name`'s flat log, bounded by [since, before] (both inclusive)
+    and trimmed to the last `lines` lines -- the same "tail within a window" semantics the
+    journald backend gets from `journalctl -n <lines> --since ... --until ...`.
+
+    The common tail/auto-refresh case (`before is None`) stays a plain `tail -n` so the
+    every-few-seconds refresh never re-reads a whole day of history: timestamps are monotonic,
+    so `tail -n lines` either lies entirely inside [since, now] (when the window holds >= lines
+    lines) or already includes the whole window plus some older lines, which the since-filter
+    then collapses to exactly the window. The `before` case (a scroll-to-top page-back) reads
+    forward from the first line >= since and stops at the first line > before, keeping only the
+    last `lines`. Without a `since` the file backend still can't page back -- `tail -n` has no
+    seek/offset concept to page further back with, and reading from offset 0 on every scroll
+    would re-read the whole file -- so that returns [] as before (see journald-logs.md)."""
+    log_file = _log_dir() / f"{_active_name(name)}.log"
+    if not log_file.exists():
+        return []
+    if before is not None and since is None:
+        return []
+    since_naive = _naive_utc(since) if since is not None else None
+    before_naive = _naive_utc(before) if before is not None else None
+
+    if before_naive is None:
+        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
+        tail_lines = result.stdout.splitlines()
+        if since_naive is None:
+            return tail_lines
+        return [l for l in tail_lines if (t := _file_line_ts(l)) is None or t >= since_naive]
+
+    with open(log_file, "rb") as f:
+        f.seek(0, 2)
+        file_size = f.tell()
+        if file_size == 0:
+            return []
+        start = 0
+        if since_naive is not None:
+            start = _file_offset_of_last_line_before(f, file_size, since_naive)
+            f.seek(start)
+            if start > 0:
+                f.readline()  # skip the (possibly partial) last line < since
+        buf = deque(maxlen=lines)
+        for raw in f:
+            line = raw.decode("utf-8", errors="replace").rstrip("\n")
+            t = _file_line_ts(line)
+            if since_naive is not None and t is not None and t < since_naive:
+                continue
+            if t is not None and t > before_naive:
+                break
+            buf.append(line)
+        return list(buf)
+
+
+def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime | None = None, since: datetime | None = None) -> list[str]:
     # names is None means "no PYOBS_MODULE restriction at all" -- broader than "every
     # currently configured module," since it also surfaces entries from a module whose
     # config has since been removed/renamed. names == [] means the caller explicitly
@@ -1064,6 +1419,8 @@ def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime
         # Repeating a field name is journalctl's own OR syntax -- combined with the
         # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
         args += [f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]
+    if since is not None:
+        args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     if before is not None:
         args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
@@ -1090,39 +1447,30 @@ def merge_log_lines(line_lists: list[list[str]], lines: int) -> list[str]:
     return [line for _, _, _, line in entries[-lines:]]
 
 
-def _get_all_logs_file(names: list[str], lines: int) -> list[str]:
-    # Each module's own file has no cross-module time index, so the merge tails `lines`
-    # from every file independently, then sorts the union by each line's own leading
+def _get_all_logs_file(names: list[str], lines: int, since: datetime | None, before: datetime | None) -> list[str]:
+    # Each module's own file has no cross-module time index, so the merge reads the windowed
+    # tail from every file independently, then sorts the union by each line's own leading
     # timestamp and trims to the overall last `lines` -- an approximation (a module with
     # much higher log volume could in principle push another's tail out of the merged
     # window) rather than a true global tail, but matches this app's existing "good enough,
-    # not a from-scratch index" tolerance for the file backend (see get_log_stats's binary
+    # not a from-scratch index" tolerance for the file backend (see get_log_stats' binary
     # search comment).
     line_lists = []
     for name in names:
-        log_file = _log_dir() / f"{_active_name(name)}.log"
-        if not log_file.exists():
-            continue
-        result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
-        line_lists.append(result.stdout.splitlines())
+        line_lists.append(_get_logs_file(name, lines, since, before))
     return merge_log_lines(line_lists, lines)
 
 
 def get_all_logs(
-    names: list[str] | None = None, lines: int = 300, filter_str: str = "", before: datetime | None = None
+    names: list[str] | None = None, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None
 ) -> list[str]:
     if names is not None:
         for name in names:
             validate_name(name)
     if _log_backend() == "journald":
-        log_lines = _get_all_logs_journald(names, lines, before)
+        log_lines = _get_all_logs_journald(names, lines, before, since)
     else:
-        # See get_logs' identical file-backend caveat -- no seek/offset to page further back
-        # with, so an older-logs request reports nothing available rather than re-serving
-        # the same tail.
-        if before is not None:
-            return []
-        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines)
+        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines, since, before)
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
     return log_lines

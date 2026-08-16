@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -6,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import yaml
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import User
@@ -1408,12 +1411,41 @@ class LogBackendJournaldTests(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_since_adds_since_arg_ahead_of_lines_flag(self, mock_run):
+        """The time-range start date becomes journalctl's --since, so `-n` returns the last
+        N entries *at or after* that instant instead of the last N overall."""
+        mock_run.return_value = self._mock_result("")
+        since = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        services.get_logs("camera_verify_test", lines=300, since=since)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--since", "2026-07-15 10:00:00 UTC", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_since_and_before_combine_both_bounds(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        since = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc)
+        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        services.get_logs("camera_verify_test", lines=300, since=since, before=before)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--since", "2026-07-15 09:00:00 UTC", "--until", "2026-07-15 10:00:00 UTC",
+             "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
     @patch("modules.services.subprocess.run")
     def test_file_backend_before_returns_empty_list_not_a_tail(self, mock_run):
-        """The file backend has no seek/offset to page further back with -- a `before`
-        request must report "nothing older available" (empty list) rather than silently
-        re-running the same tail, which would look like an infinite scrollback of duplicate
-        lines to the frontend's scroll-to-top handler."""
+        """Without a `since` the file backend still can't page back -- `tail -n` has no
+        seek/offset concept to page further back with -- so a bare `before` request reports
+        "nothing older available" (empty list) rather than silently re-running the same tail,
+        which would look like an infinite scrollback of duplicate lines. With a start date the
+        window is bounded by `since`, so `before` paging works (see the since tests below)."""
         with tempfile.TemporaryDirectory() as tmp:
             log_file = Path(tmp) / "camera.log"
             log_file.write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
@@ -1421,6 +1453,36 @@ class LogBackendJournaldTests(unittest.TestCase):
                 lines = services.get_logs("camera", before=datetime(2026, 7, 4, tzinfo=timezone.utc))
             self.assertEqual(lines, [])
             mock_run.assert_not_called()
+
+    @patch("modules.services.subprocess.run")
+    def test_file_backend_since_filters_tail_to_window(self, mock_run):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "camera.log"
+            log_file.write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 old\n"
+                "2026-07-04 09:00:00 [INFO] (camera) x.py:2 new\n"
+            )
+            mock_run.return_value = MagicMock(stdout=log_file.read_text())
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=timezone.utc)
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", lines=300, since=since)
+            self.assertEqual(lines, ["2026-07-04 09:00:00 [INFO] (camera) x.py:2 new"])
+            mock_run.assert_called_once_with(
+                ["tail", "-n", "300", str(log_file)], capture_output=True, text=True
+            )
+
+    def test_file_backend_since_and_before_pages_within_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 old\n"
+                "2026-07-04 09:00:00 [INFO] (camera) x.py:2 mid\n"
+                "2026-07-04 10:00:00 [INFO] (camera) x.py:3 new\n"
+            )
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=timezone.utc)
+            before = datetime(2026, 7, 4, 9, 30, 0, tzinfo=timezone.utc)
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", lines=300, since=since, before=before)
+            self.assertEqual(lines, ["2026-07-04 09:00:00 [INFO] (camera) x.py:2 mid"])
 
 
 # ── journald PYOBS_MODULE version gating ─────────────────────────────────────
@@ -1514,6 +1576,217 @@ class PyobsCoreVersionTests(unittest.TestCase):
         )
         mock_run.return_value = self._mock_pip_list([{"name": "pyobs-core", "version": "2.0.0.dev41"}])
         self.assertEqual(services.pyobs_core_version(), Version("2.0.0.dev41"))
+
+
+# ── get_module_versions / stale_packages ───────────────────────────────────────
+
+class GetModuleVersionsFileTests(unittest.TestCase):
+    """get_module_versions() file backend: `tac | grep -m1` over a real temp log file, same
+    unmocked-subprocess convention as GetAllLogsTests' file-backend cases."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        (self.tmp_path / "log").mkdir()
+        self._settings = override_settings(
+            PYOBS_RUN_DIR=str(self.tmp_path / "run"),
+            PYOBS_LOG_DIR=str(self.tmp_path / "log"),
+            PYOBS_LOG_BACKEND="file",
+        )
+        self._settings.enable()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+        services._module_versions_cache.clear()
+
+    def _write_pid(self, name: str, pid: int) -> None:
+        (self.tmp_path / "run" / f"{name}.pid").write_text(str(pid))
+
+    def _write_log(self, name: str, lines: list[str]) -> None:
+        (self.tmp_path / "log" / f"{name}.log").write_text("\n".join(lines) + "\n")
+
+    @patch("modules.services._is_alive", return_value=True)
+    def test_parses_newest_of_several_lines(self, _mock_alive):
+        self._write_pid("camera", 4242)
+        self._write_log("camera", [
+            "2026-08-15 12:00:00 [INFO] (camera) application.py:379 Loaded pyobs packages: pyobs-core=2.0.0.dev70",
+            "2026-08-15 12:00:01 [INFO] (camera) application.py:10 startup",
+            "2026-08-15 12:05:00 [INFO] (camera) application.py:379 Loaded pyobs packages: pyobs-core=2.0.0.dev76, pyobs-fli=2.0.0.dev7",
+        ])
+        self.assertEqual(
+            services.get_module_versions("camera"),
+            {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"},
+        )
+
+    @patch("modules.services._is_alive", return_value=True)
+    def test_no_line_returns_none(self, _mock_alive):
+        self._write_pid("camera", 4242)
+        self._write_log("camera", ["2026-08-15 12:00:00 [INFO] (camera) application.py:10 startup"])
+        self.assertIsNone(services.get_module_versions("camera"))
+
+    @patch("modules.services._is_alive", return_value=True)
+    def test_no_log_file_returns_none(self, _mock_alive):
+        self._write_pid("camera", 4242)
+        self.assertIsNone(services.get_module_versions("camera"))
+
+    def test_not_running_returns_none(self):
+        self.assertIsNone(services.get_module_versions("camera"))
+
+
+class GetModuleVersionsJournaldTests(unittest.TestCase):
+    """get_module_versions() journald backend: same substring parse applied to the newest
+    matching journal entry's MESSAGE, bounded to the module's own lifetime via --since
+    @<create_time>."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        self._settings = override_settings(
+            PYOBS_RUN_DIR=str(self.tmp_path / "run"),
+            PYOBS_LOG_BACKEND="journald",
+        )
+        self._settings.enable()
+        # See LogBackendJournaldTests.setUp -- same reasoning: seed the version-detection
+        # cache so _journald_module_tag() doesn't shell out to `pip list` too.
+        services._pyobs_core_version_cache = (time.time(), Version("2.0.0.dev41"))
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+        services._module_versions_cache.clear()
+        services._pyobs_core_version_cache = None
+
+    def _write_pid(self, name: str, pid: int) -> None:
+        (self.tmp_path / "run" / f"{name}.pid").write_text(str(pid))
+
+    def _mock_journalctl_result(self, message: str | None):
+        result = MagicMock()
+        result.stdout = (
+            json.dumps({"MESSAGE": message, "__REALTIME_TIMESTAMP": "1783144498389717"}) + "\n" if message else ""
+        )
+        return result
+
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.psutil.Process")
+    @patch("modules.services.subprocess.run")
+    def test_parses_newest_matching_entry(self, mock_run, mock_process_cls, _mock_alive):
+        self._write_pid("camera", 4242)
+        mock_process_cls.return_value.create_time.return_value = 1700000000.0
+        mock_run.return_value = self._mock_journalctl_result(
+            "camera application.py:379 Loaded pyobs packages: pyobs-core=2.0.0.dev76, pyobs-fli=2.0.0.dev7"
+        )
+        self.assertEqual(
+            services.get_module_versions("camera"),
+            {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"},
+        )
+        since = datetime.fromtimestamp(1700000000.0, tz=timezone.utc)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
+             "--since", f"{since:%Y-%m-%d %H:%M:%S} UTC", "--grep", "Loaded pyobs packages: ",
+             "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.psutil.Process")
+    @patch("modules.services.subprocess.run")
+    def test_no_matching_entry_returns_none(self, mock_run, mock_process_cls, _mock_alive):
+        self._write_pid("camera", 4242)
+        mock_process_cls.return_value.create_time.return_value = 1700000000.0
+        mock_run.return_value = self._mock_journalctl_result(None)
+        self.assertIsNone(services.get_module_versions("camera"))
+
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.psutil.Process")
+    def test_process_gone_returns_none_and_clears_cache(self, mock_process_cls, _mock_alive):
+        # A different PID than the cached entry forces a cache miss, so the read path
+        # actually reaches psutil.Process (a same-PID hit would short-circuit before that).
+        self._write_pid("camera", 5000)
+        services._module_versions_cache["camera"] = (4242, {"pyobs-core": "2.0.0.dev76"})
+        mock_process_cls.side_effect = psutil.NoSuchProcess(5000)
+        self.assertIsNone(services.get_module_versions("camera"))
+        self.assertNotIn("camera", services._module_versions_cache)
+
+
+class GetModuleVersionsCacheTests(unittest.TestCase):
+    """The version set is fixed for a process's lifetime, so get_module_versions must not
+    re-shell-out on every call while the PID is unchanged -- mirrors _process_cache's own
+    PID-keyed invalidation (get_module_stats)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        self._settings = override_settings(PYOBS_RUN_DIR=str(self.tmp_path / "run"), PYOBS_LOG_BACKEND="file")
+        self._settings.enable()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+        services._module_versions_cache.clear()
+
+    def _write_pid(self, name: str, pid: int) -> None:
+        (self.tmp_path / "run" / f"{name}.pid").write_text(str(pid))
+
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services._get_module_versions_file")
+    def test_same_pid_reuses_cached_result_without_requerying(self, mock_get, _mock_alive):
+        self._write_pid("camera", 4242)
+        mock_get.return_value = {"pyobs-core": "2.0.0.dev76"}
+        first = services.get_module_versions("camera")
+        second = services.get_module_versions("camera")
+        self.assertEqual(first, second)
+        mock_get.assert_called_once()
+
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services._get_module_versions_file")
+    def test_pid_change_recomputes(self, mock_get, _mock_alive):
+        self._write_pid("camera", 4242)
+        mock_get.return_value = {"pyobs-core": "2.0.0.dev76"}
+        services.get_module_versions("camera")
+        self._write_pid("camera", 4300)
+        mock_get.return_value = {"pyobs-core": "2.0.0.dev80"}
+        second = services.get_module_versions("camera")
+        self.assertEqual(second, {"pyobs-core": "2.0.0.dev80"})
+        self.assertEqual(mock_get.call_count, 2)
+
+    def test_stopped_module_clears_cache_entry(self):
+        services._module_versions_cache["camera"] = (4242, {"pyobs-core": "2.0.0.dev76"})
+        self.assertIsNone(services.get_module_versions("camera"))
+        self.assertNotIn("camera", services._module_versions_cache)
+
+
+class StalePackagesTests(unittest.TestCase):
+    def test_flags_only_differing_packages(self):
+        running = {"pyobs-core": "2.0.0.dev41", "pyobs-fli": "2.0.0.dev7"}
+        installed = {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"}
+        self.assertEqual(services.stale_packages(running, installed), ["pyobs-core"])
+
+    def test_empty_list_when_all_match(self):
+        versions = {"pyobs-core": "2.0.0.dev76"}
+        self.assertEqual(services.stale_packages(versions, versions), [])
+
+    def test_running_only_package_missing_from_installed_counts_as_differing(self):
+        # e.g. installed has since dropped a driver the running process still has loaded.
+        running = {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"}
+        installed = {"pyobs-core": "2.0.0.dev76"}
+        self.assertEqual(services.stale_packages(running, installed), ["pyobs-fli"])
+
+    def test_installed_only_package_the_module_never_loaded_is_not_flagged(self):
+        # `installed` is the full host-wide pip list, `running` only what this module actually
+        # imported (pyobs-core's loaded_pyobs_packages()) -- a camera module loading
+        # pyobs-core+pyobs-fli must not be flagged outdated just because pyobs-telescope also
+        # happens to be installed on the same host. Regression test for a real review finding:
+        # unioning running/installed names instead of iterating running only.
+        running = {"pyobs-core": "2.0.0.dev76"}
+        installed = {"pyobs-core": "2.0.0.dev76", "pyobs-telescope": "2.0.0.dev1"}
+        self.assertEqual(services.stale_packages(running, installed), [])
 
 
 # ── get_all_logs ──────────────────────────────────────────────────────────────
@@ -1679,14 +1952,43 @@ class GetAllLogsTests(unittest.TestCase):
 
     @patch("modules.services.subprocess.run")
     def test_file_backend_before_returns_empty_list(self, mock_run):
-        # Same "no seek/offset to page further back with" limitation as get_logs' own file
-        # backend -- see that test's docstring.
+        # Same "no seek/offset to page further back with without a since" limitation as
+        # get_logs' own file backend -- see that test's docstring.
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "camera.log").write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_all_logs(names=["camera"], before=datetime(2026, 7, 4, tzinfo=timezone.utc))
             self.assertEqual(lines, [])
             mock_run.assert_not_called()
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_since_adds_since_arg_ahead_of_lines_flag(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        since = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        services.get_all_logs(names=["camera"], lines=300, since=since)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
+             "--since", "2026-07-15 10:00:00 UTC", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    def test_file_backend_since_filters_across_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 old camera\n"
+                "2026-07-04 09:00:00 [INFO] (camera) x.py:2 new camera\n"
+            )
+            (Path(tmp) / "telescope.log").write_text(
+                "2026-07-04 09:30:00 [INFO] (telescope) y.py:1 new telescope\n"
+            )
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=timezone.utc)
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_all_logs(names=["camera", "telescope"], lines=300, since=since)
+            self.assertEqual(lines, [
+                "2026-07-04 09:00:00 [INFO] (camera) x.py:2 new camera",
+                "2026-07-04 09:30:00 [INFO] (telescope) y.py:1 new telescope",
+            ])
 
 
 # ── _tag_host (fleet-wide All Logs cross-host tagging) ────────────────────────
@@ -1968,37 +2270,157 @@ class ListPyobsPackagesManagedTests(unittest.TestCase):
         self.assertEqual(names, {"pyobs-core"})
 
 
-class UpdatePackageManagedTests(unittest.TestCase):
-    def _mock_result(self, returncode=0, stdout="ok"):
-        result = MagicMock()
-        result.returncode = returncode
-        result.stdout = stdout
-        result.stderr = ""
-        return result
-
-    @patch("modules.services.subprocess.run")
-    def test_uses_configured_extras_spec_in_pip_args(self, mock_run):
-        mock_run.return_value = self._mock_result()
+class BuildUpdateArgsManagedTests(unittest.TestCase):
+    def test_uses_configured_extras_spec_in_pip_args(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
-            services.update_package("pyobs-core", "1.54.0")
-        args = mock_run.call_args[0][0]
+            args = services._build_update_args("pyobs-core", "1.54.0")
         self.assertEqual(args[-1], "pyobs-core[full]")
 
-    @patch("modules.services.subprocess.run")
-    def test_non_pyobs_managed_package_is_allowed(self, mock_run):
-        mock_run.return_value = self._mock_result()
+    def test_non_pyobs_managed_package_is_allowed(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
-            ok, _ = services.update_package("my-custom-driver", "1.0.0")
-        self.assertTrue(ok)
-        mock_run.assert_called_once()
+            args = services._build_update_args("my-custom-driver", "1.0.0")
+        self.assertEqual(args[-1], "my-custom-driver")
 
-    @patch("modules.services.subprocess.run")
-    def test_unmanaged_non_pyobs_package_is_refused(self, mock_run):
+    def test_unmanaged_non_pyobs_package_is_refused(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=[]):
-            ok, message = services.update_package("some-random-package", "1.0.0")
+            with self.assertRaises(ValueError) as ctx:
+                services._build_update_args("some-random-package", "1.0.0")
+        self.assertIn("unmanaged", str(ctx.exception))
+
+
+class UpdatePackageStartTests(unittest.TestCase):
+    """update_package_start spawns detached and returns immediately -- these tests never let a
+    real pip run; PYOBS_PIP_EXEC (via PYOBS_EXEC) is stubbed to a fast shell one-liner so the
+    background job actually completes within the test, exercising the real file-based state
+    machine end to end rather than mocking subprocess.Popen itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        self._settings = override_settings(
+            PYOBS_RUN_DIR=str(self.tmp_path / "run"),
+            PYOBS_EXEC="/opt/pyobs/venv/bin/pyobs",
+            PYOBS_MANAGED_PACKAGES=[],
+        )
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _wait_for_exit_file(self, timeout=5):
+        exit_file = services._pkg_update_exit_file()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if exit_file.exists():
+                return
+            time.sleep(0.05)
+        self.fail("background job did not finish in time")
+
+    @patch("modules.services._pip_exec", return_value="/bin/echo")
+    def test_returns_immediately_and_reports_running_then_success(self, _mock_pip):
+        ok, message = services.update_package_start("pyobs-core", "1.54.0")
+        self.assertTrue(ok)
+        self.assertIn("pyobs-core", message)
+        self._wait_for_exit_file()
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "success")
+        self.assertEqual(status["name"], "pyobs-core")
+        self.assertFalse(status["active"])
+        self.assertIn("pyobs-core", status["log"])  # /bin/echo prints its argv, incl. the spec
+
+    @patch("modules.services._pip_exec", return_value="/bin/false")
+    def test_nonzero_exit_reported_as_failed(self, _mock_pip):
+        services.update_package_start("pyobs-core", "1.54.0")
+        self._wait_for_exit_file()
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "failed")
+
+    @patch("modules.services._build_update_args", return_value=["/bin/sleep", "1"])
+    def test_second_start_refused_while_first_still_running(self, _mock_args):
+        ok1, _ = services.update_package_start("pyobs-core", "1.54.0")
+        self.assertTrue(ok1)
+        status = services.get_package_update_status()
+        self.assertTrue(status["active"])
+        ok2, message = services.update_package_start("pyobs-fli", "1.0.0")
+        self.assertFalse(ok2)
+        self.assertIn("pyobs-core", message)
+        self._wait_for_exit_file()  # let sleep finish so it doesn't outlive the test
+
+    def test_unmanaged_package_refused_without_spawning(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            ok, message = services.update_package_start("some-random-package", "1.0.0")
         self.assertFalse(ok)
         self.assertIn("unmanaged", message)
-        mock_run.assert_not_called()
+        self.assertFalse(services._pkg_update_lock_file().exists())
+
+    @patch("modules.services._pip_exec", return_value="/bin/echo")
+    def test_lock_records_matching_pid_create_time(self, _mock_pip):
+        services.update_package_start("pyobs-core", "1.54.0")
+        lock = json.loads(services._pkg_update_lock_file().read_text())
+        actual = psutil.Process(lock["pid"]).create_time()
+        self.assertAlmostEqual(lock["pid_create_time"], actual, delta=1.0)
+        self._wait_for_exit_file()
+
+    @patch("modules.services._build_update_args", return_value=["/bin/sleep", "1"])
+    def test_second_start_refused_while_first_holds_the_flock(self, _mock_args):
+        # Simulates two requests landing on different gunicorn workers close enough together
+        # that the second one's flock() call contends with the first's, rather than finding a
+        # fully-written lock file -- the race PR #50 review comment #2 flagged.
+        services._run_dir().mkdir(parents=True, exist_ok=True)
+        services._pkg_update_lock_file().write_text(json.dumps({"name": "pyobs-core", "pid": 1, "pid_create_time": None}))
+        flock_fd = os.open(services._pkg_update_lock_flock_file(), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(flock_fd, fcntl.LOCK_EX)
+        try:
+            ok, message = services.update_package_start("pyobs-fli", "1.0.0")
+        finally:
+            fcntl.flock(flock_fd, fcntl.LOCK_UN)
+            os.close(flock_fd)
+        self.assertFalse(ok)
+        self.assertIn("pyobs-core", message)
+
+
+class GetPackageUpdateStatusTests(unittest.TestCase):
+    """Exercises the on-disk state machine directly (no real spawn) for states that
+    UpdatePackageStartTests can't easily force: no job ever run, interrupted, and reused-pid."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        self._settings = override_settings(PYOBS_RUN_DIR=str(self.tmp_path / "run"))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def test_no_job_ever_run(self):
+        status = services.get_package_update_status()
+        self.assertEqual(status, {"active": False})
+
+    def test_interrupted_when_pid_gone_and_no_exit_file(self):
+        services._pkg_update_lock_file().write_text(json.dumps({"name": "pyobs-core", "pid": 999999999, "started_at": 0}))
+        services._pkg_update_log_file().write_text("partial output\n")
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "interrupted")
+        self.assertFalse(status["active"])
+        self.assertIn("partial output", status["log"])
+
+    def test_interrupted_when_pid_alive_but_create_time_mismatches(self):
+        # A live pid whose actual start time doesn't match what was recorded means the tracked
+        # process is gone and the OS has since reused its pid for something unrelated (e.g. after
+        # a host reboot) -- must not be reported as "running" just because *some* process with
+        # that number exists. Use this test process's own pid, which is guaranteed alive, with a
+        # deliberately wrong recorded create_time.
+        real_create_time = psutil.Process(os.getpid()).create_time()
+        services._pkg_update_lock_file().write_text(
+            json.dumps({"name": "pyobs-core", "pid": os.getpid(), "pid_create_time": real_create_time - 1000, "started_at": 0})
+        )
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "interrupted")
+        self.assertFalse(status["active"])
 
 
 class HubTokenMiddlewareTests(unittest.TestCase):
@@ -2116,15 +2538,15 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         self.factory = RequestFactory()
 
     def test_parse_before_accepts_iso_with_z_suffix(self):
-        parsed = views._parse_before("2026-07-15T10:00:00.000Z")
+        parsed = views._parse_ts("2026-07-15T10:00:00.000Z")
         self.assertEqual(parsed, datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc))
 
     def test_parse_before_missing_is_none(self):
-        self.assertIsNone(views._parse_before(None))
-        self.assertIsNone(views._parse_before(""))
+        self.assertIsNone(views._parse_ts(None))
+        self.assertIsNone(views._parse_ts(""))
 
     def test_parse_before_malformed_is_none_not_raising(self):
-        self.assertIsNone(views._parse_before("not-a-timestamp"))
+        self.assertIsNone(views._parse_ts("not-a-timestamp"))
 
     @patch("modules.services.get_logs")
     @patch("modules.services.list_modules")
@@ -2136,7 +2558,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         response = views.api_logs(request, "camera")
         self.assertEqual(response.status_code, 200)
         mock_get_logs.assert_called_once_with(
-            "camera", lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+            "camera", lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc), since=None
         )
 
     @patch("modules.services.get_logs")
@@ -2147,7 +2569,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         request = self.factory.get("/api/modules/camera/logs/", {"lines": 300})
         request.session = {}
         views.api_logs(request, "camera")
-        mock_get_logs.assert_called_once_with("camera", lines=300, filter_str="", before=None)
+        mock_get_logs.assert_called_once_with("camera", lines=300, filter_str="", before=None, since=None)
 
     @patch("modules.services.get_all_logs")
     @patch("modules.services.list_modules")
@@ -2161,8 +2583,162 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         response = views.api_all_logs(request)
         self.assertEqual(response.status_code, 200)
         mock_get_all_logs.assert_called_once_with(
-            ["camera"], lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+            ["camera"], lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc), since=None
         )
+
+    @patch("modules.services.get_logs")
+    @patch("modules.services.list_modules")
+    def test_api_logs_forwards_since_to_get_logs(self, mock_list_modules, mock_get_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_logs.return_value = []
+        request = self.factory.get("/api/modules/camera/logs/", {"lines": 300, "since": "2026-07-15T10:00:00.000Z"})
+        request.session = {}
+        response = views.api_logs(request, "camera")
+        self.assertEqual(response.status_code, 200)
+        mock_get_logs.assert_called_once_with(
+            "camera", lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        )
+
+    @patch("modules.services.get_all_logs")
+    @patch("modules.services.list_modules")
+    def test_api_all_logs_forwards_since_to_get_all_logs(self, mock_list_modules, mock_get_all_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_all_logs.return_value = []
+        request = self.factory.get(
+            "/api/logs/", {"lines": 300, "modules": "localhost:camera", "since": "2026-07-15T10:00:00.000Z"}
+        )
+        request.session = {}
+        response = views.api_all_logs(request)
+        self.assertEqual(response.status_code, 200)
+        mock_get_all_logs.assert_called_once_with(
+            ["camera"], lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        )
+
+
+# ── Running module versions API ─────────────────────────────────────────────────
+
+class ApiStatusVersionsTests(unittest.TestCase):
+    """api_status/api_all_statuses surface get_module_versions()/stale_packages() as
+    versions/outdated (plus the installed set), None for a stopped module or one with no
+    version line yet."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("modules.services.list_pyobs_packages")
+    @patch("modules.services.get_module_versions")
+    @patch("modules.services.get_module_stats")
+    @patch("modules.services.get_module_status")
+    @patch("modules.services.list_modules")
+    def test_api_status_running_and_outdated(
+        self, mock_list_modules, mock_status, mock_stats, mock_versions, mock_pkgs
+    ):
+        mock_list_modules.return_value = ["camera"]
+        mock_status.return_value = "running"
+        mock_stats.return_value = {"pid": 1, "cpu_percent": 0.0, "memory_mb": 1.0, "uptime_seconds": 1}
+        mock_versions.return_value = {"pyobs-core": "2.0.0.dev41", "pyobs-fli": "2.0.0.dev7"}
+        mock_pkgs.return_value = [{"name": "pyobs-core", "version": "2.0.0.dev76"}, {"name": "pyobs-fli", "version": "2.0.0.dev7"}]
+        request = self.factory.get("/api/modules/camera/status/")
+        request.session = {}
+        response = views.api_status(request, "camera")
+        data = json.loads(response.content)
+        self.assertEqual(data["versions"], {"pyobs-core": "2.0.0.dev41", "pyobs-fli": "2.0.0.dev7"})
+        self.assertEqual(data["outdated"], ["pyobs-core"])
+        self.assertEqual(data["installed"], {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"})
+
+    @patch("modules.services.list_pyobs_packages")
+    @patch("modules.services.get_module_versions")
+    @patch("modules.services.get_module_stats")
+    @patch("modules.services.get_module_status")
+    @patch("modules.services.list_modules")
+    def test_api_status_stopped_module_has_no_versions(
+        self, mock_list_modules, mock_status, mock_stats, mock_versions, mock_pkgs
+    ):
+        mock_list_modules.return_value = ["camera"]
+        mock_status.return_value = "stopped"
+        mock_pkgs.return_value = []
+        request = self.factory.get("/api/modules/camera/status/")
+        request.session = {}
+        response = views.api_status(request, "camera")
+        data = json.loads(response.content)
+        self.assertIsNone(data["versions"])
+        self.assertIsNone(data["outdated"])
+        mock_versions.assert_not_called()
+        mock_stats.assert_not_called()
+
+    @patch("modules.services.list_pyobs_packages")
+    @patch("modules.services.get_module_versions")
+    @patch("modules.services.get_module_stats")
+    @patch("modules.services.get_module_status")
+    @patch("modules.services.list_modules")
+    def test_api_status_running_with_no_version_line_yet(
+        self, mock_list_modules, mock_status, mock_stats, mock_versions, mock_pkgs
+    ):
+        mock_list_modules.return_value = ["camera"]
+        mock_status.return_value = "running"
+        mock_stats.return_value = {"pid": 1, "cpu_percent": 0.0, "memory_mb": 1.0, "uptime_seconds": 1}
+        mock_versions.return_value = None
+        mock_pkgs.return_value = [{"name": "pyobs-core", "version": "2.0.0.dev76"}]
+        request = self.factory.get("/api/modules/camera/status/")
+        request.session = {}
+        response = views.api_status(request, "camera")
+        data = json.loads(response.content)
+        self.assertIsNone(data["versions"])
+        self.assertIsNone(data["outdated"])
+
+    @patch("modules.services.get_comm_user", return_value=None)
+    @patch("modules.services.list_pyobs_packages")
+    @patch("modules.services.get_module_versions")
+    @patch("modules.services.get_module_stats")
+    @patch("modules.services.get_module_status")
+    @patch("modules.services.list_modules")
+    def test_api_all_statuses_fetches_installed_once_not_per_module(
+        self, mock_list_modules, mock_status, mock_stats, mock_versions, mock_pkgs, _mock_comm_user
+    ):
+        mock_list_modules.return_value = ["camera", "telescope"]
+        mock_status.return_value = "running"
+        mock_stats.return_value = {"pid": 1, "cpu_percent": 0.0, "memory_mb": 1.0, "uptime_seconds": 1}
+        mock_versions.return_value = {"pyobs-core": "2.0.0.dev76"}
+        mock_pkgs.return_value = [{"name": "pyobs-core", "version": "2.0.0.dev76"}]
+        request = self.factory.get("/api/statuses/")
+        request.session = {}
+        response = views.api_all_statuses(request)
+        data = json.loads(response.content)
+        self.assertEqual(len(data["modules"]), 2)
+        for m in data["modules"]:
+            self.assertEqual(m["versions"], {"pyobs-core": "2.0.0.dev76"})
+            self.assertEqual(m["outdated"], [])
+        self.assertEqual(data["installed"], {"pyobs-core": "2.0.0.dev76"})
+        mock_pkgs.assert_called_once()
+
+
+# ── Async package update views ─────────────────────────────────────────────────────
+
+class ApiPackageUpdateViewsTests(unittest.TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("modules.services.update_package_start")
+    @patch("modules.services.list_pyobs_packages")
+    def test_api_package_update_returns_immediately(self, mock_list, mock_start):
+        mock_list.return_value = [{"name": "pyobs-core", "version": "1.54.0"}]
+        mock_start.return_value = (True, "Started updating pyobs-core")
+        request = self.factory.post("/api/packages/pyobs-core/update/")
+        request.session = {}
+        response = views.api_package_update(request, "pyobs-core")
+        self.assertEqual(response.status_code, 200)
+        mock_start.assert_called_once_with("pyobs-core", "1.54.0")
+        self.assertEqual(json.loads(response.content), {"ok": True, "message": "Started updating pyobs-core"})
+
+    @patch("modules.services.get_package_update_status")
+    def test_api_package_update_status_returns_service_dict(self, mock_status):
+        mock_status.return_value = {"active": True, "name": "pyobs-core", "state": "running", "log": "..."}
+        request = self.factory.get("/api/packages/update/status/")
+        request.session = {}
+        response = views.api_package_update_status(request)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), mock_status.return_value)
+
 
 # ── Git-backed config ────────────────────────────────────────────────────────────────
 

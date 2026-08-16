@@ -1,6 +1,8 @@
 # Plan: Clone git repos to separate source dir with symlink to config
 
-Status: planned
+Status: implemented, closed. Landed: `PYOBS_CONFIG_GIT_SOURCE_DIR` (`settings.py`),
+`_repo_name()`/`_ensure_symlink()`/`_git_repo_dir()` (`modules/services.py`), symlink creation in
+`git_clone()`, the startup `ready()` hook (`modules/apps.py`), and tests in `modules/tests.py`.
 
 Issues: #38
 

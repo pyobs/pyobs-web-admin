@@ -15,6 +15,10 @@
     <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
       <i class="bi bi-stop-fill"></i><span class="d-none d-md-inline"> Stop All</span>
     </button>
+    <button class="btn btn-sm btn-outline-warning" id="btn-restart-outdated" onclick="controlOutdated()" disabled
+            title="Restart running modules whose loaded versions lag the installed ones">
+      <i class="bi bi-arrow-up-circle"></i><span class="d-none d-md-inline"> Restart outdated (<span id="outdated-count">0</span>)</span>
+    </button>
     <button class="btn btn-sm btn-outline-secondary" onclick="acknowledgeAllLogs()" title="Mark every module's current warnings/errors as seen">
       <i class="bi bi-check2-all"></i><span class="d-none d-md-inline"> Acknowledge All</span>
     </button>
@@ -98,6 +102,7 @@
   <tr data-module-row="{{ mod }}">
     <td class="text-nowrap" style="width:1%">
       <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
+      <i class="bi bi-arrow-up-circle-fill outdated-indicator d-none ms-1 text-warning" data-module="{{ mod }}" title=""></i>
       {% if ejabberd_enabled %}
       <i class="bi xmpp-indicator d-none ms-1" data-module="{{ mod }}"></i>
       {% endif %}
@@ -233,6 +238,7 @@ async function refreshAllStatuses() {
     const data = await resp.json();
     let running = 0, stopped = 0, totalRamMb = 0, totalCpu = 0;
     const statusMap = {};
+    let outdatedCount = 0;
     data.modules.forEach(m => {
       statusMap[m.name] = m.status;
       document.querySelectorAll(`.status-badge[data-module="${m.name}"]`).forEach(badge => {
@@ -246,6 +252,14 @@ async function refreshAllStatuses() {
       if (ramEl) ramEl.textContent = m.stats ? fmtRam(m.stats.memory_mb) : '';
       if (cpuEl) cpuEl.textContent = m.stats ? `${m.stats.cpu_percent.toFixed(1)}%` : '';
       if (uptimeEl) uptimeEl.textContent = m.stats ? fmtUptime(m.stats.uptime_seconds) : '';
+      const isOutdated = m.status === 'running' && m.outdated && m.outdated.length > 0;
+      document.querySelectorAll(`.outdated-indicator[data-module="${m.name}"]`).forEach(ind => {
+        ind.classList.toggle('d-none', !isOutdated);
+        if (isOutdated) {
+          ind.title = 'Outdated: ' + m.outdated.map(pkg => `${pkg} ${m.versions[pkg] ?? '?'} → ${data.installed[pkg] ?? '?'}`).join(', ');
+        }
+      });
+      if (isOutdated) outdatedCount++;
       if (m.status === 'running') {
         running++;
         if (m.stats) { totalRamMb += m.stats.memory_mb; totalCpu += m.stats.cpu_percent; }
@@ -258,6 +272,7 @@ async function refreshAllStatuses() {
         row.dataset.sortUptime = m.stats ? m.stats.uptime_seconds : -1;
         row.dataset.commUser = m.comm_user || '';
         row.dataset.moduleStatus = m.status;
+        row.dataset.outdated = isOutdated ? '1' : '';
         const isRunning = m.status === 'running';
         row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning);
         row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning);
@@ -272,6 +287,8 @@ async function refreshAllStatuses() {
     if (elStopped) elStopped.textContent = stopped;
     if (elRam) elRam.textContent = running > 0 ? `${(totalRamMb / 1024).toFixed(1)} GB` : '—';
     if (elCpu) elCpu.textContent = running > 0 ? `${totalCpu.toFixed(1)}%` : '—';
+    document.getElementById('outdated-count').textContent = outdatedCount;
+    document.getElementById('btn-restart-outdated').disabled = outdatedCount === 0;
 
     sortAndRender();
   } catch (_) {}
@@ -335,6 +352,25 @@ async function controlAll(action) {
     await refreshAllStatuses();
   } finally {
     btn.disabled = false;
+  }
+}
+
+// Restarts only the running, non-deactivated modules currently flagged outdated -- same
+// staggered restart as controlAll('restart'), just pre-filtered to row.dataset.outdated.
+async function controlOutdated() {
+  const btn = document.getElementById('btn-restart-outdated');
+  btn.disabled = true;
+  try {
+    const modules = [...document.querySelectorAll('tr[data-module-row]')]
+      .filter(row => row.dataset.outdated === '1' && !row.dataset.moduleRow.startsWith('_'))
+      .map(row => row.dataset.moduleRow);
+    for (let i = 0; i < modules.length; i++) {
+      if (i > 0) await sleep(CONTROL_ALL_STAGGER_MS);
+      await fetch(`/api/modules/${modules[i]}/restart/`, {method: 'POST', headers: {'X-CSRFToken': getCsrfToken()}});
+    }
+    await refreshAllStatuses();
+  } finally {
+    btn.disabled = document.getElementById('outdated-count').textContent === '0';
   }
 }
 

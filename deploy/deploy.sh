@@ -56,6 +56,9 @@ echo "Written: $SETTINGS"
 # --- Database (Keycloak-linked Users only; the shared admin/password login stays DB-free) ---
 uv run python manage.py migrate
 
+# --- Static files (logo, favicon, etc.) --- served by Whitenoise at runtime ---
+uv run python manage.py collectstatic --noinput
+
 # --- systemd service ---
 sed "s|/opt/pyobs/pyobs-web-admin|$INSTALL_DIR|g" "$INSTALL_DIR/deploy/pyobs-web-admin.service" \
     > /etc/systemd/system/pyobs-web-admin.service

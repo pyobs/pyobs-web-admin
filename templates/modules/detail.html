@@ -77,6 +77,7 @@
         <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
+        <tr id="stat-versions-row" class="d-none"><th class="text-muted fw-normal pe-4">Versions</th><td id="stat-versions"></td></tr>
         {% if ejabberd_enabled %}
         <tr id="stat-ejabberd-row" class="d-none">
           <th class="text-muted fw-normal pe-4">XMPP</th>
@@ -289,6 +290,7 @@ async function updateStatus() {
   const cpuRow = document.getElementById('stat-cpu-row');
   const pidRow = document.getElementById('stat-pid-row');
   const uptimeRow = document.getElementById('stat-uptime-row');
+  const versionsRow = document.getElementById('stat-versions-row');
   if (data.stats) {
     document.getElementById('stat-pid').textContent = data.stats.pid;
     pidRow.classList.remove('d-none');
@@ -303,6 +305,24 @@ async function updateStatus() {
     uptimeRow.classList.add('d-none');
     memRow.classList.add('d-none');
     cpuRow.classList.add('d-none');
+  }
+  if (running) {
+    if (data.versions) {
+      const outdated = data.outdated || [];
+      const parts = Object.entries(data.versions).map(([pkg, ver]) => {
+        const isOutdated = outdated.includes(pkg);
+        const installedVer = (data.installed || {})[pkg];
+        const title = isOutdated ? ` title="installed: ${escapeHtml(installedVer ?? '?')}"` : '';
+        const warn = isOutdated ? ' <i class="bi bi-exclamation-triangle-fill"></i>' : '';
+        return `<span class="${isOutdated ? 'text-warning' : 'text-secondary'} me-3"${title}>${escapeHtml(pkg)} ${escapeHtml(ver)}${warn}</span>`;
+      });
+      document.getElementById('stat-versions').innerHTML = parts.join('');
+    } else {
+      document.getElementById('stat-versions').textContent = 'unknown';
+    }
+    versionsRow.classList.remove('d-none');
+  } else {
+    versionsRow.classList.add('d-none');
   }
 }
 
@@ -570,6 +590,17 @@ function toDatetimeLocal(d) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// The time-start input (datetime-local, no zone) as an ISO-8601 UTC instant for the API's
+// `since` param. Parsing the bare value as local time keeps it consistent with applyFilters'
+// own `new Date(startVal)` interpretation, so the server-side window and the client-side
+// filter agree on the same instant.
+function startTimeParam() {
+  const v = document.getElementById('time-start').value;
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d) ? null : d.toISOString();
+}
+
 // ── Acknowledge (mark warnings/errors as seen) ──────────────────────────────────
 // Per-module "last acknowledged" timestamp in localStorage, shared with the fleet-wide
 // All Logs view (same key), so acknowledging here also clears this module's badges there.
@@ -662,7 +693,10 @@ function renderLogs(skipAutoScroll) {
 
 async function fetchLogs() {
   try {
-    const resp = await fetch(`/api/modules/${MODULE}/logs/?lines=300`);
+    const params = new URLSearchParams({lines: 300});
+    const since = startTimeParam();
+    if (since) params.set('since', since);
+    const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
     const data = await resp.json();
     rawLogLines = mergeWithOlderHistory(data.lines || []);
     renderLogs();
@@ -703,6 +737,8 @@ async function fetchOlderLogs() {
   const prevScrollTop = pre.scrollTop;
   try {
     const params = new URLSearchParams({lines: 300, before: oldest.toISOString()});
+    const since = startTimeParam();
+    if (since) params.set('since', since);
     const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
     const data = await resp.json();
     // Dedup by exact line content -- --until is inclusive, so the oldest line already on
@@ -766,7 +802,12 @@ levelMinEl.addEventListener('change', function () {
 });
 timeStartEl.addEventListener('change', function () {
   localStorage.setItem('log-time-start', this.value);
-  renderLogs();
+  // The start date is now a server-side `since` bound, not just a client filter -- drop the
+  // in-memory history (which may predate the new start date) and re-fetch from the server.
+  rawLogLines = [];
+  noMoreOlderLogs = false;
+  setOlderStatus('');
+  fetchLogs();
 });
 timeEndEl.addEventListener('change', function () {
   localStorage.setItem('log-time-end', this.value);

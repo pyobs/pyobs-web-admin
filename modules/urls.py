@@ -19,6 +19,7 @@ urlpatterns = [
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
     path("api/packages/", views.api_packages, name="api_packages"),
+    path("api/packages/update/status/", views.api_package_update_status, name="api_package_update_status"),
     path("api/packages/<str:name>/update/", views.api_package_update, name="api_package_update"),
     path("api/logs/", views.api_all_logs, name="api_all_logs"),
     path("api/modules/create/", views.api_create_module, name="api_create_module"),

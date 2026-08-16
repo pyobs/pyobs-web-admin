@@ -420,18 +420,38 @@ def acl_matrix(request):
 
 # ── Status API ────────────────────────────────────────────────────────────────
 
+def _installed_pyobs_versions() -> dict[str, str]:
+    return {p["name"]: p["version"] for p in services.list_pyobs_packages()}
+
+
+def _versions_and_outdated(name: str, status: str, installed: dict[str, str]) -> tuple[dict[str, str] | None, list[str] | None]:
+    if status != "running":
+        return None, None
+    versions = services.get_module_versions(name)
+    if versions is None:
+        return None, None
+    return versions, services.stale_packages(versions, installed)
+
+
 @require_GET
 def api_all_statuses(request):
     host = _active_host(request)
     if host:
         return _proxy(host, "GET", "/api/statuses/")
     modules = services.list_modules()
+    # Fetched once per request, not per module -- get_module_versions is PID-cached so the
+    # only recurring cost of this poll is one `pip list` here, not one per running module.
+    installed = _installed_pyobs_versions()
     result = []
     for m in modules:
         status = services.get_module_status(m)
         stats = services.get_module_stats(m) if status == "running" else None
-        result.append({"name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m)})
-    return JsonResponse({"modules": result})
+        versions, outdated = _versions_and_outdated(m, status, installed)
+        result.append({
+            "name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m),
+            "versions": versions, "outdated": outdated,
+        })
+    return JsonResponse({"modules": result, "installed": installed})
 
 
 @require_GET
@@ -442,7 +462,9 @@ def api_status(request, name: str):
     _get_module_or_404(name)
     status = services.get_module_status(name)
     stats = services.get_module_stats(name) if status == "running" else None
-    return JsonResponse({"status": status, "stats": stats})
+    installed = _installed_pyobs_versions()
+    versions, outdated = _versions_and_outdated(name, status, installed)
+    return JsonResponse({"status": status, "stats": stats, "versions": versions, "outdated": outdated, "installed": installed})
 
 
 # ── Control API ───────────────────────────────────────────────────────────────
@@ -499,12 +521,13 @@ def api_deactivate(request, name: str):
 
 # ── Logs API ──────────────────────────────────────────────────────────────────
 
-def _parse_before(raw: str | None) -> datetime | None:
-    """Parses the "before" query param (an ISO-8601 instant, the oldest currently-loaded log
-    line's own timestamp) sent by the log windows' scroll-to-top "load older logs" fetch.
-    Malformed/missing input is treated as "no cutoff" rather than a 400 -- same tolerance
-    api_all_log_stats' acks parsing already gives a per-module timestamp from the same
-    frontend-supplied-Date.toISOString() source."""
+def _parse_ts(raw: str | None) -> datetime | None:
+    """Parses a timestamp query param (an ISO-8601 instant) -- used for both `before` (the
+    oldest currently-loaded log line's own timestamp, sent by the log windows' scroll-to-top
+    "load older logs" fetch) and `since` (the time-range start date, sent once a start date is
+    set). Malformed/missing input is treated as "no cutoff" rather than a 400 -- same
+    tolerance api_all_log_stats' acks parsing already gives a per-module timestamp from the
+    same frontend-supplied-Date.toISOString() source."""
     if not raw:
         return None
     try:
@@ -518,15 +541,19 @@ def api_logs(request, name: str):
     host = _active_host(request)
     lines = int(request.GET.get("lines", 300))
     before_raw = request.GET.get("before")
-    before = _parse_before(before_raw)
+    since_raw = request.GET.get("since")
+    before = _parse_ts(before_raw)
+    since = _parse_ts(since_raw)
     if host:
         params = {"lines": lines}
         if before_raw:
             params["before"] = before_raw
+        if since_raw:
+            params["since"] = since_raw
         return _proxy(host, "GET", f"/api/modules/{name}/logs/", params=params)
     _get_module_or_404(name)
     filter_str = request.GET.get("filter", "")
-    log_lines = services.get_logs(name, lines=min(lines, 2000), filter_str=filter_str, before=before)
+    log_lines = services.get_logs(name, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since)
     return JsonResponse({"lines": log_lines})
 
 
@@ -567,7 +594,9 @@ def api_all_logs(request):
     filter_str = request.GET.get("filter", "")
     modules_param = request.GET.get("modules")
     before_raw = request.GET.get("before")
-    before = _parse_before(before_raw)
+    since_raw = request.GET.get("since")
+    before = _parse_ts(before_raw)
+    since = _parse_ts(since_raw)
 
     all_host_names = ["localhost"] + [h["name"] for h in getattr(settings, "HUB_HOSTS", [])]
     if modules_param is None:
@@ -590,7 +619,7 @@ def api_all_logs(request):
             if names is not None:
                 for name in names:
                     _get_module_or_404(name)
-            host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str, before=before)
+            host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since)
         else:
             host_cfg = proxy.get_host_config(host_name)
             if not host_cfg:
@@ -606,6 +635,8 @@ def api_all_logs(request):
                     params["filter"] = filter_str
                 if before_raw:
                     params["before"] = before_raw
+                if since_raw:
+                    params["since"] = since_raw
                 data = proxy.call(host_cfg, "GET", "/api/logs/", params=params)
                 host_lines = data.get("lines", [])
             except Exception as e:
@@ -811,8 +842,16 @@ def api_package_update(request, name: str):
     installed = {p["name"]: p["version"] for p in services.list_pyobs_packages()}
     if name not in installed:
         return JsonResponse({"ok": False, "error": f"{name!r} is not an installed pyobs-* package"}, status=404)
-    ok, message = services.update_package(name, installed[name])
+    ok, message = services.update_package_start(name, installed[name])
     return JsonResponse({"ok": ok, "message": message})
+
+
+@require_GET
+def api_package_update_status(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", "/api/packages/update/status/")
+    return JsonResponse(services.get_package_update_status())
 
 
 # ── ejabberd hub-mode delegation ────────────────────────────────────────────────

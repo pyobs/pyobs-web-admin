@@ -12,7 +12,7 @@ shape `acl-matrix.md`/`ejabberd-integration.md` already use: **Status** (one-par
 current state, updated as work progresses) → **Motivation** → **Current state** (what's true
 in the codebase before this feature) → **Design** → **Open questions** → **Work Plan**
 (checkboxes, narrated by a **Progress log** as items land). Code comments referencing "the
-design doc" should name the specific file (`acl-matrix.md`, not `README.md`) so they
+design doc" should name the specific file (`acl-matrix.md`, not `index.md`) so they
 keep pointing at the right document as more of these accumulate.
 
 An idea starts as a one-line bullet under **Ideas** below. When someone's ready to actually

@@ -1,4 +1,4 @@
-# pyobs-web-admin: journald-backed module logging — v1.3 (2026-07-21)
+# pyobs-web-admin: journald-backed module logging — v1.4 (2026-08-15)
 
 ## Status
 
@@ -13,6 +13,11 @@ the log windows (module `Logs` tab, fleet-wide All Logs) now auto-load older ent
 scrolled to the top, for journald-backed modules only — the file backend reports "nothing
 older available" rather than pretending to page further back, since a plain `tail -n` has no
 seek/offset to page with — see Progress log and Design's "Pagination: load older logs".
+v1.4 makes the time-range start date a server-side `since` bound rather than a client-side
+filter: setting a start date now loads logs since that instant (journald via `journalctl
+--since`, file via a `[since, before]` timestamp window), and the file backend's
+scroll-to-top page-back works once a start date is set — see Progress log and Design's
+"Pagination: load older logs".
 
 ## Progress log
 
@@ -72,6 +77,29 @@ seek/offset to page with — see Progress log and Design's "Pagination: load old
   necessarily the `pyobs` account — they're commonly different, and only the process calling
   `journalctl` (the Django app's own process) needs journal read access.
 - **Done — v1.2, load older logs on scroll-to-top, not a Work Plan item.** Requested after using the log windows and finding no way to see anything further back than the last `lines` tail without bumping the (capped-at-2000) `lines` param and re-fetching everything. `modules/services.py`: `get_logs`/`get_all_logs` gained an optional `before: datetime | None`, threaded through to `_get_logs_journald`/`_get_all_logs_journald`, which add `--until "<before> UTC"` ahead of the existing `-n <lines>` flag — the same temporal-boundary idiom `_get_log_stats_journald`'s `--since` already established, just the other direction. `journalctl -n <lines> --until <ts>` returns the last `<lines>` entries at or before `<ts>`, exactly "the page of older lines immediately before what's already on screen." The file backend (`tail -n`) has no seek/offset concept to page further back with, so a `before` request there returns `[]` rather than silently re-serving the same tail on every scroll — this makes "load older logs" a journald-only capability for now, not a half-working one on file-backed installs (see Design's new "Pagination: load older logs" section for the full read/API/frontend design). `modules/views.py`: `api_logs`/`api_all_logs` gained a `before` query param (`_parse_before`, same tolerant ISO-8601-with-`Z` parsing `api_all_log_stats`'s `acks` param already uses), forwarded unchanged to a remote hub host's own identical endpoint. `templates/modules/detail.html` (Logs tab) and `all_logs.html` (kept in lockstep, as this app's existing convention already does for these two near-identical log windows) both gained a `scroll` listener on `#log-output` that fetches older lines once scrolled within 40px of the top, deduping the response against already-loaded lines by exact string match (`--until` is inclusive, so the boundary line can reappear) and restoring scroll offset by the exact height delta added, so the line under the viewport doesn't jump. Tests: new cases in `GetLogsJournaldTests`/`GetAllLogsTests` (`before` → `--until`; file backend returns `[]` for a `before` request) and a new `ApiLogsBeforeParamTests` class (`_parse_before` parsing, `api_logs`/`api_all_logs` forwarding) in `modules/tests.py`. `python manage.py test modules` — 176/176 passing, no regressions. **Verified live** with a fake `journalctl` (a small Python script placed ahead of the real binary on `PATH`, since this dev box has no real journald) serving 1000 synthetic timestamped entries for a scratch module: both the per-module Logs tab and the fleet-wide All Logs page correctly paged all the way back to entry 0 across repeated scroll-to-top interactions, with no duplicate lines, correct scroll-position preservation, and "Beginning of available logs" shown exactly once the journal was exhausted, no console errors.
+
+- **Done — v1.4, time-range start date as a server-side `since` bound, not a Work Plan item.**
+  Requested after finding that setting a start date in the log windows' time-range filter only
+  filtered the already-loaded tail, so nothing older than the current `lines` window was ever
+  fetched. `modules/services.py`: `get_logs`/`get_all_logs` gained a `since: datetime | None`
+  alongside `before`, threaded through to `_get_logs_journald`/`_get_all_logs_journald`
+  (`--since "<ts> UTC"`, symmetric with the existing `--until`) and to a new `_get_logs_file`
+  for the file backend. The file backend's common tail/refresh case (`before is None`) stays a
+  plain `tail -n` with the tail filtered to `ts >= since` -- safe because timestamps are
+  monotonic, so the tail is either entirely inside the window or already includes it plus some
+  older lines -- while a page-back (`since` + `before`) reads the `[since, before]` window via
+  a byte-offset binary search for the `since` boundary (reusing `get_log_stats`' own seek
+  pattern, lifted into `_file_offset_of_last_line_before`) and keeps the last `lines` lines. A
+  `before` request with no `since` still returns `[]` on the file backend, preserving the v1.2
+  "no seek/offset to page back without a start date" limitation. `modules/views.py`:
+  `api_logs`/`api_all_logs` parse and forward `since` (renaming the shared `_parse_before`
+  helper to `_parse_ts`, used for both bounds), including to remote hub hosts.
+  `templates/modules/detail.html` and `all_logs.html` both send `since` on the initial fetch
+  and every scroll-to-top page-back, and a start-date change now clears in-memory history and
+  re-fetches from the server instead of just re-filtering. Tests updated/added in
+  `modules/tests.py` (journald `--since` arg order, combined `--since`/`--until`, file-backend
+  since-filtering and since+before paging, and `since` forwarding through both API endpoints);
+  full suite passes.
 
 ## Motivation
 
@@ -244,7 +272,7 @@ confirmed live to correctly bound the query window; counts come directly from ea
 `PRIORITY` via the same reverse-map, without round-tripping through reconstructed text and
 `_LOG_LEVEL_RE` again.
 
-### Pagination: load older logs (v1.2)
+### Pagination: load older logs (v1.2) and start-date bounds (v1.4)
 
 **Backend.** `get_logs`/`get_all_logs` gained an optional `before: datetime | None` alongside
 the existing `lines`, threaded through to `_get_logs_journald`/`_get_all_logs_journald`, which
@@ -254,13 +282,14 @@ boundary. `journalctl -n <lines> --until <ts>` returns the last `<lines>` entrie
 that instant, which is exactly "give me the page of older lines immediately before what's
 already on screen." The file backend (`tail -n`) has no seek/offset concept to page further
 back with, so a `before` request there returns `[]` rather than silently re-serving the same
-tail on every scroll — this makes "load older logs" a journald-only capability for now, not a
-half-working one on file-backed installs.
+tail on every scroll — with one exception added in v1.4: once a `since` is set the window is
+bounded, so the file backend pages back through it (see below).
 
-**API.** `api_logs`/`api_all_logs` (`views.py`) parse a new `before` query param
-(`_parse_before`, ISO-8601 with a `Z` suffix, same tolerant malformed-input-returns-`None`
-handling `api_all_log_stats`'s `acks` parsing already uses) and forward it straight through —
-including to a remote hub host's own identical endpoint, unchanged.
+**API.** `api_logs`/`api_all_logs` (`views.py`) parse a `before` query param and, since v1.4, a
+`since` param too — both ISO-8601 with a `Z` suffix, same tolerant malformed-input-returns-`None`
+handling `api_all_log_stats`'s `acks` parsing already uses (`_parse_ts`, formerly
+`_parse_before`) — and forward them straight through, including to a remote hub host's own
+identical endpoint, unchanged.
 
 **Frontend.** Both log windows (`detail.html`'s Logs tab, `all_logs.html`) already rendered
 into a single `<pre id="log-output">`; this adds one `scroll` listener on it that calls
@@ -274,6 +303,21 @@ small status line above the `<pre>` reads "Loading older logs…" while in fligh
 Refresh or toggling a module checkbox on the All Logs page, resets that flag so a later scroll
 tries again — new activity could plausibly extend the journal's retained history further back
 in the meantime, though in practice it almost never will).
+
+**Start date (`since`, v1.4).** The time-range start date was originally a client-side filter
+over whatever lines were already loaded — setting it never fetched anything older than the
+current `lines` window. v1.4 makes it a server-side bound: `get_logs`/`get_all_logs` gained a
+`since: datetime | None` alongside `before`, threaded through to the journald read (`--since
+"<ts> UTC"`, symmetric with `--until`) and to the file backend. The file backend's common
+tail/refresh case stays a plain `tail -n` with the tail filtered to `ts >= since` — safe
+because timestamps are monotonic, so the tail is either entirely inside the window or already
+includes it plus some older lines — while a `since` + `before` page-back reads the `[since,
+before]` window via a byte-offset binary search for the `since` boundary and keeps the last
+`lines` lines. A `before` request with no `since` still returns `[]` on the file backend, so
+paging back without a start date remains a journald-only capability; with a start date it
+works on both backends. The frontend sends `since` on the initial fetch and every page-back,
+and a start-date change clears the in-memory history and re-fetches rather than just
+re-filtering.
 
 ### What doesn't change
 
@@ -329,7 +373,7 @@ which case adding `systemd-journal` too would be redundant.
 
 ## Open questions
 
-None remaining as of v1.3.
+None remaining as of v1.4.
 
 ## Work Plan
 
@@ -362,3 +406,7 @@ None remaining as of v1.3.
 - [x] **v1.2, not in the original plan.** Auto-load older log lines when a log window is
   scrolled to the top (journald-backed modules only; the file backend reports "nothing older
   available") — see Progress log and Design's "Pagination: load older logs" section.
+- [x] **v1.4, not in the original plan.** Make the time-range start date a server-side `since`
+  bound so setting a start date loads logs since that instant on both backends, and page back
+  through them — see Progress log and Design's "Pagination: load older logs and start-date
+  bounds" section.
