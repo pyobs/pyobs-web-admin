@@ -14,9 +14,10 @@ filter their logs, and view and edit their configuration files — all from a br
   - Quick start, restart, stop, and activate/deactivate buttons per module
   - *Start All*, *Restart All*, and *Stop All* bulk actions
   - Inactive modules (prefixed with `_`) are excluded from bulk start/restart
+  - Outdated badge on any running module whose loaded `pyobs-*` versions lag the installed ones (parsed from pyobs-core's startup "Loaded pyobs packages:" log line — comm-independent, works for comm-less modules too), plus a *Restart outdated* bulk action that restarts only those
   - Responsive: on small screens the table collapses to status dot + name + log counts + actions
 - **Module detail** — per-module view with four tabs:
-  - *Overview* — current status, PID, uptime, CPU and memory usage, per-level log message counts (last 24 h), XMPP connection state (if enabled), start/restart/stop/activate/deactivate control
+  - *Overview* — current status, PID, uptime, CPU and memory usage, running `pyobs-*` package versions (flagged when they lag the installed set), per-level log message counts (last 24 h), XMPP connection state (if enabled), start/restart/stop/activate/deactivate control
   - *Logs* — live log tail with text filter, time-range filter (set a start date to load all logs since that instant, or click a line to set it), colour-coded by severity, auto-refresh; scrolling to the top auto-loads older entries (journald-backed modules, or file-backed modules once a start date is set, see [journald-logs.md](specs/design/journald-logs.md))
   - *Config* — YAML editor with syntax highlighting and colour-coded `{include}` lines; included shared configs are shown as clickable links
   - *ACL* — point-and-click editor for the module's `acl:` block: click to allow/deny known modules, add other callers, toggle enforce/log mode

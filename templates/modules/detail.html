@@ -77,6 +77,7 @@
         <tr id="stat-uptime-row" class="d-none"><th class="text-muted fw-normal pe-4">Uptime</th><td id="stat-uptime"></td></tr>
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
+        <tr id="stat-versions-row" class="d-none"><th class="text-muted fw-normal pe-4">Versions</th><td id="stat-versions"></td></tr>
         {% if ejabberd_enabled %}
         <tr id="stat-ejabberd-row" class="d-none">
           <th class="text-muted fw-normal pe-4">XMPP</th>
@@ -289,6 +290,7 @@ async function updateStatus() {
   const cpuRow = document.getElementById('stat-cpu-row');
   const pidRow = document.getElementById('stat-pid-row');
   const uptimeRow = document.getElementById('stat-uptime-row');
+  const versionsRow = document.getElementById('stat-versions-row');
   if (data.stats) {
     document.getElementById('stat-pid').textContent = data.stats.pid;
     pidRow.classList.remove('d-none');
@@ -303,6 +305,24 @@ async function updateStatus() {
     uptimeRow.classList.add('d-none');
     memRow.classList.add('d-none');
     cpuRow.classList.add('d-none');
+  }
+  if (running) {
+    if (data.versions) {
+      const outdated = data.outdated || [];
+      const parts = Object.entries(data.versions).map(([pkg, ver]) => {
+        const isOutdated = outdated.includes(pkg);
+        const installedVer = (data.installed || {})[pkg];
+        const title = isOutdated ? ` title="installed: ${escapeHtml(installedVer ?? '?')}"` : '';
+        const warn = isOutdated ? ' <i class="bi bi-exclamation-triangle-fill"></i>' : '';
+        return `<span class="${isOutdated ? 'text-warning' : 'text-secondary'} me-3"${title}>${escapeHtml(pkg)} ${escapeHtml(ver)}${warn}</span>`;
+      });
+      document.getElementById('stat-versions').innerHTML = parts.join('');
+    } else {
+      document.getElementById('stat-versions').textContent = 'unknown';
+    }
+    versionsRow.classList.remove('d-none');
+  } else {
+    versionsRow.classList.add('d-none');
   }
 }
 

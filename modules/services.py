@@ -555,6 +555,18 @@ def list_pyobs_packages() -> list[dict]:
     )
 
 
+def stale_packages(running: dict[str, str], installed: dict[str, str]) -> list[str]:
+    """Sorted distribution names where `running` (get_module_versions' result for one module)
+    disagrees with `installed` (from list_pyobs_packages) -- "outdated" means "upgraded but
+    not restarted" (running vs. installed), not running vs. latest-PyPI, which the Packages
+    page already covers. A name present in only one side also counts as differing -- e.g.
+    installed has since dropped a driver the running process still has loaded -- since either
+    way, what's running no longer matches what's installed.
+    """
+    names = set(running) | set(installed)
+    return sorted(n for n in names if running.get(n) != installed.get(n))
+
+
 _PYOBS_CORE_VERSION_CACHE_TTL = 60  # seconds
 _pyobs_core_version_cache: tuple[float, Version | None] | None = None
 
@@ -1067,6 +1079,96 @@ def get_module_stats(name: str) -> dict | None:
     except psutil.NoSuchProcess:
         _process_cache.pop(name, None)
         return None
+
+
+_LOADED_PACKAGES_PREFIX = "Loaded pyobs packages: "
+
+
+def _parse_loaded_packages_line(line: str) -> dict[str, str]:
+    """Parses the `{dist}={version}, ...` remainder of a "Loaded pyobs packages: ..." line
+    (pyobs-core's `loaded_pyobs_packages()`, logged at module startup). Versions are
+    semver/dev strings with no `,` or `=`, and distribution names are `pyobs-*` with no `=`
+    either, so a plain split on ", " then "=" is safe."""
+    idx = line.find(_LOADED_PACKAGES_PREFIX)
+    if idx == -1:
+        return {}
+    rest = line[idx + len(_LOADED_PACKAGES_PREFIX):].strip()
+    if not rest:
+        return {}
+    versions = {}
+    for pair in rest.split(", "):
+        dist, sep, version = pair.partition("=")
+        if dist and sep and version:
+            versions[dist] = version
+    return versions
+
+
+def _get_module_versions_file(name: str) -> dict[str, str] | None:
+    """`tac <logfile> | grep -m1 <prefix>` (no shell, piped subprocesses) -- tac reads from
+    the end so the newest occurrence is found without scanning the whole (potentially large,
+    rotated) log file."""
+    log_file = _log_dir() / f"{_active_name(name)}.log"
+    if not log_file.exists():
+        return None
+    tac = subprocess.Popen(["tac", str(log_file)], stdout=subprocess.PIPE)
+    grep = subprocess.Popen(
+        ["grep", "-m1", "-F", _LOADED_PACKAGES_PREFIX], stdin=tac.stdout, stdout=subprocess.PIPE, text=True
+    )
+    tac.stdout.close()
+    stdout, _ = grep.communicate()
+    tac.wait()
+    line = stdout.strip()
+    return _parse_loaded_packages_line(line) or None if line else None
+
+
+def _get_module_versions_journald(name: str, since_create_time: float) -> dict[str, str] | None:
+    """Same substring parse as the file backend, applied to the newest matching journal
+    entry's MESSAGE. Bound to `--since @<create_time>` (the module's own psutil
+    create_time(), already used by get_module_stats) -- otherwise --grep scans the entire
+    retained journal, and for a long-running module the version line is old."""
+    since = datetime.fromtimestamp(since_create_time, tz=timezone.utc)
+    entries = _journalctl_json([
+        "SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}",
+        "--since", f"{since:%Y-%m-%d %H:%M:%S} UTC", "--grep", _LOADED_PACKAGES_PREFIX,
+    ])
+    if not entries:
+        return None
+    versions = _parse_loaded_packages_line(entries[-1].get("MESSAGE", ""))
+    return versions or None
+
+
+_module_versions_cache: dict[str, tuple[int, dict[str, str]]] = {}
+
+
+def get_module_versions(name: str) -> dict[str, str] | None:
+    """{distribution: version} from the newest "Loaded pyobs packages:" line in `name`'s log,
+    or None if the module isn't running or its log has no such line yet (started before the
+    pyobs-core change that logs it, or the line has rotated out of retention).
+
+    Cached by PID, mirroring _process_cache: the version set is fixed for the lifetime of a
+    process, so a status poll must not re-shell-out to tac/journalctl every time. A cached
+    entry is reused only while the PID still matches; a stopped module clears it.
+    """
+    pid = _read_pid(name)
+    if pid is None or not _is_alive(pid):
+        _module_versions_cache.pop(name, None)
+        return None
+    cached = _module_versions_cache.get(name)
+    if cached is not None and cached[0] == pid:
+        return cached[1]
+    if _log_backend() == "journald":
+        try:
+            create_time = psutil.Process(pid).create_time()
+        except psutil.NoSuchProcess:
+            _module_versions_cache.pop(name, None)
+            return None
+        versions = _get_module_versions_journald(name, create_time)
+    else:
+        versions = _get_module_versions_file(name)
+    if versions is None:
+        return None
+    _module_versions_cache[name] = (pid, versions)
+    return versions
 
 
 def deactivate_module(name: str) -> tuple[bool, str]:
