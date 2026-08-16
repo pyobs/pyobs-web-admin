@@ -420,18 +420,38 @@ def acl_matrix(request):
 
 # ── Status API ────────────────────────────────────────────────────────────────
 
+def _installed_pyobs_versions() -> dict[str, str]:
+    return {p["name"]: p["version"] for p in services.list_pyobs_packages()}
+
+
+def _versions_and_outdated(name: str, status: str, installed: dict[str, str]) -> tuple[dict[str, str] | None, list[str] | None]:
+    if status != "running":
+        return None, None
+    versions = services.get_module_versions(name)
+    if versions is None:
+        return None, None
+    return versions, services.stale_packages(versions, installed)
+
+
 @require_GET
 def api_all_statuses(request):
     host = _active_host(request)
     if host:
         return _proxy(host, "GET", "/api/statuses/")
     modules = services.list_modules()
+    # Fetched once per request, not per module -- get_module_versions is PID-cached so the
+    # only recurring cost of this poll is one `pip list` here, not one per running module.
+    installed = _installed_pyobs_versions()
     result = []
     for m in modules:
         status = services.get_module_status(m)
         stats = services.get_module_stats(m) if status == "running" else None
-        result.append({"name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m)})
-    return JsonResponse({"modules": result})
+        versions, outdated = _versions_and_outdated(m, status, installed)
+        result.append({
+            "name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m),
+            "versions": versions, "outdated": outdated,
+        })
+    return JsonResponse({"modules": result, "installed": installed})
 
 
 @require_GET
@@ -442,7 +462,9 @@ def api_status(request, name: str):
     _get_module_or_404(name)
     status = services.get_module_status(name)
     stats = services.get_module_stats(name) if status == "running" else None
-    return JsonResponse({"status": status, "stats": stats})
+    installed = _installed_pyobs_versions()
+    versions, outdated = _versions_and_outdated(name, status, installed)
+    return JsonResponse({"status": status, "stats": stats, "versions": versions, "outdated": outdated, "installed": installed})
 
 
 # ── Control API ───────────────────────────────────────────────────────────────

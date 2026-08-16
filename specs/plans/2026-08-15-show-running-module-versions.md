@@ -1,6 +1,6 @@
 # Plan: Show the pyobs-* versions each running module loaded, flag outdated ones, restart them
 
-Status: planned
+Status: implemented
 
 Related: `specs/plans/2026-08-15-log-loaded-pyobs-package-versions.md` in **pyobs-core** — this plan
 consumes the startup log line that one adds. Without that pyobs-core change there is nothing to
