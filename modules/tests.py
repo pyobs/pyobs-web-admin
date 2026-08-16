@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -6,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import yaml
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import User
@@ -2056,37 +2059,157 @@ class ListPyobsPackagesManagedTests(unittest.TestCase):
         self.assertEqual(names, {"pyobs-core"})
 
 
-class UpdatePackageManagedTests(unittest.TestCase):
-    def _mock_result(self, returncode=0, stdout="ok"):
-        result = MagicMock()
-        result.returncode = returncode
-        result.stdout = stdout
-        result.stderr = ""
-        return result
-
-    @patch("modules.services.subprocess.run")
-    def test_uses_configured_extras_spec_in_pip_args(self, mock_run):
-        mock_run.return_value = self._mock_result()
+class BuildUpdateArgsManagedTests(unittest.TestCase):
+    def test_uses_configured_extras_spec_in_pip_args(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
-            services.update_package("pyobs-core", "1.54.0")
-        args = mock_run.call_args[0][0]
+            args = services._build_update_args("pyobs-core", "1.54.0")
         self.assertEqual(args[-1], "pyobs-core[full]")
 
-    @patch("modules.services.subprocess.run")
-    def test_non_pyobs_managed_package_is_allowed(self, mock_run):
-        mock_run.return_value = self._mock_result()
+    def test_non_pyobs_managed_package_is_allowed(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["my-custom-driver"]):
-            ok, _ = services.update_package("my-custom-driver", "1.0.0")
-        self.assertTrue(ok)
-        mock_run.assert_called_once()
+            args = services._build_update_args("my-custom-driver", "1.0.0")
+        self.assertEqual(args[-1], "my-custom-driver")
 
-    @patch("modules.services.subprocess.run")
-    def test_unmanaged_non_pyobs_package_is_refused(self, mock_run):
+    def test_unmanaged_non_pyobs_package_is_refused(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=[]):
-            ok, message = services.update_package("some-random-package", "1.0.0")
+            with self.assertRaises(ValueError) as ctx:
+                services._build_update_args("some-random-package", "1.0.0")
+        self.assertIn("unmanaged", str(ctx.exception))
+
+
+class UpdatePackageStartTests(unittest.TestCase):
+    """update_package_start spawns detached and returns immediately -- these tests never let a
+    real pip run; PYOBS_PIP_EXEC (via PYOBS_EXEC) is stubbed to a fast shell one-liner so the
+    background job actually completes within the test, exercising the real file-based state
+    machine end to end rather than mocking subprocess.Popen itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        self._settings = override_settings(
+            PYOBS_RUN_DIR=str(self.tmp_path / "run"),
+            PYOBS_EXEC="/opt/pyobs/venv/bin/pyobs",
+            PYOBS_MANAGED_PACKAGES=[],
+        )
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _wait_for_exit_file(self, timeout=5):
+        exit_file = services._pkg_update_exit_file()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if exit_file.exists():
+                return
+            time.sleep(0.05)
+        self.fail("background job did not finish in time")
+
+    @patch("modules.services._pip_exec", return_value="/bin/echo")
+    def test_returns_immediately_and_reports_running_then_success(self, _mock_pip):
+        ok, message = services.update_package_start("pyobs-core", "1.54.0")
+        self.assertTrue(ok)
+        self.assertIn("pyobs-core", message)
+        self._wait_for_exit_file()
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "success")
+        self.assertEqual(status["name"], "pyobs-core")
+        self.assertFalse(status["active"])
+        self.assertIn("pyobs-core", status["log"])  # /bin/echo prints its argv, incl. the spec
+
+    @patch("modules.services._pip_exec", return_value="/bin/false")
+    def test_nonzero_exit_reported_as_failed(self, _mock_pip):
+        services.update_package_start("pyobs-core", "1.54.0")
+        self._wait_for_exit_file()
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "failed")
+
+    @patch("modules.services._build_update_args", return_value=["/bin/sleep", "1"])
+    def test_second_start_refused_while_first_still_running(self, _mock_args):
+        ok1, _ = services.update_package_start("pyobs-core", "1.54.0")
+        self.assertTrue(ok1)
+        status = services.get_package_update_status()
+        self.assertTrue(status["active"])
+        ok2, message = services.update_package_start("pyobs-fli", "1.0.0")
+        self.assertFalse(ok2)
+        self.assertIn("pyobs-core", message)
+        self._wait_for_exit_file()  # let sleep finish so it doesn't outlive the test
+
+    def test_unmanaged_package_refused_without_spawning(self):
+        with override_settings(PYOBS_MANAGED_PACKAGES=[]):
+            ok, message = services.update_package_start("some-random-package", "1.0.0")
         self.assertFalse(ok)
         self.assertIn("unmanaged", message)
-        mock_run.assert_not_called()
+        self.assertFalse(services._pkg_update_lock_file().exists())
+
+    @patch("modules.services._pip_exec", return_value="/bin/echo")
+    def test_lock_records_matching_pid_create_time(self, _mock_pip):
+        services.update_package_start("pyobs-core", "1.54.0")
+        lock = json.loads(services._pkg_update_lock_file().read_text())
+        actual = psutil.Process(lock["pid"]).create_time()
+        self.assertAlmostEqual(lock["pid_create_time"], actual, delta=1.0)
+        self._wait_for_exit_file()
+
+    @patch("modules.services._build_update_args", return_value=["/bin/sleep", "1"])
+    def test_second_start_refused_while_first_holds_the_flock(self, _mock_args):
+        # Simulates two requests landing on different gunicorn workers close enough together
+        # that the second one's flock() call contends with the first's, rather than finding a
+        # fully-written lock file -- the race PR #50 review comment #2 flagged.
+        services._run_dir().mkdir(parents=True, exist_ok=True)
+        services._pkg_update_lock_file().write_text(json.dumps({"name": "pyobs-core", "pid": 1, "pid_create_time": None}))
+        flock_fd = os.open(services._pkg_update_lock_flock_file(), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(flock_fd, fcntl.LOCK_EX)
+        try:
+            ok, message = services.update_package_start("pyobs-fli", "1.0.0")
+        finally:
+            fcntl.flock(flock_fd, fcntl.LOCK_UN)
+            os.close(flock_fd)
+        self.assertFalse(ok)
+        self.assertIn("pyobs-core", message)
+
+
+class GetPackageUpdateStatusTests(unittest.TestCase):
+    """Exercises the on-disk state machine directly (no real spawn) for states that
+    UpdatePackageStartTests can't easily force: no job ever run, interrupted, and reused-pid."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        (self.tmp_path / "run").mkdir()
+        self._settings = override_settings(PYOBS_RUN_DIR=str(self.tmp_path / "run"))
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def test_no_job_ever_run(self):
+        status = services.get_package_update_status()
+        self.assertEqual(status, {"active": False})
+
+    def test_interrupted_when_pid_gone_and_no_exit_file(self):
+        services._pkg_update_lock_file().write_text(json.dumps({"name": "pyobs-core", "pid": 999999999, "started_at": 0}))
+        services._pkg_update_log_file().write_text("partial output\n")
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "interrupted")
+        self.assertFalse(status["active"])
+        self.assertIn("partial output", status["log"])
+
+    def test_interrupted_when_pid_alive_but_create_time_mismatches(self):
+        # A live pid whose actual start time doesn't match what was recorded means the tracked
+        # process is gone and the OS has since reused its pid for something unrelated (e.g. after
+        # a host reboot) -- must not be reported as "running" just because *some* process with
+        # that number exists. Use this test process's own pid, which is guaranteed alive, with a
+        # deliberately wrong recorded create_time.
+        real_create_time = psutil.Process(os.getpid()).create_time()
+        services._pkg_update_lock_file().write_text(
+            json.dumps({"name": "pyobs-core", "pid": os.getpid(), "pid_create_time": real_create_time - 1000, "started_at": 0})
+        )
+        status = services.get_package_update_status()
+        self.assertEqual(status["state"], "interrupted")
+        self.assertFalse(status["active"])
 
 
 class HubTokenMiddlewareTests(unittest.TestCase):
@@ -2279,6 +2402,34 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         mock_get_all_logs.assert_called_once_with(
             ["camera"], lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
         )
+
+# ── Async package update views ─────────────────────────────────────────────────────
+
+class ApiPackageUpdateViewsTests(unittest.TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("modules.services.update_package_start")
+    @patch("modules.services.list_pyobs_packages")
+    def test_api_package_update_returns_immediately(self, mock_list, mock_start):
+        mock_list.return_value = [{"name": "pyobs-core", "version": "1.54.0"}]
+        mock_start.return_value = (True, "Started updating pyobs-core")
+        request = self.factory.post("/api/packages/pyobs-core/update/")
+        request.session = {}
+        response = views.api_package_update(request, "pyobs-core")
+        self.assertEqual(response.status_code, 200)
+        mock_start.assert_called_once_with("pyobs-core", "1.54.0")
+        self.assertEqual(json.loads(response.content), {"ok": True, "message": "Started updating pyobs-core"})
+
+    @patch("modules.services.get_package_update_status")
+    def test_api_package_update_status_returns_service_dict(self, mock_status):
+        mock_status.return_value = {"active": True, "name": "pyobs-core", "state": "running", "log": "..."}
+        request = self.factory.get("/api/packages/update/status/")
+        request.session = {}
+        response = views.api_package_update_status(request)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), mock_status.return_value)
+
 
 # ── Git-backed config ────────────────────────────────────────────────────────────────
 

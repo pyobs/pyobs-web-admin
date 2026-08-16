@@ -1,7 +1,9 @@
+import fcntl
 import io
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -729,12 +731,12 @@ def build_package_version_matrix(per_host: list[tuple[str, list[dict]]]) -> dict
     return {"hosts": host_names, "packages": rows}
 
 
-def update_package(name: str, installed_version: str) -> tuple[bool, str]:
-    """Runs `pip install --upgrade <spec>` in pyobs's own environment (_pip_exec), where
-    <spec> is name itself unless PYOBS_MANAGED_PACKAGES configures a fuller spec for it (see
-    _install_spec_for). Callers (api_package_update) must already have checked name against
-    list_pyobs_packages() -- the name check here is just defense in depth, not the primary
-    access control, so that this function alone can never be used to pip-install something
+def _build_update_args(name: str, installed_version: str) -> list[str]:
+    """Builds the `pip install --upgrade <spec>` argv for `name` in pyobs's own environment
+    (_pip_exec), where <spec> is name itself unless PYOBS_MANAGED_PACKAGES configures a fuller
+    spec for it (see _install_spec_for). Callers (update_package_start) must already have checked
+    name against list_pyobs_packages() -- the name check here is just defense in depth, not the
+    primary access control, so that this function alone can never be used to pip-install something
     arbitrary even if a caller forgot that check. Mirrors list_pyobs_packages' own "pyobs-
     prefixed, or explicitly allow-listed via PYOBS_MANAGED_PACKAGES" rule -- a name only
     reachable here if it could also have shown up on the Packages page in the first place.
@@ -749,9 +751,11 @@ def update_package(name: str, installed_version: str) -> tuple[bool, str]:
     keeps --pre's effect scoped to resolving *this* package -- already-satisfied dependencies
     aren't re-examined for a newer prerelease of their own just because this install allows
     prereleases in general.
+
+    Raises ValueError if name isn't a managed package -- defense in depth, see above.
     """
     if not re.match(r"^pyobs[A-Za-z0-9_.-]*$", name, re.IGNORECASE) and _normalize_package_name(name) not in _managed_package_specs():
-        return False, f"Refusing to update unmanaged package: {name!r}"
+        raise ValueError(f"Refusing to update unmanaged package: {name!r}")
     args = [_pip_exec(), "install", "--upgrade", "--upgrade-strategy=only-if-needed", "--no-input"]
     if _is_prerelease(installed_version):
         args.append("--pre")
@@ -763,14 +767,171 @@ def update_package(name: str, installed_version: str) -> tuple[bool, str]:
         # forced reinstall to this package alone, not a full dependency re-resolve.
         args += ["--force-reinstall", "--no-deps"]
     args.append(_install_spec_for(name))
+    return args
+
+
+# ── Background package updates ──────────────────────────────────────────────────
+#
+# A pip install can take far longer than any HTTP request should block for (compiling a package
+# with no prebuilt wheel), so the actual `pip install` runs detached from the Django worker, not
+# inside update_package_start's request. Job state lives entirely in files under _run_dir(), not
+# in worker memory, so a status poll works regardless of which worker handles it and survives a
+# web-admin restart mid-install:
+#
+#   pkg-update.lock  empty file, held via flock() only around the check-then-spawn section of
+#                     update_package_start -- makes "is a job already running?" atomic across
+#                     concurrent requests hitting different gunicorn workers, not just within one
+#   pkg-update.json  metadata: {"name", "pid" (shell pid), "pid_create_time", "started_at"}
+#   pkg-update.log   pip's combined stdout+stderr, written live by shell redirection
+#   pkg-update.exit  the exit code, written by the spawned shell once pip finishes; its absence
+#                     means "still running" (or "interrupted", see get_package_update_status)
+#
+# Only one job at a time, host-wide (not per-package): concurrent `pip install` invocations
+# against the same venv aren't safe (races in dist-info/RECORD), so a second Update while one is
+# running is refused rather than queued -- the same thing an admin doing this by hand would do.
+#
+# pid_create_time (psutil's Process.create_time(), recorded at spawn) guards against PID reuse:
+# a bare `_is_alive(pid)` would report an unrelated process as "still running" forever if the
+# host rebooted and the OS later handed the tracked pid to something else entirely. Matching the
+# recorded creation time against the live process's actual one confirms it's the same process,
+# not just the same number -- a wall-clock "how long has this been running" cutoff can't do that
+# without guessing at how long a slow compile is allowed to take, which is exactly what this
+# whole design avoids doing.
+
+def _pkg_update_lock_flock_file() -> Path:
+    return _run_dir() / "pkg-update.lock"
+
+
+def _pkg_update_lock_file() -> Path:
+    return _run_dir() / "pkg-update.json"
+
+
+def _pkg_update_log_file() -> Path:
+    return _run_dir() / "pkg-update.log"
+
+
+def _pkg_update_exit_file() -> Path:
+    return _run_dir() / "pkg-update.exit"
+
+
+def _pkg_update_tail(max_chars: int = 4000) -> str:
+    log_file = _pkg_update_log_file()
+    if not log_file.exists():
+        return ""
+    text = log_file.read_text(errors="replace")
+    return text[-max_chars:]
+
+
+def _pkg_update_process_alive(pid: int, expected_create_time: float | None) -> bool:
+    """Whether pid is not just alive, but the same process update_package_start spawned --
+    guards against a rebooted host having reused the pid for something unrelated. Falls back to
+    plain liveness if expected_create_time is missing (e.g. an older lock file from before this
+    field existed).
+    """
+    if not _is_alive(pid):
+        return False
+    if expected_create_time is None:
+        return True
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        return False, "Timed out waiting for pip install to finish"
-    except FileNotFoundError:
-        return False, f"pip executable not found: {_pip_exec()!r}"
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+        actual = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False
+    return abs(actual - expected_create_time) < 1.0
+
+
+def _read_pkg_update_lock() -> dict | None:
+    try:
+        return json.loads(_pkg_update_lock_file().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def update_package_start(name: str, installed_version: str) -> tuple[bool, str]:
+    """Starts `pip install --upgrade` for name detached from this request and returns
+    immediately. See the module comment above for the on-disk job-state design.
+    """
+    _run_dir().mkdir(parents=True, exist_ok=True)
+    flock_fd = os.open(_pkg_update_lock_flock_file(), os.O_CREAT | os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(flock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another request is inside this same critical section right now (started
+            # microseconds apart on a different worker) -- by the time it releases the lock it
+            # will itself be the "already updating" job, so just report that rather than
+            # blocking this request on the flock.
+            lock = _read_pkg_update_lock() or {}
+            return False, f"Already updating {lock.get('name', 'a package')}"
+
+        lock = _read_pkg_update_lock()
+        if lock:
+            pid = lock.get("pid")
+            if pid and not _pkg_update_exit_file().exists() and _pkg_update_process_alive(pid, lock.get("pid_create_time")):
+                return False, f"Already updating {lock.get('name', 'a package')}"
+
+        try:
+            args = _build_update_args(name, installed_version)
+        except ValueError as e:
+            return False, str(e)
+
+        log_file = _pkg_update_log_file()
+        exit_file = _pkg_update_exit_file()
+        exit_file.unlink(missing_ok=True)
+
+        shell_cmd = f"{shlex.join(args)} > {shlex.quote(str(log_file))} 2>&1; echo $? > {shlex.quote(str(exit_file))}"
+        try:
+            proc = subprocess.Popen(
+                ["sh", "-c", shell_cmd],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            return False, "sh executable not found"
+
+        try:
+            pid_create_time = psutil.Process(proc.pid).create_time()
+        except psutil.NoSuchProcess:
+            pid_create_time = None
+        _pkg_update_lock_file().write_text(
+            json.dumps({"name": name, "pid": proc.pid, "pid_create_time": pid_create_time, "started_at": time.time()})
+        )
+        return True, f"Started updating {name}"
+    finally:
+        fcntl.flock(flock_fd, fcntl.LOCK_UN)
+        os.close(flock_fd)
+
+
+def get_package_update_status() -> dict:
+    """Reports the current/last background update job. See the module comment above
+    _pkg_update_lock_flock_file for the on-disk job-state design this reads.
+    """
+    lock = _read_pkg_update_lock()
+    if lock is None:
+        return {"active": False}
+
+    name = lock.get("name")
+    pid = lock.get("pid")
+    exit_file = _pkg_update_exit_file()
+    tail = _pkg_update_tail()
+
+    if exit_file.exists():
+        try:
+            code = int(exit_file.read_text().strip())
+        except (OSError, ValueError):
+            code = None
+        state = "success" if code == 0 else "failed"
+        return {"active": False, "name": name, "state": state, "log": tail}
+
+    if pid and _pkg_update_process_alive(pid, lock.get("pid_create_time")):
+        return {"active": True, "name": name, "state": "running", "log": tail}
+
+    # Tracked process is gone without ever writing an exit code -- either genuinely gone (host
+    # rebooted, `sh` itself got killed) or its pid was reused by an unrelated process after a
+    # reboot (see _pkg_update_process_alive). Reported distinctly from "failed" so the admin
+    # retries instead of reading pip output that was never produced.
+    return {"active": False, "name": name, "state": "interrupted", "log": tail}
 
 
 # ── PID helpers ───────────────────────────────────────────────────────────────

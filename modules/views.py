@@ -820,8 +820,16 @@ def api_package_update(request, name: str):
     installed = {p["name"]: p["version"] for p in services.list_pyobs_packages()}
     if name not in installed:
         return JsonResponse({"ok": False, "error": f"{name!r} is not an installed pyobs-* package"}, status=404)
-    ok, message = services.update_package(name, installed[name])
+    ok, message = services.update_package_start(name, installed[name])
     return JsonResponse({"ok": ok, "message": message})
+
+
+@require_GET
+def api_package_update_status(request):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", "/api/packages/update/status/")
+    return JsonResponse(services.get_package_update_status())
 
 
 # ── ejabberd hub-mode delegation ────────────────────────────────────────────────

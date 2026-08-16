@@ -14,6 +14,14 @@
 
 <div id="packages-error" class="alert alert-danger d-none"></div>
 
+<div id="update-panel" class="card mb-3 d-none">
+  <div class="card-header d-flex align-items-center gap-2">
+    <span class="spinner-border spinner-border-sm" id="update-panel-spinner"></span>
+    <span id="update-panel-title" class="fw-semibold"></span>
+  </div>
+  <pre id="update-panel-log" class="card-body mb-0 small" style="max-height: 20rem; overflow-y: auto;"></pre>
+</div>
+
 <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">
     <thead>
@@ -120,6 +128,59 @@ async function loadPackages() {
   }
 }
 
+let updatePollTimer = null;
+
+function showUpdatePanel(name, state) {
+  document.getElementById('update-panel').classList.remove('d-none');
+  document.getElementById('update-panel-spinner').classList.toggle('d-none', state !== 'running');
+  document.getElementById('update-panel-title').textContent =
+    state === 'running' ? `Updating ${name}…` : `Update ${name}: ${state}`;
+}
+
+function renderUpdateLog(status) {
+  showUpdatePanel(status.name, status.state);
+  const log = document.getElementById('update-panel-log');
+  log.textContent = status.log || '(no output yet)';
+  log.scrollTop = log.scrollHeight;
+}
+
+async function pollUpdateStatus() {
+  let status;
+  try {
+    status = await (await fetch("{% url 'api_package_update_status' %}")).json();
+  } catch (e) {
+    updatePollTimer = setTimeout(pollUpdateStatus, 1500);
+    return;
+  }
+  renderUpdateLog(status);
+  if (status.active) {
+    updatePollTimer = setTimeout(pollUpdateStatus, 1500);
+    return;
+  }
+  // Terminal state: refresh the table either way (installed/latest may have changed even on a
+  // partial failure). Only hide the panel on success -- a failure or interruption has output
+  // worth reading, more useful than the old one-line alert().
+  await loadPackages();
+  if (status.state === 'success') {
+    document.getElementById('update-panel').classList.add('d-none');
+  }
+}
+
+async function resumeUpdateIfActive() {
+  // Runs once on page load. Unlike pollUpdateStatus (which is only ever entered right after a
+  // fresh start, or by itself while polling), this must not resurface an old finished job's
+  // panel on every future page load -- only a genuinely still-running job is worth showing.
+  let status;
+  try {
+    status = await (await fetch("{% url 'api_package_update_status' %}")).json();
+  } catch (e) {
+    return;
+  }
+  if (status.active) {
+    pollUpdateStatus();
+  }
+}
+
 async function updatePackage(name, btn) {
   btn.disabled = true;
   const original = btn.innerHTML;
@@ -136,7 +197,10 @@ async function updatePackage(name, btn) {
       btn.innerHTML = original;
       return;
     }
-    await loadPackages();
+    clearTimeout(updatePollTimer);
+    showUpdatePanel(name, 'running');
+    document.getElementById('update-panel-log').textContent = '(starting…)';
+    pollUpdateStatus();
   } catch (e) {
     alert(`Failed to update ${name}: ${e}`);
     btn.disabled = false;
@@ -145,5 +209,6 @@ async function updatePackage(name, btn) {
 }
 
 loadPackages();
+resumeUpdateIfActive();
 </script>
 {% endblock %}
