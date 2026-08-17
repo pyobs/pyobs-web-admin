@@ -3140,6 +3140,8 @@ class GitConfigTests(unittest.TestCase):
         called_args = mock_run.call_args_list[0][0][0]
         self.assertIn("pull", called_args)
         self.assertIn("pull.rebase=false", called_args)
+        self.assertTrue(any(a.startswith("user.name=") for a in called_args))
+        self.assertTrue(any(a.startswith("user.email=") for a in called_args))
 
     # --- git_status ---
 

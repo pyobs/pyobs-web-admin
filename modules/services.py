@@ -1820,9 +1820,19 @@ def git_pull() -> tuple[bool, str]:
 
     Passes -c pull.rebase=false explicitly rather than relying on the managed repo's/system's
     git config already setting a reconcile strategy -- without it, git refuses divergent
-    branches outright ("Need to specify how to reconcile divergent branches").
+    branches outright ("Need to specify how to reconcile divergent branches"). A merge from
+    diverged branches also creates a merge commit, so the author identity is passed the same
+    way git_commit() does -- without it, git refuses with "empty ident name" on a system where
+    no global git identity is configured (e.g. the service user on iagvtsrv).
     """
-    return _git_run(["-c", "pull.rebase=false", "pull"])
+    author_name = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_NAME", "pyobs-web-admin")
+    author_email = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_EMAIL", "pyobs-web-admin@localhost")
+    return _git_run([
+        "-c", f"user.name={author_name}",
+        "-c", f"user.email={author_email}",
+        "-c", "pull.rebase=false",
+        "pull",
+    ])
 
 
 def git_push() -> tuple[bool, str]:
