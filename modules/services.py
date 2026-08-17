@@ -1695,8 +1695,15 @@ def git_fetch() -> tuple[bool, str]:
 
 
 def git_status() -> dict:
-    """Get repository status."""
+    """Get repository status.
+
+    Includes repo_exists (git_repo_exists()) so a proxied call (see api_git_status) carries
+    the *target* host's repo presence along with its status in one round trip -- git_config_page
+    needs both and, when the active host is remote, has no other way to reach that host's
+    git_repo_exists() short of a second proxied endpoint.
+    """
     status: dict[str, object] = {
+        "repo_exists": git_repo_exists(),
         "branch": "",
         "remote": "origin",
         "ahead": 0,
