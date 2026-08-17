@@ -1816,8 +1816,13 @@ def git_commit(message: str) -> tuple[bool, str]:
 
 
 def git_pull() -> tuple[bool, str]:
-    """Pull from origin."""
-    return _git_run(["pull"])
+    """Pull from origin.
+
+    Passes -c pull.rebase=false explicitly rather than relying on the managed repo's/system's
+    git config already setting a reconcile strategy -- without it, git refuses divergent
+    branches outright ("Need to specify how to reconcile divergent branches").
+    """
+    return _git_run(["-c", "pull.rebase=false", "pull"])
 
 
 def git_push() -> tuple[bool, str]:

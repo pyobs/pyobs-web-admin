@@ -3137,8 +3137,9 @@ class GitConfigTests(unittest.TestCase):
         ok, _ = services.git_pull()
         self.assertTrue(ok)
         self.assertEqual(mock_run.call_count, 1)
-        calls = [c[0][0] for c in mock_run.call_args_list]
-        self.assertTrue(any("pull" in c for c in calls))
+        called_args = mock_run.call_args_list[0][0][0]
+        self.assertIn("pull", called_args)
+        self.assertIn("pull.rebase=false", called_args)
 
     # --- git_status ---
 
