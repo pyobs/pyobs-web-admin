@@ -1827,12 +1827,20 @@ def git_pull() -> tuple[bool, str]:
     """
     author_name = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_NAME", "pyobs-web-admin")
     author_email = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_EMAIL", "pyobs-web-admin@localhost")
-    return _git_run([
+    ok, msg = _git_run([
         "-c", f"user.name={author_name}",
         "-c", f"user.email={author_email}",
         "-c", "pull.rebase=false",
         "pull",
     ])
+    if not ok and "CONFLICT" in msg:
+        # web-admin has no conflict-resolution UI, so a failed merge would otherwise leave the
+        # repo stuck mid-merge with unmerged paths, breaking every later git operation (status,
+        # commit, push) until someone resolves it by hand. Abort back to the last clean state
+        # and tell the admin the conflict needs resolving on the host directly.
+        _git_run(["merge", "--abort"])
+        msg += "\n\nMerge aborted; repository restored to its previous state. Resolve the conflict manually via SSH on the host, then retry the pull."
+    return ok, msg
 
 
 def git_push() -> tuple[bool, str]:
