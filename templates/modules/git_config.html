@@ -41,8 +41,8 @@
       {% endif %}
     </div>
     <div class="d-flex gap-1">
-      <button class="btn btn-sm btn-outline-secondary" onclick="gitFetch()" id="btn-git-refresh" title="Refresh status from remote">
-        <i class="bi bi-arrow-repeat"></i>
+      <button class="btn btn-sm btn-outline-secondary" onclick="gitFetch()" id="btn-git-refresh" title="Fetch from remote to update ahead/behind counts (the page only auto-refreshes local status, not the remote)">
+        <i class="bi bi-arrow-repeat"></i> Check remote
       </button>
       <button class="btn btn-sm btn-outline-primary" onclick="gitPull()" id="btn-git-pull" title="Pull changes from remote"{% if pull_disabled %} disabled{% endif %}>
         <i class="bi bi-cloud-arrow-down"></i> Pull
@@ -58,13 +58,13 @@
   <div class="card-body py-2">
     <div id="git-status-row" class="d-flex align-items-center gap-3 flex-wrap">
       {% if git_status.ahead > 0 %}
-      <span class="text-success small" title="{{ git_status.ahead }} commit(s) ahead of remote">
-        <i class="bi bi-arrow-up-circle me-1"></i>{{ git_status.ahead }}
+      <span class="text-success small" title="{{ git_status.ahead }} commit(s) ahead of remote — not pushed yet">
+        <i class="bi bi-arrow-up-circle me-1"></i>{{ git_status.ahead }} ahead
       </span>
       {% endif %}
       {% if git_status.behind > 0 %}
-      <span class="text-danger small" title="{{ git_status.behind }} commit(s) behind remote">
-        <i class="bi bi-arrow-down-circle me-1"></i>{{ git_status.behind }}
+      <span class="text-danger small" title="{{ git_status.behind }} commit(s) behind remote — pull to catch up">
+        <i class="bi bi-arrow-down-circle me-1"></i>{{ git_status.behind }} behind
       </span>
       {% endif %}
     </div>
@@ -249,12 +249,12 @@ setInterval(function() {
       if (statusRow) {
         var ahead = statusRow.querySelector('.text-success.small');
         if (data.ahead > 0) {
-          if (ahead) { ahead.style.display = ''; ahead.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>' + data.ahead; ahead.title = data.ahead + ' commit(s) ahead'; }
+          if (ahead) { ahead.style.display = ''; ahead.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>' + data.ahead + ' ahead'; ahead.title = data.ahead + ' commit(s) ahead of remote — not pushed yet'; }
         } else if (ahead) { ahead.style.display = 'none'; }
-        
+
         var behind = statusRow.querySelector('.text-danger.small');
         if (data.behind > 0) {
-          if (behind) { behind.style.display = ''; behind.innerHTML = '<i class="bi bi-arrow-down-circle me-1"></i>' + data.behind; behind.title = data.behind + ' commit(s) behind'; }
+          if (behind) { behind.style.display = ''; behind.innerHTML = '<i class="bi bi-arrow-down-circle me-1"></i>' + data.behind + ' behind'; behind.title = data.behind + ' commit(s) behind remote — pull to catch up'; }
         } else if (behind) { behind.style.display = 'none'; }
       }
       
