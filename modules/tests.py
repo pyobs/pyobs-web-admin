@@ -3143,6 +3143,23 @@ class GitConfigTests(unittest.TestCase):
         self.assertTrue(any(a.startswith("user.name=") for a in called_args))
         self.assertTrue(any(a.startswith("user.email=") for a in called_args))
 
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_pull_conflict_aborts_merge(self, mock_enabled, mock_run):
+        conflict = self._mock_result(
+            stdout="CONFLICT (modify/delete): config/iagvtsrv/fibercamera.yaml deleted in "
+            "91175106 and modified in HEAD.",
+            returncode=1,
+        )
+        abort = self._mock_result()
+        mock_run.side_effect = [conflict, abort]
+        ok, msg = services.git_pull()
+        self.assertFalse(ok)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertIn("merge", mock_run.call_args_list[1][0][0])
+        self.assertIn("--abort", mock_run.call_args_list[1][0][0])
+        self.assertIn("Resolve the conflict manually via SSH", msg)
+
     # --- git_status ---
 
     @patch("modules.services.subprocess.run")

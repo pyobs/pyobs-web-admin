@@ -334,9 +334,10 @@ async function controlAll(action) {
   const btn = document.getElementById(btnId);
   btn.disabled = true;
   try {
-    const modules = [...document.querySelectorAll('.status-badge[data-module]')]
-      .map(el => el.dataset.module)
-      .filter(name => (action === 'stop') || !name.startsWith('_'));
+    const modules = [...document.querySelectorAll('tr[data-module-row]')]
+      .filter(row => (action === 'stop') || !row.dataset.moduleRow.startsWith('_'))
+      .filter(row => action !== 'restart' || row.dataset.moduleStatus === 'running')
+      .map(row => row.dataset.moduleRow);
     const call = name => fetch(`/api/modules/${name}/${action}/`, {
       method: 'POST',
       headers: {'X-CSRFToken': getCsrfToken()},
