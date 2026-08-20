@@ -72,6 +72,13 @@
     <label class="form-check-label ms-2" for="auto-refresh">Auto-refresh</label>
   </div>
   <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
+    <input class="form-check-input" type="checkbox" id="notifications-toggle" role="switch">
+    <label class="form-check-label ms-2" for="notifications-toggle">Browser notifications</label>
+    <small id="notifications-denied" class="text-danger d-none ms-2" style="font-size:0.75rem" title="Allow notifications for this site in your browser settings">
+      Blocked — allow in browser settings
+    </small>
+  </div>
+  <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
     <input class="form-check-input" type="checkbox" id="unacked-only" role="switch">
     <label class="form-check-label ms-2" for="unacked-only">Unacknowledged only</label>
   </div>
@@ -321,7 +328,13 @@ window.fetchLogs = async function fetchLogs() {
     if (since) params.set('since', since);
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
     const data = await resp.json();
-    rawLogLines = mergeWithOlderHistory(data.lines || []);
+    const incoming = data.lines || [];
+    // Issue #44: notify for lines that arrived since the last fetch -- diffed against the
+    // pre-merge buffer, so "new" means "not already shown". Runs before mergeWithOlderHistory,
+    // which is what makes the diff meaningful (it splices the tail into the existing buffer).
+    const known = new Set(rawLogLines);
+    emitLogNotifications(incoming.filter(l => !known.has(l)));
+    rawLogLines = mergeWithOlderHistory(incoming);
     renderLogs();
   } catch (_) {}
 };
@@ -349,6 +362,54 @@ function clearTimeFilter() {
   renderLogs();
 }
 
+// ── Browser notifications (issue #44) ──────────────────────────────────────────
+// When the tab isn't visible, WARNING+ lines that arrive between fetches fire an OS
+// notification (module, level, truncated message) so a problem isn't missed while the
+// admin is looking elsewhere. One toggle on the All Logs page controls both log windows
+// (detail.html's Logs tab reads the same localStorage key); acknowledged windows never
+// re-notify. No backend involvement -- the fetch response already carries everything.
+const NOTIFY_KEY = 'log-notifications';
+
+function notificationsEnabled() {
+  return 'Notification' in window && localStorage.getItem(NOTIFY_KEY) === 'true';
+}
+
+// The message part of a log line, with the "TS [LEVEL] ([host]) (module) file:line "
+// formatting prefix stripped and the remainder truncated -- the notification shows what
+// actually happened, not the window plumbing around it.
+function notifyText(line) {
+  const m = line.match(/^\S+ \S+ \[\w+\](?:\s*\[[^\]]*\])?\s*\([^)]*\)\s*\S+:\d+\s+(.*)$/);
+  const text = m ? m[1] : line;
+  return text.length > 120 ? text.slice(0, 117) + '…' : text;
+}
+
+// At most one notification per module per fetch cycle: an error burst surfaces as
+// "camera: 4 new ERROR lines" rather than spamming the OS notification center. The
+// per-module `tag` makes a browser replace an older pending notification for the same
+// module instead of stacking them.
+function emitLogNotifications(newLines) {
+  if (!notificationsEnabled() || Notification.permission !== 'granted') return;
+  if (!document.hidden) return; // watching the tab: the NEW badge already covers this
+  const perModule = {};
+  for (const line of newLines) {
+    if (!isNewIssue(line)) continue; // acked window / first-view baseline: no re-notify
+    const mod = lineModule(line);
+    if (!mod) continue;
+    if (!perModule[mod]) perModule[mod] = {level: '', count: 0, first: line};
+    const entry = perModule[mod];
+    const level = parseLogLevel(line) || '';
+    if (LEVEL_ORDER.indexOf(level) > LEVEL_ORDER.indexOf(entry.level)) entry.level = level;
+    entry.count++;
+  }
+  for (const [mod, entry] of Object.entries(perModule)) {
+    const level = entry.level || 'WARNING';
+    const body = entry.count === 1
+      ? `${level}: ${notifyText(entry.first)}`
+      : `${entry.count} new ${level} lines — e.g. ${notifyText(entry.first)}`;
+    new Notification(`pyobs: ${mod}`, {body: body, tag: 'log-notify-' + mod});
+  }
+}
+
 // ── Persist log settings (shared keys with the per-module Logs tab) ─────────────
 const autoRefreshEl  = document.getElementById('auto-refresh');
 const filterEl       = document.getElementById('log-filter');
@@ -369,6 +430,35 @@ autoRefreshEl.addEventListener('change', function () {
   clearInterval(logTimer);
   if (this.checked) logTimer = setInterval(fetchLogs, 3000);
 });
+
+// ── Browser notifications toggle (All Logs only; detail.html reads the same key) ──
+const notificationsToggleEl = document.getElementById('notifications-toggle');
+const notificationsDeniedEl = document.getElementById('notifications-denied');
+
+function updateNotificationsDeniedNote() {
+  notificationsDeniedEl.classList.toggle(
+    'd-none', !('Notification' in window) || Notification.permission !== 'denied'
+  );
+}
+
+if (notificationsToggleEl) {
+  if (!('Notification' in window)) {
+    // API unavailable (old browser, or not a secure context): hide the switch entirely
+    // rather than offering something that can never work.
+    notificationsToggleEl.closest('.form-check').classList.add('d-none');
+  } else {
+    notificationsToggleEl.checked = localStorage.getItem(NOTIFY_KEY) === 'true';
+    notificationsToggleEl.addEventListener('change', async function () {
+      localStorage.setItem(NOTIFY_KEY, this.checked);
+      if (this.checked && Notification.permission === 'default') {
+        // First toggle-on triggers the browser's permission prompt (async, user gesture).
+        await Notification.requestPermission();
+      }
+      updateNotificationsDeniedNote();
+    });
+    updateNotificationsDeniedNote();
+  }
+}
 filterEl.addEventListener('input', function () {
   localStorage.setItem('log-filter', this.value);
   renderLogs();
