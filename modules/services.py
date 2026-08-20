@@ -492,12 +492,18 @@ def _configured_vcs_ref(name: str) -> str | None:
     m = _PACKAGE_SPEC_RE.match(spec.spec)
     if not m or not m.group(3):
         return None
-    url_part = m.group(3)  # e.g. "git+https://host/path.git@main" or "git+https://host/path.git"
+    url_part = m.group(3)  # e.g. "git+https://host/path.git@main", "git+ssh://git@host/path.git", ...
     # A ref is a trailing "@ref" on the VCS URL itself, distinct from a "user@host" auth
-    # component that can appear before "://" -- only split on an "@" found after the scheme.
+    # component that can appear before the first "/" of the path (e.g. the "git@" in
+    # "ssh://git@host/path.git"). Only an "@" inside the path part can be a ref delimiter --
+    # checking the whole string after the scheme would misparse "ssh://git@host/repo.git"
+    # (no pinned ref) as if the path itself were the ref, breaking the default-branch lookup.
     scheme_split = url_part.split("://", 1)
-    if len(scheme_split) == 2 and "@" in scheme_split[1]:
-        return scheme_split[1].rsplit("@", 1)[1]
+    if len(scheme_split) != 2:
+        return None
+    path = scheme_split[1].split("/", 1)[1] if "/" in scheme_split[1] else ""
+    if "@" in path:
+        return path.rsplit("@", 1)[1]
     return None
 
 

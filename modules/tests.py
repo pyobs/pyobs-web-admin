@@ -2308,6 +2308,20 @@ class ConfiguredVcsRefTests(unittest.TestCase):
         with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
             self.assertIsNone(services._configured_vcs_ref("pyobs-iagvt"))
 
+    def test_none_for_ssh_url_with_user_at_host_but_no_pinned_ref(self):
+        # Regression: an ssh:// URL's "user@host" auth component was misparsed as a ref
+        # delimiter, so a no-ref entry like this returned the repo path as the "ref" and
+        # the git remote lookup silently matched nothing (empty ls-remote) -- the Packages
+        # page then showed no latest version for the package.
+        entry = "pyobs-monet @ git+ssh://git@gitlab.gwdg.de/monet/pyobs-monet.git"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertIsNone(services._configured_vcs_ref("pyobs-monet"))
+
+    def test_extracts_ref_pinned_after_user_at_host_on_ssh_url(self):
+        entry = "pyobs-monet @ git+ssh://git@gitlab.gwdg.de/monet/pyobs-monet.git@develop"
+        with override_settings(PYOBS_MANAGED_PACKAGES=[entry]):
+            self.assertEqual(services._configured_vcs_ref("pyobs-monet"), "develop")
+
     def test_none_for_non_vcs_spec(self):
         with override_settings(PYOBS_MANAGED_PACKAGES=["pyobs-core[full]"]):
             self.assertIsNone(services._configured_vcs_ref("pyobs-core"))
