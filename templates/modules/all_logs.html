@@ -332,8 +332,13 @@ window.fetchLogs = async function fetchLogs() {
     // Issue #44: notify for lines that arrived since the last fetch -- diffed against the
     // pre-merge buffer, so "new" means "not already shown". Runs before mergeWithOlderHistory,
     // which is what makes the diff meaningful (it splices the tail into the existing buffer).
-    const known = new Set(rawLogLines);
-    emitLogNotifications(incoming.filter(l => !known.has(l)));
+    // Skipped when rawLogLines is empty (first fetch after page load, or right after a
+    // time-start filter reset) -- otherwise every line in that fetch looks "not already
+    // shown" and the whole unacknowledged backlog would notify at once.
+    if (rawLogLines.length) {
+      const known = new Set(rawLogLines);
+      emitLogNotifications(incoming.filter(l => !known.has(l)));
+    }
     rawLogLines = mergeWithOlderHistory(incoming);
     renderLogs();
   } catch (_) {}
