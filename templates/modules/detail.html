@@ -634,6 +634,51 @@ function updateAckBadge() {
   badge.classList.toggle('d-none', count === 0);
 }
 
+// ── Browser notifications (issue #44) ──────────────────────────────────────────
+// Same mechanism as all_logs.html, kept in lockstep: WARNING+ lines that arrive between
+// fetches while the tab isn't visible fire an OS notification. The on/off toggle lives on
+// the All Logs page and is shared through localStorage['log-notifications']; acknowledged
+// windows never re-notify. No backend involvement.
+const NOTIFY_KEY = 'log-notifications';
+
+function notificationsEnabled() {
+  return 'Notification' in window && localStorage.getItem(NOTIFY_KEY) === 'true';
+}
+
+// The message part of a log line, with the "TS [LEVEL] (module) file:line " formatting
+// prefix stripped and the remainder truncated -- the notification shows what actually
+// happened, not the window plumbing around it.
+function notifyText(line) {
+  const m = line.match(/^\S+ \S+ \[\w+\](?:\s*\[[^\]]*\])?\s*\([^)]*\)\s*\S+:\d+\s+(.*)$/);
+  const text = m ? m[1] : line;
+  return text.length > 120 ? text.slice(0, 117) + '…' : text;
+}
+
+// At most one notification per module per fetch cycle: an error burst surfaces as
+// "camera: 4 new ERROR lines" rather than spamming the OS notification center. The
+// per-module `tag` makes a browser replace an older pending notification for the same
+// module instead of stacking them.
+function emitLogNotifications(newLines) {
+  if (!notificationsEnabled() || Notification.permission !== 'granted') return;
+  if (!document.hidden) return; // watching the tab: the NEW badge already covers this
+  const perModule = {};
+  for (const line of newLines) {
+    if (!isNewIssue(line)) continue; // acked window / first-view baseline: no re-notify
+    if (!perModule[MODULE]) perModule[MODULE] = {level: '', count: 0, first: line};
+    const entry = perModule[MODULE];
+    const level = parseLogLevel(line) || '';
+    if (LEVEL_ORDER.indexOf(level) > LEVEL_ORDER.indexOf(entry.level)) entry.level = level;
+    entry.count++;
+  }
+  for (const [mod, entry] of Object.entries(perModule)) {
+    const level = entry.level || 'WARNING';
+    const body = entry.count === 1
+      ? `${level}: ${notifyText(entry.first)}`
+      : `${entry.count} new ${level} lines — e.g. ${notifyText(entry.first)}`;
+    new Notification(`pyobs: ${mod}`, {body: body, tag: 'log-notify-' + mod});
+  }
+}
+
 function renderLine(line) {
   const e = escapeHtml(line);
   const level = parseLogLevel(line);
@@ -698,7 +743,18 @@ async function fetchLogs() {
     if (since) params.set('since', since);
     const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
     const data = await resp.json();
-    rawLogLines = mergeWithOlderHistory(data.lines || []);
+    const incoming = data.lines || [];
+    // Issue #44: notify for lines that arrived since the last fetch -- diffed against the
+    // pre-merge buffer, so "new" means "not already shown". Runs before mergeWithOlderHistory,
+    // which is what makes the diff meaningful (it splices the tail into the existing buffer).
+    // Skipped when rawLogLines is empty (first fetch after page load, or right after a
+    // time-start filter reset) -- otherwise every line in that fetch looks "not already
+    // shown" and the whole unacknowledged backlog would notify at once.
+    if (rawLogLines.length) {
+      const known = new Set(rawLogLines);
+      emitLogNotifications(incoming.filter(l => !known.has(l)));
+    }
+    rawLogLines = mergeWithOlderHistory(incoming);
     renderLogs();
   } catch (_) {}
 }
