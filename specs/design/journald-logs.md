@@ -1,4 +1,4 @@
-# pyobs-web-admin: journald-backed module logging — v1.4 (2026-08-15)
+# pyobs-web-admin: journald-backed module logging — v1.5 (2026-08-19)
 
 ## Status
 
@@ -100,6 +100,27 @@ scroll-to-top page-back works once a start date is set — see Progress log and 
   `modules/tests.py` (journald `--since` arg order, combined `--since`/`--until`, file-backend
   since-filtering and since+before paging, and `since` forwarding through both API endpoints);
   full suite passes.
+
+- **Done — v1.5, query a module's logs under its comm identity too, not just its config
+  name (issue #59).** pyobs-core stamps `PYOBS_MODULE` two different ways
+  (`pyobs/application.py`'s stem-mismatch guard; `module.py`'s `execute()` and
+  `background_task.py`'s `BackgroundTask`): ordinary logging uses the config file stem, but
+  logging inside `execute()`/`BackgroundTask` uses the module's own comm-derived name -- for
+  an XMPP comm, the `comm.user` itself. When a config file's stem differs from its module's
+  comm user, querying only the config stem silently lost every `execute()`/`BackgroundTask`
+  line. `modules/services.py` gains `_log_identities(name)` -- the backend-appropriate primary
+  identity (`_journald_module_tag`/`_active_name`) plus the comm user when it differs and is a
+  plain module name -- and `get_logs`/`get_log_stats`/`get_all_logs` query all of a module's
+  identities and merge (journald: one `journalctl` call per identity, merged via
+  `merge_log_lines` for `get_logs`, summed counts for stats, and additional `PYOBS_MODULE=`
+  OR terms for `get_all_logs`; file: each identity's log file read and merged, deduped so two
+  modules sharing one comm user -- a documented real case -- add that identity once). A comm
+  user equal to the config stem collapses to the existing single query, and a module with no
+  `comm:` block (e.g. HttpFileCache) is unchanged. `get_module_versions` stays config-stem-only
+  because "Loaded pyobs packages:" is logged from `Application._main`, outside
+  `execute()`/`BackgroundTask`. Tests: journald and file-backend merge cases for
+  `get_logs`/`get_log_stats`/`get_all_logs`, the no-comm and equal-identity single-query cases,
+  and shared-comm-user dedup; full suite passes.
 
 ## Motivation
 
