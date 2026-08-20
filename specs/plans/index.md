@@ -15,4 +15,5 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
 
 ## Not finished
 
-(none)
+- [2026-08-19-browser-notifications-for-log-warnings.md](2026-08-19-browser-notifications-for-log-warnings.md)
+  — browser notifications for log warnings and errors. **planned** (#44)
