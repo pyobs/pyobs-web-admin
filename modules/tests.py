@@ -1439,6 +1439,133 @@ class LogBackendJournaldTests(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_merges_comm_user_identity(self, mock_run):
+        """Issue #59: pyobs-core tags PYOBS_MODULE two ways -- most logging uses the config
+        file stem, but execute()/BackgroundTask logging uses the module's own comm-derived
+        name (the comm user). A module whose comm user differs from its config name therefore
+        has lines filed under both identities, and get_logs must query both and merge."""
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "cam1.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n"
+            )
+            config_stem_entry = (
+                '{"SYSLOG_IDENTIFIER":"pyobs","PYOBS_MODULE":"cam1","PRIORITY":"6",'
+                '"__REALTIME_TIMESTAMP":"1783144498000000","CODE_FILE":"cam1.py","CODE_LINE":"1",'
+                '"MESSAGE":"cam1 cam1.py:1 from config stem"}'
+            )
+            comm_entry = (
+                '{"SYSLOG_IDENTIFIER":"pyobs","PYOBS_MODULE":"camera","PRIORITY":"6",'
+                '"__REALTIME_TIMESTAMP":"1783144498500000","CODE_FILE":"camera.py","CODE_LINE":"2",'
+                '"MESSAGE":"camera camera.py:2 from comm user"}'
+            )
+            mock_run.side_effect = [self._mock_result(config_stem_entry + "\n"),
+                                    self._mock_result(comm_entry + "\n")]
+            with override_settings(PYOBS_CONFIG_DIR=config_dir, PYOBS_CONFIG_GIT_ENABLED=False):
+                lines = services.get_logs("cam1", lines=300)
+        # Derived the same way the code does (datetime.fromtimestamp is local-TZ-dependent,
+        # matching the file backend's own asctime-based lines) -- see the reconstruction test
+        # above for why a hardcoded wall-clock string would be wrong.
+        config_ts = datetime.fromtimestamp(1783144498000000 / 1_000_000)
+        comm_ts = datetime.fromtimestamp(1783144498500000 / 1_000_000)
+        self.assertEqual(lines, [
+            f"{config_ts:%Y-%m-%d %H:%M:%S} [INFO] (cam1) cam1.py:1 from config stem",
+            f"{comm_ts:%Y-%m-%d %H:%M:%S} [INFO] (camera) camera.py:2 from comm user",
+        ])
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(
+            mock_run.call_args_list[0][0][0],
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=cam1",
+             "-n", "300", "-o", "json", "--no-pager"],
+        )
+        self.assertEqual(
+            mock_run.call_args_list[1][0][0],
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
+             "-n", "300", "-o", "json", "--no-pager"],
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_comm_user_matching_config_name_queries_once(self, mock_run):
+        """The common case -- comm user equals the config stem -- collapses both taggings
+        onto one identity and must not double the query."""
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "camera.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n"
+            )
+            mock_run.return_value = self._mock_result("")
+            with override_settings(PYOBS_CONFIG_DIR=config_dir, PYOBS_CONFIG_GIT_ENABLED=False):
+                services.get_logs("camera", lines=300)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
+             "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_log_stats_merges_comm_user_identity(self, mock_run):
+        """Log stats must sum the comm-user identity's counts too, or a module whose comm
+        user differs from its config name undercounts its execute()/BackgroundTask lines."""
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "cam1.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n"
+            )
+            debug_under_config = self._DEBUG_ENTRY.replace(
+                '"PYOBS_MODULE":"camera_verify_test"', '"PYOBS_MODULE":"cam1"'
+            )
+            critical_under_comm = self._CRITICAL_ENTRY.replace(
+                '"PYOBS_MODULE":"camera_verify_test"', '"PYOBS_MODULE":"camera"'
+            )
+            mock_run.side_effect = [self._mock_result(debug_under_config + "\n"),
+                                    self._mock_result(critical_under_comm + "\n")]
+            with override_settings(PYOBS_CONFIG_DIR=config_dir, PYOBS_CONFIG_GIT_ENABLED=False):
+                counts = services.get_log_stats("cam1")
+        self.assertEqual(counts, {"DEBUG": 1, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 1})
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(
+            mock_run.call_args_list[0][0][0][2], "PYOBS_MODULE=cam1"
+        )
+        self.assertEqual(
+            mock_run.call_args_list[1][0][0][2], "PYOBS_MODULE=camera"
+        )
+
+    def test_file_backend_merges_comm_user_log_file(self):
+        """File backend: a module whose comm user differs from its config name may also have
+        a log file under the comm name (e.g. started under that identity) -- get_logs must
+        merge it in, not just read the config-stem file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "cam1.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n"
+            )
+            Path(tmp, "cam1.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (cam1) x.py:1 from config stem\n"
+            )
+            Path(tmp, "camera.log").write_text(
+                "2026-07-04 08:00:01 [INFO] (camera) y.py:2 from comm user\n"
+            )
+            with override_settings(PYOBS_CONFIG_DIR=tmp, PYOBS_LOG_DIR=tmp,
+                                   PYOBS_LOG_BACKEND="file", PYOBS_CONFIG_GIT_ENABLED=False):
+                lines = services.get_logs("cam1", lines=300)
+        self.assertEqual(lines, [
+            "2026-07-04 08:00:00 [INFO] (cam1) x.py:1 from config stem",
+            "2026-07-04 08:00:01 [INFO] (camera) y.py:2 from comm user",
+        ])
+
+    def test_file_backend_no_comm_user_queries_only_config_stem_file(self):
+        """Without a comm block (confirmed real case: HttpFileCache), the file backend must
+        read exactly one file -- the existing behavior, unchanged by the identity merge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "filecache.yaml").write_text("class: pyobs.modules.files.HttpFileCache\n")
+            Path(tmp, "filecache.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (filecache) x.py:1 hello\n"
+            )
+            with override_settings(PYOBS_CONFIG_DIR=tmp, PYOBS_LOG_DIR=tmp,
+                                   PYOBS_LOG_BACKEND="file", PYOBS_CONFIG_GIT_ENABLED=False):
+                lines = services.get_logs("filecache", lines=300)
+        self.assertEqual(lines, ["2026-07-04 08:00:00 [INFO] (filecache) x.py:1 hello"])
+
     @patch("modules.services.subprocess.run")
     def test_file_backend_before_returns_empty_list_not_a_tail(self, mock_run):
         """Without a `since` the file backend still can't page back -- `tail -n` has no
@@ -1846,6 +1973,46 @@ class GetAllLogsTests(unittest.TestCase):
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera", "PYOBS_MODULE=startup",
              "-n", "50", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_expands_selected_module_to_its_comm_identity(self, mock_run):
+        """Issue #59: selecting a module in the fleet-wide All Logs view must also fetch its
+        comm-user identity, or the module's execute()/BackgroundTask lines (filed under the
+        comm user, not the config stem) are missing from its stream."""
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "cam1.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: camera\n"
+            )
+            mock_run.return_value = self._mock_result("")
+            with override_settings(PYOBS_CONFIG_DIR=config_dir, PYOBS_CONFIG_GIT_ENABLED=False):
+                services.get_all_logs(names=["cam1"], lines=50)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=cam1", "PYOBS_MODULE=camera",
+             "-n", "50", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_shared_comm_user_is_added_once(self, mock_run):
+        """Two modules sharing one comm user (a documented real case: _test and camera share
+        an identity) must add that identity to the OR once, not once per module."""
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "camera.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n"
+            )
+            Path(config_dir, "_test.yaml").write_text(
+                "class: pyobs.modules.camera.BaseCamera\ncomm:\n  user: shared_id\n"
+            )
+            mock_run.return_value = self._mock_result("")
+            with override_settings(PYOBS_CONFIG_DIR=config_dir, PYOBS_CONFIG_GIT_ENABLED=False):
+                services.get_all_logs(names=["camera", "_test"], lines=50)
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera", "PYOBS_MODULE=shared_id",
+             "PYOBS_MODULE=test", "-n", "50", "-o", "json", "--no-pager"],
             capture_output=True, text=True,
         )
 

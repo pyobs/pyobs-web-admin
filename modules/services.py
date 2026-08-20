@@ -1303,12 +1303,39 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
     return counts
 
 
+def _log_identities(name: str) -> list[str]:
+    """Every identity `name`'s log lines may be filed under, for the current backend.
+
+    pyobs-core stamps PYOBS_MODULE two different ways (pyobs/application.py's stem-mismatch
+    guard; module.py's execute() and background_task.py's BackgroundTask): ordinary logging
+    uses the config file stem, but logging inside execute()/BackgroundTask uses the module's
+    own comm-derived name -- for an XMPP comm, the comm.user itself. When those differ,
+    querying only the config stem silently misses every execute()/BackgroundTask line
+    (issue #59), so the log-fetch paths query the comm identity too and merge the results.
+    The file backend names log files after the config stem only, so the comm identity
+    usually resolves to a nonexistent file (read back as []); the merge still runs for
+    uniformity. Returns [primary identity] alone when the comm user is absent, equals the
+    primary identity, or isn't a plain module name (unqueryable via journalctl's
+    PYOBS_MODULE match).
+    """
+    primary = _journald_module_tag(name) if _log_backend() == "journald" else _active_name(name)
+    comm_user = get_comm_user(name)
+    if comm_user is None or comm_user == primary or not _is_valid_module_name(comm_user):
+        return [primary]
+    return [primary, comm_user]
+
+
 def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None) -> list[str]:
     validate_name(name)
+    identities = _log_identities(name)
     if _log_backend() == "journald":
-        log_lines = _get_logs_journald(name, lines, before, since)
+        line_lists = [_get_logs_journald(i, lines, before, since) for i in identities]
     else:
-        log_lines = _get_logs_file(name, lines, since, before)
+        line_lists = [_get_logs_file(i, lines, since, before) for i in identities]
+    # A module whose comm user differs from its config name logs under both identities (see
+    # _log_identities) -- merge the two tails into one timestamp-ordered stream, trimmed to
+    # the overall last `lines`, the same per-module approximation the fleet-wide merge uses.
+    log_lines = line_lists[0] if len(line_lists) == 1 else merge_log_lines(line_lists, lines)
     if filter_str:
         log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
     return log_lines
@@ -1467,6 +1494,18 @@ def get_all_logs(
     if names is not None:
         for name in names:
             validate_name(name)
+    if names is not None and names:
+        # Expand each selected module to every identity its log lines may be filed under
+        # (config stem + comm user, see _log_identities), deduped so two modules sharing one
+        # comm user (a documented real case) add that identity once, not once per module --
+        # harmless for journalctl's OR either way, but prevents the file backend from reading
+        # the same comm log twice into the merge.
+        expanded: list[str] = []
+        for name in names:
+            for ident in _log_identities(name):
+                if ident not in expanded:
+                    expanded.append(ident)
+        names = expanded
     if _log_backend() == "journald":
         log_lines = _get_all_logs_journald(names, lines, before, since)
     else:
@@ -1476,11 +1515,11 @@ def get_all_logs(
     return log_lines
 
 
-def get_log_stats(name: str, since: datetime | None = None) -> dict:
-    validate_name(name)
-    if _log_backend() == "journald":
-        return _get_log_stats_journald(name, since)
-
+def _get_log_stats_file(name: str, since: datetime | None = None) -> dict:
+    """File-backend log stats for a single log identity: per-level counts within a 24h
+    window, narrowed (never widened) by a per-module `since` ack instant, via a binary
+    search for the window's start byte so a day of history isn't re-read from byte 0 on
+    every dashboard poll. get_log_stats sums this across all of a module's identities."""
     counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
     log_file = _log_dir() / f"{_active_name(name)}.log"
     if not log_file.exists():
@@ -1535,6 +1574,22 @@ def get_log_stats(name: str, since: datetime | None = None) -> dict:
             if m:
                 counts[m.group(1)] += 1
 
+    return counts
+
+
+def get_log_stats(name: str, since: datetime | None = None) -> dict:
+    validate_name(name)
+    identities = _log_identities(name)
+    if _log_backend() == "journald":
+        counts = _get_log_stats_journald(identities[0], since)
+        for extra in identities[1:]:
+            for level, n in _get_log_stats_journald(extra, since).items():
+                counts[level] += n
+        return counts
+    counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+    for ident in identities:
+        for level, n in _get_log_stats_file(ident, since).items():
+            counts[level] += n
     return counts
 
 
