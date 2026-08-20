@@ -1,6 +1,12 @@
 # Plan: Run package updates as a background job with a live log tail, not a blocking request
 
-Status: planned
+Status: implemented
+
+Landed: PR #50 ("Run package updates as a detached background job with a live log tail", commit
+`81cbda3`, merged `a7fdad8`) — `update_package_start()`/`update_package_status()` and the
+`pkg-update.{lock,json,log,exit}` files under `_run_dir()` (`modules/services.py`),
+`api_package_update`/`api_package_update_status` (`modules/views.py`, `modules/urls.py`), the
+live log tail on `templates/modules/packages.html`, and tests in `modules/tests.py`.
 
 ## Problem
 
