@@ -1,6 +1,6 @@
 # Plan: Browser notifications for log warnings and errors
 
-Status: planned
+Status: implemented, closed (PR #61, merged 2026-08-20; #44 closed)
 
 Issues: #44
 

@@ -12,8 +12,5 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
   **implemented** (#50)
 - [2026-08-19-show-logs-for-config-and-comm-name.md](2026-08-19-show-logs-for-config-and-comm-name.md)
   — show a module's logs under both its config name and its comm name. **implemented** (#59)
-
-## Not finished
-
 - [2026-08-19-browser-notifications-for-log-warnings.md](2026-08-19-browser-notifications-for-log-warnings.md)
-  — browser notifications for log warnings and errors. **planned** (#44)
+  — browser notifications for log warnings and errors. **implemented, closed** (#44, PR #61)
