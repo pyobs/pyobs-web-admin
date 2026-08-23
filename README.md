@@ -177,6 +177,12 @@ ADMIN_PASSWORD_HASH = "pbkdf2_sha256$..."   # see generation command above
 #     "CLIENT_SECRET": "",
 #     "REDIRECT_URI": "https://your.domain.com/accounts/keycloak/callback/",
 #     "POST_LOGOUT_REDIRECT_URI": "https://your.domain.com/",
+#     # Optional one-click IdP login: IDP_HINT is passed to Keycloak as kc_idp_hint (skips its
+#     # login/IdP-selection page, going straight to that identity provider, e.g. GWDG SSO);
+#     # IDP_LABEL is the button label on the login page. Leave both unset for the plain
+#     # single "Log in with Keycloak" button.
+#     "IDP_HINT": "gwdg",
+#     "IDP_LABEL": "GWDG",
 #     "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
 # }
 
@@ -238,6 +244,12 @@ touching anyone else's or handing out the shared password.
 The login page then shows a "Log in with Keycloak" button. A first-time Keycloak login mints a
 local `User` (linked to an existing one by email, falling back to username, if either matches)
 with `is_active=False` — it can't do anything until activated.
+
+Setting `IDP_HINT` (plus `IDP_LABEL` for the button text) switches the login page to two buttons:
+"Log in with `<IDP_LABEL>`" goes straight to that identity provider (skipping Keycloak's own
+login/IdP-selection page), and "Log in with local Keycloak account" keeps the local-account path
+reachable for anyone without that IdP's identity. Leave `IDP_HINT` unset for the single-button
+behavior above.
 
 ### Activating / deactivating a user
 
