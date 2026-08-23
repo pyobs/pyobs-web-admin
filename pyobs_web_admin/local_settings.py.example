@@ -58,6 +58,12 @@ ADMIN_PASSWORD_HASH = ""
 #     "CLIENT_SECRET": "",
 #     "REDIRECT_URI": "https://your.domain.com/accounts/keycloak/callback/",
 #     "POST_LOGOUT_REDIRECT_URI": "https://your.domain.com/",
+#     # Optional one-click IdP login: IDP_HINT is passed to Keycloak as kc_idp_hint (skips its
+#     # login/IdP-selection page, going straight to that identity provider, e.g. GWDG SSO);
+#     # IDP_LABEL is the button label on the login page. Leave both unset for the plain
+#     # single "Log in with Keycloak" button.
+#     "IDP_HINT": "gwdg",
+#     "IDP_LABEL": "GWDG",
 #     "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
 # }
 
