@@ -325,7 +325,7 @@ crypto = [
 
 [[package]]
 name = "pyobs-auth"
-version = "2.0.0.dev7"
+version = "2.0.0.dev9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -333,14 +333,14 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/94/6e/31ab5912ef3ba7435c62310f47828acf74ed1cc880dcb270857c4deaa25a/pyobs_auth-2.0.0.dev7.tar.gz", hash = "sha256:247265245e3a3a482c401c1b11546697b2b9806b00ac82f7a700542052196c25", size = 10521, upload-time = "2026-08-12T16:32:00.962Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/ff/a64a7994969277066c095497a70751fbef8111ce732123744cf4fc7880bf/pyobs_auth-2.0.0.dev9.tar.gz", hash = "sha256:1c6b9cc5bb46598cf5b11f070aaaa8975b5133b52c2960588b3b5a5c42041288", size = 10731, upload-time = "2026-08-23T11:09:30.172Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/e9/b7804f56296c7f04f9a3ddcac9fb1a4114ea04b54ce0c08ee82be5982a8c/pyobs_auth-2.0.0.dev7-py3-none-any.whl", hash = "sha256:6f52c85d59a5c3f98a20a21faf7b094414c5c46325fedf2e175bcd9d500f2dc8", size = 12570, upload-time = "2026-08-12T16:32:00.115Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/ea/c292cb6eb57247a64747b186cb0f0ff0b8190235d190d74bab9e9499d426/pyobs_auth-2.0.0.dev9-py3-none-any.whl", hash = "sha256:7122ac35d604d1d3f251c5c9f0d7180696ecdfefd7860a09585fd88e06dfdf72", size = 12827, upload-time = "2026-08-23T11:09:29.062Z" },
 ]
 
 [[package]]
 name = "pyobs-web-admin"
-version = "2.0.0.dev11"
+version = "2.0.0.dev12"
 source = { virtual = "." }
 dependencies = [
     { name = "django" },
@@ -360,7 +360,7 @@ requires-dist = [
     { name = "gunicorn", specifier = ">=26.0.0" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "psutil", specifier = ">=6.0" },
-    { name = "pyobs-auth", specifier = ">=2.0.0.dev7" },
+    { name = "pyobs-auth", specifier = ">=2.0.0.dev9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32" },
     { name = "ruamel-yaml", specifier = ">=0.18" },

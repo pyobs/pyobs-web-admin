@@ -62,6 +62,11 @@ def sidebar_modules(request):
         # which takes precedence over this processor when both provide it.
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
         "keycloak_login_enabled": bool(getattr(settings, "PYOBS_AUTH", {}).get("SERVER_URL")),
+        # IdP hint/label for the one-click IdP login button - see PYOBS_AUTH in settings.py.
+        # The template additionally gates on keycloak_login_enabled, so IDP_HINT without
+        # SERVER_URL (Keycloak disabled) degrades to no buttons rather than dead links.
+        "keycloak_idp_hint": getattr(settings, "PYOBS_AUTH", {}).get("IDP_HINT", ""),
+        "keycloak_idp_label": getattr(settings, "PYOBS_AUTH", {}).get("IDP_LABEL", ""),
         "git_enabled": getattr(settings, "PYOBS_CONFIG_GIT_ENABLED", False),
         "acl_matrix_enabled": getattr(settings, "PYOBS_CONFIG_ACL_MATRIX_ENABLED", False),
         "web_admin_version": _web_admin_version(),
