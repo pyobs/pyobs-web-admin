@@ -155,7 +155,7 @@ function getCsrfToken() {
   const cookies = document.cookie.split(';');
   for (const c of cookies) {
     const [name, value] = c.trim().split('=');
-    if (name === 'csrftoken') return decodeURIComponent(value);
+    if (name === 'web_admin_csrftoken') return decodeURIComponent(value);
   }
   return '';
 }
