@@ -750,6 +750,19 @@ def api_shared_config(request, name: str):
 
 
 @require_GET
+def api_module_classes(request):
+    """Every configured module's class: on this host (issue #65) -- dumb, hub-facing, always
+    local, like api_acl_matrix/api_comm_user_map below: no _active_host proxying, since an
+    external caller (e.g. pyobs-robotic-backend) crossing a hub boundary already targets the
+    specific host it wants, authenticated via the existing HUB_CLIENTS shared-secret
+    mechanism (modules/middleware.py's HubTokenMiddleware), not a new auth scheme. Lets that
+    caller filter modules by interface (ICamera, ITelescope, ...) on its own side, using its
+    own pyobs-core install -- this app never imports pyobs.interfaces or the module's actual
+    class to answer this."""
+    return JsonResponse(services.build_module_classes())
+
+
+@require_GET
 def api_acl_matrix(request):
     """Queried by another pyobs-web-admin instance acting as a hub, to fold this
     installation's own local ACL matrix into its fleet-wide view -- see
