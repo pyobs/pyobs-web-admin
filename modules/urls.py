@@ -18,6 +18,7 @@ urlpatterns = [
     path("git-config/", views.git_config_page, name="git_config"),
     # API
     path("api/statuses/", views.api_all_statuses, name="api_all_statuses"),
+    path("api/modules/classes/", views.api_module_classes, name="api_module_classes"),
     path("api/packages/", views.api_packages, name="api_packages"),
     path("api/packages/update/status/", views.api_package_update_status, name="api_package_update_status"),
     path("api/packages/<str:name>/update/", views.api_package_update, name="api_package_update"),

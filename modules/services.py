@@ -2009,6 +2009,44 @@ def get_resolved_acl(name: str) -> tuple[dict | None, str | None]:
     return acl, _block_source_file(config_file.read_text(), "acl")
 
 
+def get_module_class(name: str) -> str | None:
+    """Returns a module's configured top-level `class:` (fully-qualified class name),
+    resolved the same way get_resolved_acl resolves acl: -- via pre_process_yaml +
+    yaml.safe_load, since class: can equally arrive through a YAML anchor/merge key, not
+    just be written directly. None if the config doesn't exist, doesn't parse, or has no
+    top-level "class:" key.
+    """
+    validate_name(name)
+    config_file = _config_dir() / f"{name}.yaml"
+    if not config_file.exists():
+        return None
+    try:
+        resolved = yaml.safe_load(pre_process_yaml(str(config_file))) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    cls = resolved.get("class")
+    return cls if isinstance(cls, str) and cls else None
+
+
+def build_module_classes() -> dict[str, str]:
+    """Maps every local module name to its configured class: (e.g.
+    "pyobs.modules.camera.BaseCamera") -- feeds api/modules/classes/ (issue #65), which lets
+    an external caller (e.g. pyobs-robotic-backend) filter modules by interface on its own
+    side, using its own pyobs-core install, without this app importing pyobs.interfaces or
+    the module's actual class itself.
+
+    A module whose config can't be resolved, or that has no top-level "class:" key, is
+    simply omitted -- not included with a None/error value -- since the caller only cares
+    about modules it can actually resolve to a class.
+    """
+    result: dict[str, str] = {}
+    for name in list_modules():
+        cls = get_module_class(name)
+        if cls:
+            result[name] = cls
+    return result
+
+
 def get_resolved_comm(name: str) -> tuple[str | None, str | None, str | None]:
     """Returns (comm_user, comm_password, source) for a module's *effective* comm: block --
     the same resolution get_resolved_acl uses for acl:, via pre_process_yaml +

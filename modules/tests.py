@@ -260,6 +260,74 @@ class ResolveAndValidateAclTests(unittest.TestCase):
         self.assertIsNotNone(error)
 
 
+# ── services.get_module_class / build_module_classes (issue #65) ────────────────
+
+class GetModuleClassTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def test_missing_module_returns_none(self):
+        self.assertIsNone(services.get_module_class("nope"))
+
+    def test_no_class_key_returns_none(self):
+        self._write("cam1", "comm:\n  user: camera\n")
+        self.assertIsNone(services.get_module_class("cam1"))
+
+    def test_class_defined_locally(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\n")
+        self.assertEqual(services.get_module_class("cam1"), "pyobs.modules.camera.BaseCamera")
+
+    def test_class_via_include(self):
+        self._write("base.shared", "class: pyobs.modules.camera.BaseCamera\n")
+        self._write("cam1", "{include base.shared.yaml}\n")
+        self.assertEqual(services.get_module_class("cam1"), "pyobs.modules.camera.BaseCamera")
+
+    def test_broken_config_returns_none_not_raise(self):
+        self._write("cam1", "class: [unterminated\n")
+        self.assertIsNone(services.get_module_class("cam1"))
+
+
+class BuildModuleClassesTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_CONFIG_DIR=str(self.tmp_path), PYOBS_CONFIG_GIT_ENABLED=False)
+        self._settings.enable()
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        (self.tmp_path / f"{name}.yaml").write_text(content)
+
+    def test_maps_every_module_with_a_class(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\n")
+        self._write("tel1", "class: pyobs.modules.telescope.BaseTelescope\n")
+        self.assertEqual(
+            services.build_module_classes(),
+            {"cam1": "pyobs.modules.camera.BaseCamera", "tel1": "pyobs.modules.telescope.BaseTelescope"},
+        )
+
+    def test_omits_modules_with_no_resolvable_class(self):
+        self._write("cam1", "class: pyobs.modules.camera.BaseCamera\n")
+        self._write("broken", "class: [unterminated\n")
+        self.assertEqual(services.build_module_classes(), {"cam1": "pyobs.modules.camera.BaseCamera"})
+
+    def test_no_modules_returns_empty_dict(self):
+        self.assertEqual(services.build_module_classes(), {})
+
+
 # ── services.get_comm_user ────────────────────────────────────────────────────
 
 class GetCommUserTests(unittest.TestCase):
