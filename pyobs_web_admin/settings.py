@@ -65,6 +65,11 @@ DATABASES = {
 # Sessions themselves stay in signed cookies regardless (no session table needed)
 SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
 
+# Distinct from other pyobs Django apps (e.g. robotic-backend) so browser cookies don't
+# collide when both are run on localhost at once - cookies are scoped by host, not port.
+SESSION_COOKIE_NAME = "web_admin_sessionid"
+CSRF_COOKIE_NAME = "web_admin_csrftoken"
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
