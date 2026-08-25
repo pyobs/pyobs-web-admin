@@ -3630,7 +3630,7 @@ class LoginViewSyncsDjangoUserTests(DjangoTestCase):
 class AdminSyncTests(DjangoTestCase):
     """admin_sync.sync_admin_user is the primary way the settings-configured admin account gets
     created/kept in sync - wired to run after every `manage.py migrate` via the post_migrate
-    signal (AuthenticationConfig.ready()), same mechanism as pyobs-archive/pyobs-robotic-backend,
+    signal (AuthenticationConfig.ready()), same mechanism as pyobs-archive/pyobs-portal,
     so a fresh deployment doesn't need an interactive `createsuperuser` step."""
 
     def test_sync_creates_a_staff_superuser_with_a_working_password(self):
