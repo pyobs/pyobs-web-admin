@@ -281,10 +281,11 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 function getCsrfToken() {
+  // Cookie name must match settings.CSRF_COOKIE_NAME.
   return document.cookie.split(';')
     .map(c => c.trim())
-    .find(c => c.startsWith('csrftoken='))
-    ?.replace('csrftoken=', '') || '';
+    .find(c => c.startsWith('web_admin_csrftoken='))
+    ?.replace('web_admin_csrftoken=', '') || '';
 }
 
 // ── Mobile sidebar ────────────────────────────────────────────────────────────

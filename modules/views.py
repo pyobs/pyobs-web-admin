@@ -32,7 +32,7 @@ def login_view(request):
             # /admin/ (is_staff-gated) too, without a second account to create/remember. The
             # matching superuser User is normally already synced by
             # pyobs_web_admin.authentication.admin_sync (post_migrate signal, same mechanism as
-            # archive/robotic-backend) - get_or_create here is just a safety net for a fresh
+            # archive/portal) - get_or_create here is just a safety net for a fresh
             # install that hasn't run `migrate` since ADMIN_PASSWORD_HASH was set.
             admin_user, _ = User.objects.get_or_create(
                 username=username,
@@ -747,6 +747,19 @@ def api_shared_config(request, name: str):
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)}, status=500)
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@require_GET
+def api_module_classes(request):
+    """Every configured module's class: on this host (issue #65) -- dumb, hub-facing, always
+    local, like api_acl_matrix/api_comm_user_map below: no _active_host proxying, since an
+    external caller (e.g. pyobs-portal) crossing a hub boundary already targets the
+    specific host it wants, authenticated via the existing HUB_CLIENTS shared-secret
+    mechanism (modules/middleware.py's HubTokenMiddleware), not a new auth scheme. Lets that
+    caller filter modules by interface (ICamera, ITelescope, ...) on its own side, using its
+    own pyobs-core install -- this app never imports pyobs.interfaces or the module's actual
+    class to answer this."""
+    return JsonResponse(services.build_module_classes())
 
 
 @require_GET
