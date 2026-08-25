@@ -2031,7 +2031,7 @@ def get_module_class(name: str) -> str | None:
 def build_module_classes() -> dict[str, str]:
     """Maps every local module name to its configured class: (e.g.
     "pyobs.modules.camera.BaseCamera") -- feeds api/modules/classes/ (issue #65), which lets
-    an external caller (e.g. pyobs-robotic-backend) filter modules by interface on its own
+    an external caller (e.g. pyobs-portal) filter modules by interface on its own
     side, using its own pyobs-core install, without this app importing pyobs.interfaces or
     the module's actual class itself.
 

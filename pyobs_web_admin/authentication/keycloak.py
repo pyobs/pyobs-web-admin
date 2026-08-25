@@ -1,6 +1,6 @@
 """pyobs-auth USER_RESOLVER for web-admin.
 
-Mirrors pyobs-archive/pyobs-robotic-backend's resolver: Keycloak's `sub` claim is the join key
+Mirrors pyobs-archive/pyobs-portal's resolver: Keycloak's `sub` claim is the join key
 (see pyobs-core's shared-auth design doc), stored on KeycloakIdentity. First Keycloak login for
 an existing local User (matched by email, falling back to username) links the two rather than
 minting a second, disconnected User. Newly-minted accounts default to is_active=False -
