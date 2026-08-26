@@ -14,3 +14,7 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
   — show a module's logs under both its config name and its comm name. **implemented** (#59)
 - [2026-08-19-browser-notifications-for-log-warnings.md](2026-08-19-browser-notifications-for-log-warnings.md)
   — browser notifications for log warnings and errors. **implemented, closed** (#44, PR #61)
+- [2026-08-25-module-classes-fleet-aggregation.md](2026-08-25-module-classes-fleet-aggregation.md)
+  — make `api_module_classes` fleet-aware instead of always-local, following the `api_all_logs`
+  self-aggregating pattern. **implemented (pyobs-web-admin side); portal follow-up open** (#68,
+  pyobs-portal#119)

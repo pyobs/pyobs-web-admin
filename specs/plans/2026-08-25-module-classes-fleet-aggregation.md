@@ -2,7 +2,9 @@
 
 ## Status
 
-Designed, not yet implemented. See issue #68.
+Implemented on the pyobs-web-admin side (this repo). Not yet live-verified against a real
+two-instance hub pair. Portal-side follow-up filed as pyobs-portal#119, not yet started. See
+issue #68.
 
 ## Motivation
 
@@ -113,17 +115,22 @@ caller actually needs. New shape:
 
 ## Work Plan
 
-- [ ] `services.merge_module_classes` + unit tests in `modules/tests.py` (mirror
+- [x] `services.merge_module_classes` + unit tests in `modules/tests.py` (mirror
       `MergeAclMatricesTests`, `modules/tests.py:771`) — host-tagging, no-collision-arbitration
       behavior, empty-input case
-- [ ] Rewrite `api_module_classes` to loop + merge, matching `api_all_logs`'s
+- [x] Rewrite `api_module_classes` to loop + merge, matching `api_all_logs`'s
       unreachable-host handling; update its docstring
-- [ ] Unit tests for the view: single host (no `HUB_HOSTS`), multi-host merge, one host
+- [x] Unit tests for the view: single host (no `HUB_HOSTS`), multi-host merge, one host
       unreachable
 - [ ] Verify live against a real two-instance hub pair if available (issue #68 mentions
       `south/monet` / `south/frontend` already share matching `HUB_HOSTS`/`HUB_TOKEN`)
 - [ ] Follow-up PR in pyobs-portal: update `get_module_classes()` for the new response shape
+      (tracked as pyobs-portal#119)
 
 ### Progress log
 
-Not started.
+pyobs-web-admin side implemented: `services.merge_module_classes` added, `api_module_classes`
+rewritten to loop `["localhost"] + HUB_HOSTS` and merge (mirroring `api_all_logs`), 7 new unit
+tests (4 service-level, 3 view-level) all passing alongside the existing 306. Not yet verified
+against a real hub pair. Portal-side change filed as its own issue (pyobs-portal#119) rather
+than implemented here, per this doc's note that it's a separate repo/PR.
