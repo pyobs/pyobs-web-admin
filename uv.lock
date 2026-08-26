@@ -325,7 +325,7 @@ crypto = [
 
 [[package]]
 name = "pyobs-auth"
-version = "2.0.0.dev9"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -333,9 +333,9 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/ff/a64a7994969277066c095497a70751fbef8111ce732123744cf4fc7880bf/pyobs_auth-2.0.0.dev9.tar.gz", hash = "sha256:1c6b9cc5bb46598cf5b11f070aaaa8975b5133b52c2960588b3b5a5c42041288", size = 10731, upload-time = "2026-08-23T11:09:30.172Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/d8/e48c678696cd9fe01107b447b34121c8353fac79750eae3c0cd7717fe948/pyobs_auth-2.0.0.tar.gz", hash = "sha256:09111ea0c40834230fb07f77a257c88843d9058da8ca2d49ed8f6823129ce18d", size = 10734, upload-time = "2026-08-26T11:48:35.842Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/ea/c292cb6eb57247a64747b186cb0f0ff0b8190235d190d74bab9e9499d426/pyobs_auth-2.0.0.dev9-py3-none-any.whl", hash = "sha256:7122ac35d604d1d3f251c5c9f0d7180696ecdfefd7860a09585fd88e06dfdf72", size = 12827, upload-time = "2026-08-23T11:09:29.062Z" },
+    { url = "https://files.pythonhosted.org/packages/05/56/38a65add71f41b80b6d3105b85083e785855f6159228880b710a6eddc163/pyobs_auth-2.0.0-py3-none-any.whl", hash = "sha256:22831044a997ec7ec5ea58ac233f12adda14683ab7f18b3685b272cf8026d743", size = 12770, upload-time = "2026-08-26T11:48:34.908Z" },
 ]
 
 [[package]]
@@ -366,7 +366,7 @@ requires-dist = [
     { name = "gunicorn", specifier = ">=26.0.0" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "psutil", specifier = ">=6.0" },
-    { name = "pyobs-auth", specifier = ">=2.0.0.dev9" },
+    { name = "pyobs-auth", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
