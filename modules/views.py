@@ -15,7 +15,6 @@ from django.views.decorators.http import require_GET, require_POST
 
 from modules import ejabberd, proxy, services
 
-
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def login_view(request):
@@ -221,7 +220,7 @@ def packages(request):
 
 def git_config_page(request):
     ctx = {"active_git_config": True}
-    
+
     ctx["git_enabled"] = True
     ctx["config_dir"] = ""
 
@@ -245,7 +244,7 @@ def git_config_page(request):
     ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"].get("ahead", 0) == 0)
     ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
     ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
-    
+
     return render(request, "modules/git_config.html", ctx)
 
 
@@ -644,7 +643,7 @@ def api_all_logs(request):
                 unreachable.append({"name": host_name, "error": str(e)})
                 continue
         multi_host = len(host_selections) > 1
-        line_lists.append([_tag_host(l, host_name) for l in host_lines] if multi_host else host_lines)
+        line_lists.append([_tag_host(line, host_name) for line in host_lines] if multi_host else host_lines)
 
     log_lines = services.merge_log_lines(line_lists, lines)
     return JsonResponse({"lines": log_lines, "unreachable_hosts": unreachable})

@@ -9,11 +9,9 @@ import subprocess
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
-
-_LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
 import psutil
 import requests
@@ -23,6 +21,8 @@ from packaging.version import InvalidVersion, Version
 from ruamel.yaml import YAML as _RuamelYAML
 
 from modules.pyobs_config import pre_process_yaml
+
+_LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
 # Used only to serialize a *fresh* acl: block for _replace_local_acl_block -- ruamel's
 # round-trip dumper reads more like hand-written YAML (indented block sequences, minimal
@@ -1127,6 +1127,7 @@ def _get_module_versions_file(name: str) -> dict[str, str] | None:
     grep = subprocess.Popen(
         ["grep", "-m1", "-F", _LOADED_PACKAGES_PREFIX], stdin=tac.stdout, stdout=subprocess.PIPE, text=True
     )
+    assert tac.stdout is not None
     tac.stdout.close()
     stdout, _ = grep.communicate()
     tac.wait()
@@ -1141,7 +1142,7 @@ def _get_module_versions_journald(name: str, since_create_time: float) -> dict[s
     entry's MESSAGE. Bound to `--since @<create_time>` (the module's own psutil
     create_time(), already used by get_module_stats) -- otherwise --grep scans the entire
     retained journal, and for a long-running module the version line is old."""
-    since = datetime.fromtimestamp(since_create_time, tz=timezone.utc)
+    since = datetime.fromtimestamp(since_create_time, tz=UTC)
     entries = _journalctl_json([
         "SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}",
         "--since", f"{since:%Y-%m-%d %H:%M:%S} UTC", "--grep", _LOADED_PACKAGES_PREFIX,
@@ -1264,7 +1265,7 @@ def _journal_entry_to_line(entry: dict) -> str:
     # file backend's shape), so it must actually *be* UTC regardless of the host OS's local
     # timezone -- the frontend (templates/modules/detail.html, all_logs.html: parseLogTime)
     # assumes exactly that when it parses these lines back out.
-    ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=timezone.utc)
+    ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC)
     level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
     module = entry.get("PYOBS_MODULE", "")
     # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal
@@ -1297,7 +1298,7 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
     # window when it's more recent than the standard 24h rollup, but never widens it beyond
     # 24h -- an ack from days ago shouldn't suddenly pull that whole history back in.
     if since is not None:
-        cutoff = max(since, datetime.now(timezone.utc) - timedelta(hours=24))
+        cutoff = max(since, datetime.now(UTC) - timedelta(hours=24))
         since_arg = f"{cutoff:%Y-%m-%d %H:%M:%S} UTC"
     else:
         since_arg = "-24h"
@@ -1343,7 +1344,7 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime
     # the overall last `lines`, the same per-module approximation the fleet-wide merge uses.
     log_lines = line_lists[0] if len(line_lists) == 1 else merge_log_lines(line_lists, lines)
     if filter_str:
-        log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
+        log_lines = [line for line in log_lines if filter_str.lower() in line.lower()]
     return log_lines
 
 
@@ -1366,7 +1367,7 @@ def _file_line_ts(line: str) -> datetime | None:
 def _naive_utc(dt: datetime) -> datetime:
     """File-backend timestamps are naive and assumed UTC (see _journal_entry_to_line); convert
     an aware datetime to that same naive-UTC form before comparing against them."""
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.astimezone(UTC).replace(tzinfo=None)
 
 
 def _file_offset_of_last_line_before(f, file_size: int, cutoff: datetime) -> int:
@@ -1415,7 +1416,7 @@ def _get_logs_file(name: str, lines: int, since: datetime | None, before: dateti
         tail_lines = result.stdout.splitlines()
         if since_naive is None:
             return tail_lines
-        return [l for l in tail_lines if (t := _file_line_ts(l)) is None or t >= since_naive]
+        return [line for line in tail_lines if (t := _file_line_ts(line)) is None or t >= since_naive]
 
     with open(log_file, "rb") as f:
         f.seek(0, 2)
@@ -1517,7 +1518,7 @@ def get_all_logs(
     else:
         log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines, since, before)
     if filter_str:
-        log_lines = [l for l in log_lines if filter_str.lower() in l.lower()]
+        log_lines = [line for line in log_lines if filter_str.lower() in line.lower()]
     return log_lines
 
 
@@ -1536,7 +1537,7 @@ def _get_log_stats_file(name: str, since: datetime | None = None) -> dict:
         # File-backend timestamps are naive and assumed UTC (see _journal_entry_to_line);
         # convert the aware `since` the same way before comparing, and only narrow the
         # window, never widen it beyond the standard 24h rollup.
-        since_naive = since.astimezone(timezone.utc).replace(tzinfo=None)
+        since_naive = since.astimezone(UTC).replace(tzinfo=None)
         cutoff = max(cutoff, since_naive)
 
     def _line_ts(line: str) -> datetime | None:
@@ -2178,7 +2179,7 @@ def _replace_comm_password(raw: str, new_password: str) -> str:
                 break
         i += 1
 
-    if block_start is None:
+    if block_start is None or block_end is None:
         raise ValueError("no top-level comm: block found")
 
     password_re = re.compile(r"^(\s*)password\s*:\s*.*$")

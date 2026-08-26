@@ -1,0 +1,28 @@
+name: ruff
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Install packages
+        run: uv sync --all-extras --dev
+
+      - name: Run ruff
+        run: uv run ruff check modules/ pyobs_web_admin/

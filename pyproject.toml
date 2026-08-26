@@ -17,3 +17,26 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "whitenoise>=6.8",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.0",
+    "pyrefly>=0.17.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "G"]
+ignore = ["E501"]
+
+[tool.pyrefly]
+project-includes = ["modules", "pyobs_web_admin"]
+project-excludes = ["**/docs/", "**/migrations/"]
+python-version = "3.12.0"
+preset = "legacy"
+
+[tool.pyrefly.errors]
+redundant-cast = "warn"
