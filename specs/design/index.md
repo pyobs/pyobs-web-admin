@@ -114,6 +114,10 @@ is fine, that's what the Design section of the eventual doc is for.
   Config tab with the starter YAML on disk; separately confirmed both error paths (duplicate
   name, invalid name) render inline, and checked the form page at a 390px mobile viewport
   (clean, no overflow).
+- [module-classes-fleet-aggregation.md](module-classes-fleet-aggregation.md) — makes
+  `api_module_classes` fleet-aware (issue #68) instead of always-local, following the
+  `api_all_logs` self-aggregating pattern rather than `acl_matrix`'s raw+page split, since this
+  endpoint has no human-facing page consuming it. **Designed, not yet implemented.**
 - [git-backed-configuration.md](git-backed-configuration.md) — optional Git persistence backend
   for `PYOBS_CONFIG_DIR`, with a dedicated **Git Config** sidebar page for status and
   clone/fetch/pull/push/reset. **Implemented**, off by default. Two known gaps left open (see
