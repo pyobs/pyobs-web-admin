@@ -2442,6 +2442,24 @@ def build_acl_matrix() -> dict:
     return {"targets": rows, "callers": caller_names}
 
 
+def merge_module_classes(per_host: list[tuple[str, dict[str, str]]]) -> list[dict[str, str]]:
+    """Combines each host's build_module_classes()-shaped result (a flat {name: class} dict)
+    into one fleet-wide list, tagged by host -- see module-classes-fleet-aggregation.md.
+    per_host is a list of (host_name, classes) pairs, e.g. [("localhost",
+    build_module_classes()), ("MONETS", <that host's own dict, fetched via the hub proxy>),
+    ...].
+
+    No collision arbitration: a same-named module on two hosts becomes two distinct rows,
+    disambiguated by host, rather than one overwriting the other -- the same choice
+    merge_acl_matrices makes for ACL rows.
+    """
+    return [
+        {"name": name, "class": cls, "host": host_name}
+        for host_name, classes in per_host
+        for name, cls in classes.items()
+    ]
+
+
 def merge_acl_matrices(per_host: list[tuple[str, dict]]) -> dict:
     """Combines each host's build_acl_matrix()-shaped result into one fleet-wide matrix --
     see acl-matrix.md, "Hub mode interaction". per_host is a list of (host_name, matrix)
