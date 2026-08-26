@@ -2442,7 +2442,7 @@ def build_acl_matrix() -> dict:
     return {"targets": rows, "callers": caller_names}
 
 
-def merge_module_classes(per_host: list[tuple[str, dict[str, str]]]) -> list[dict]:
+def merge_module_classes(per_host: list[tuple[str, dict[str, str]]]) -> list[dict[str, str]]:
     """Combines each host's build_module_classes()-shaped result (a flat {name: class} dict)
     into one fleet-wide list, tagged by host -- see module-classes-fleet-aggregation.md.
     per_host is a list of (host_name, classes) pairs, e.g. [("localhost",
