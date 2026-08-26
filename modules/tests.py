@@ -4,7 +4,7 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,10 +19,9 @@ from packaging.version import Version
 
 from modules import ejabberd, services, views
 from modules.middleware import HubTokenMiddleware
-from modules.views import _tag_host
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
+from modules.views import _tag_host
 from pyobs_web_admin.authentication.admin_sync import sync_admin_user
-
 
 # ── include_parts ─────────────────────────────────────────────────────────────
 
@@ -1406,7 +1405,7 @@ class LogBackendJournaldTests(unittest.TestCase):
         # A dashboard-supplied "last acknowledged" instant more recent than the standard 24h
         # rollup should become the actual --since cutoff, not just widen/ignore it.
         mock_run.return_value = self._mock_result("")
-        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        since = datetime.now(UTC) - timedelta(hours=1)
         services.get_log_stats("camera_verify_test", since=since)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
@@ -1420,13 +1419,13 @@ class LogBackendJournaldTests(unittest.TestCase):
         # An ack from days ago shouldn't pull that whole history back into the "unacknowledged"
         # count -- the window is still capped at the standard 24h rollup.
         mock_run.return_value = self._mock_result("")
-        since = datetime.now(timezone.utc) - timedelta(days=3)
+        since = datetime.now(UTC) - timedelta(days=3)
         services.get_log_stats("camera_verify_test", since=since)
         args = mock_run.call_args[0][0]
         since_arg = args[args.index("--since") + 1]
         self.assertTrue(since_arg.endswith(" UTC"))
-        cutoff = datetime.strptime(since_arg[:-len(" UTC")], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        expected = datetime.now(timezone.utc) - timedelta(hours=24)
+        cutoff = datetime.strptime(since_arg[:-len(" UTC")], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        expected = datetime.now(UTC) - timedelta(hours=24)
         self.assertLess(abs((cutoff - expected).total_seconds()), 5)
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
@@ -1471,7 +1470,7 @@ class LogBackendJournaldTests(unittest.TestCase):
         --until, mirroring get_log_stats' existing --since usage, so "-n" then returns the
         last N entries *at or before* that instant instead of the last N overall."""
         mock_run.return_value = self._mock_result("")
-        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         services.get_logs("camera_verify_test", lines=300, before=before)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
@@ -1485,7 +1484,7 @@ class LogBackendJournaldTests(unittest.TestCase):
         """The time-range start date becomes journalctl's --since, so `-n` returns the last
         N entries *at or after* that instant instead of the last N overall."""
         mock_run.return_value = self._mock_result("")
-        since = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        since = datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         services.get_logs("camera_verify_test", lines=300, since=since)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
@@ -1497,8 +1496,8 @@ class LogBackendJournaldTests(unittest.TestCase):
     @patch("modules.services.subprocess.run")
     def test_get_logs_since_and_before_combine_both_bounds(self, mock_run):
         mock_run.return_value = self._mock_result("")
-        since = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc)
-        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        since = datetime(2026, 7, 15, 9, 0, 0, tzinfo=UTC)
+        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         services.get_logs("camera_verify_test", lines=300, since=since, before=before)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
@@ -1645,7 +1644,7 @@ class LogBackendJournaldTests(unittest.TestCase):
             log_file = Path(tmp) / "camera.log"
             log_file.write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
-                lines = services.get_logs("camera", before=datetime(2026, 7, 4, tzinfo=timezone.utc))
+                lines = services.get_logs("camera", before=datetime(2026, 7, 4, tzinfo=UTC))
             self.assertEqual(lines, [])
             mock_run.assert_not_called()
 
@@ -1658,7 +1657,7 @@ class LogBackendJournaldTests(unittest.TestCase):
                 "2026-07-04 09:00:00 [INFO] (camera) x.py:2 new\n"
             )
             mock_run.return_value = MagicMock(stdout=log_file.read_text())
-            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=timezone.utc)
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=UTC)
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_logs("camera", lines=300, since=since)
             self.assertEqual(lines, ["2026-07-04 09:00:00 [INFO] (camera) x.py:2 new"])
@@ -1673,8 +1672,8 @@ class LogBackendJournaldTests(unittest.TestCase):
                 "2026-07-04 09:00:00 [INFO] (camera) x.py:2 mid\n"
                 "2026-07-04 10:00:00 [INFO] (camera) x.py:3 new\n"
             )
-            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=timezone.utc)
-            before = datetime(2026, 7, 4, 9, 30, 0, tzinfo=timezone.utc)
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=UTC)
+            before = datetime(2026, 7, 4, 9, 30, 0, tzinfo=UTC)
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_logs("camera", lines=300, since=since, before=before)
             self.assertEqual(lines, ["2026-07-04 09:00:00 [INFO] (camera) x.py:2 mid"])
@@ -1879,7 +1878,7 @@ class GetModuleVersionsJournaldTests(unittest.TestCase):
             services.get_module_versions("camera"),
             {"pyobs-core": "2.0.0.dev76", "pyobs-fli": "2.0.0.dev7"},
         )
-        since = datetime.fromtimestamp(1700000000.0, tz=timezone.utc)
+        since = datetime.fromtimestamp(1700000000.0, tz=UTC)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
              "--since", f"{since:%Y-%m-%d %H:%M:%S} UTC", "--grep", "Loaded pyobs packages: ",
@@ -2116,7 +2115,7 @@ class GetAllLogsTests(unittest.TestCase):
 
     def test_file_backend_get_log_stats_since_narrows_the_24h_window(self):
         with tempfile.TemporaryDirectory() as tmp:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             old_ts = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
             recent_ts = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
             (Path(tmp) / "camera.log").write_text(
@@ -2177,7 +2176,7 @@ class GetAllLogsTests(unittest.TestCase):
     @patch("modules.services.subprocess.run")
     def test_journald_before_adds_until_arg_ahead_of_lines_flag(self, mock_run):
         mock_run.return_value = self._mock_result("")
-        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        before = datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         services.get_all_logs(names=["camera"], lines=300, before=before)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
@@ -2192,7 +2191,7 @@ class GetAllLogsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "camera.log").write_text("2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n")
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
-                lines = services.get_all_logs(names=["camera"], before=datetime(2026, 7, 4, tzinfo=timezone.utc))
+                lines = services.get_all_logs(names=["camera"], before=datetime(2026, 7, 4, tzinfo=UTC))
             self.assertEqual(lines, [])
             mock_run.assert_not_called()
 
@@ -2200,7 +2199,7 @@ class GetAllLogsTests(unittest.TestCase):
     @patch("modules.services.subprocess.run")
     def test_journald_since_adds_since_arg_ahead_of_lines_flag(self, mock_run):
         mock_run.return_value = self._mock_result("")
-        since = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+        since = datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         services.get_all_logs(names=["camera"], lines=300, since=since)
         mock_run.assert_called_once_with(
             ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
@@ -2217,7 +2216,7 @@ class GetAllLogsTests(unittest.TestCase):
             (Path(tmp) / "telescope.log").write_text(
                 "2026-07-04 09:30:00 [INFO] (telescope) y.py:1 new telescope\n"
             )
-            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=timezone.utc)
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=UTC)
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_all_logs(names=["camera", "telescope"], lines=300, since=since)
             self.assertEqual(lines, [
@@ -2736,7 +2735,7 @@ class ApiAllLogStatsAcksTests(unittest.TestCase):
         mock_get_log_stats.return_value = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
         response = views.api_all_log_stats(self._request({"camera": "2026-07-15T10:00:00.000Z"}))
         self.assertEqual(response.status_code, 200)
-        mock_get_log_stats.assert_called_once_with("camera", since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc))
+        mock_get_log_stats.assert_called_once_with("camera", since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC))
 
     @patch("modules.services.get_log_stats")
     @patch("modules.services.list_modules")
@@ -2788,7 +2787,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
 
     def test_parse_before_accepts_iso_with_z_suffix(self):
         parsed = views._parse_ts("2026-07-15T10:00:00.000Z")
-        self.assertEqual(parsed, datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(parsed, datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC))
 
     def test_parse_before_missing_is_none(self):
         self.assertIsNone(views._parse_ts(None))
@@ -2807,7 +2806,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         response = views.api_logs(request, "camera")
         self.assertEqual(response.status_code, 200)
         mock_get_logs.assert_called_once_with(
-            "camera", lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc), since=None
+            "camera", lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC), since=None
         )
 
     @patch("modules.services.get_logs")
@@ -2832,7 +2831,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         response = views.api_all_logs(request)
         self.assertEqual(response.status_code, 200)
         mock_get_all_logs.assert_called_once_with(
-            ["camera"], lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc), since=None
+            ["camera"], lines=300, filter_str="", before=datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC), since=None
         )
 
     @patch("modules.services.get_logs")
@@ -2845,7 +2844,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         response = views.api_logs(request, "camera")
         self.assertEqual(response.status_code, 200)
         mock_get_logs.assert_called_once_with(
-            "camera", lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+            "camera", lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         )
 
     @patch("modules.services.get_all_logs")
@@ -2860,7 +2859,7 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         response = views.api_all_logs(request)
         self.assertEqual(response.status_code, 200)
         mock_get_all_logs.assert_called_once_with(
-            ["camera"], lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+            ["camera"], lines=300, filter_str="", before=None, since=datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         )
 
 

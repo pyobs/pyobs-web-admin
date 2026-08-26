@@ -1,5 +1,4 @@
 import requests as _http
-
 from django.conf import settings
 
 

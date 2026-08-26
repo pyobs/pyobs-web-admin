@@ -23,8 +23,8 @@ def resolve_user(claims: dict[str, Any]) -> User | None:
     sub = claims["sub"]
 
     try:
-        return KeycloakIdentity.objects.get(keycloak_sub=sub).user
-    except KeycloakIdentity.DoesNotExist:
+        return KeycloakIdentity.objects.get(keycloak_sub=sub).user  # pyrefly: ignore [missing-attribute]
+    except KeycloakIdentity.DoesNotExist:  # pyrefly: ignore [missing-attribute]
         pass
 
     email = claims.get("email")
@@ -41,5 +41,7 @@ def resolve_user(claims: dict[str, Any]) -> User | None:
             username=username, email=email or "", is_active=False
         )
 
-    KeycloakIdentity.objects.update_or_create(user=user, defaults={"keycloak_sub": sub})
+    KeycloakIdentity.objects.update_or_create(  # pyrefly: ignore [missing-attribute]
+        user=user, defaults={"keycloak_sub": sub}
+    )
     return user
