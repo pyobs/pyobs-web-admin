@@ -1,6 +1,16 @@
 Dashboard and module detail
 ############################
 
+.. image:: ../_static/screenshots/dashboard.jpg
+   :alt: Dashboard showing six modules grouped under Stopped and Deactivated headings, with
+         Total/Running/Stopped/RAM/CPU summary tiles and per-row quick-action buttons.
+   :width: 100%
+
+.. image:: ../_static/screenshots/config-editor.jpg
+   :alt: Module detail Config tab showing a syntax-highlighted YAML editor for a module's
+         config file.
+   :width: 100%
+
 Dashboard
 *********
 

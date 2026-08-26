@@ -4,6 +4,8 @@ A web-based administration interface for [pyobs](https://github.com/pyobs/pyobs-
 the robotic telescope framework. It lets you start, stop, and restart modules, tail and
 filter their logs, and view and edit their configuration files — all from a browser.
 
+![Dashboard showing modules grouped under Stopped and Deactivated headings, with summary tiles and per-row quick-action buttons](docs/source/_static/screenshots/dashboard.jpg)
+
 ## Features
 
 - **Dashboard** — sortable list view of all modules with:
