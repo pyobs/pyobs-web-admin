@@ -327,6 +327,38 @@ class BuildModuleClassesTests(unittest.TestCase):
         self.assertEqual(services.build_module_classes(), {})
 
 
+# ── services.merge_module_classes ───────────────────────────────────────────────
+
+class MergeModuleClassesTests(unittest.TestCase):
+    def test_tags_rows_with_their_host(self):
+        merged = services.merge_module_classes([
+            ("localhost", {"cam1": "pyobs.modules.camera.BaseCamera"}),
+            ("MONETS", {"telescope": "pyobs.modules.telescope.BaseTelescope"}),
+        ])
+        self.assertIn({"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"}, merged)
+        self.assertIn(
+            {"name": "telescope", "class": "pyobs.modules.telescope.BaseTelescope", "host": "MONETS"}, merged
+        )
+
+    def test_same_named_module_on_two_hosts_becomes_two_rows(self):
+        """No collision arbitration -- disambiguated by host, same choice merge_acl_matrices
+        makes for ACL rows, rather than one host's entry silently overwriting the other's."""
+        merged = services.merge_module_classes([
+            ("localhost", {"cam1": "pyobs.modules.camera.BaseCamera"}),
+            ("MONETS", {"cam1": "pyobs.modules.camera.Sbig"}),
+        ])
+        self.assertEqual(len(merged), 2)
+        self.assertIn({"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"}, merged)
+        self.assertIn({"name": "cam1", "class": "pyobs.modules.camera.Sbig", "host": "MONETS"}, merged)
+
+    def test_empty_input_returns_empty_list(self):
+        self.assertEqual(services.merge_module_classes([]), [])
+
+    def test_host_with_no_modules_contributes_nothing(self):
+        merged = services.merge_module_classes([("localhost", {}), ("MONETS", {"cam1": "pyobs.modules.camera.Sbig"})])
+        self.assertEqual(merged, [{"name": "cam1", "class": "pyobs.modules.camera.Sbig", "host": "MONETS"}])
+
+
 # ── services.get_comm_user ────────────────────────────────────────────────────
 
 class GetCommUserTests(unittest.TestCase):
@@ -2712,6 +2744,125 @@ class HubTokenMiddlewareTests(unittest.TestCase):
         request = self.factory.get("/api/status", HTTP_X_HUB_TOKEN="legacy-secret")
         self.middleware(request)
         self.assertEqual(request._hub_client, "default")
+
+
+# ── api_module_classes ───────────────────────────────────────────────────────
+
+class ApiModuleClassesTests(unittest.TestCase):
+    """Issue #68: api_module_classes went from "always local" (flat {name: class} dict) to
+    fleet-aggregating (loops ["localhost"] + HUB_HOSTS, merges, reports unreachable hosts),
+    matching api_all_logs' pattern. See module-classes-fleet-aggregation.md."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.hosts = [{"name": "MONETS", "url": "http://monets", "token": "tok"}]
+
+    def _request(self):
+        return self.factory.get("/api/modules/classes/")
+
+    @patch("modules.services.build_module_classes")
+    def test_single_host_no_hub_hosts_returns_local_modules_in_new_shape(self, mock_build):
+        mock_build.return_value = {"cam1": "pyobs.modules.camera.BaseCamera"}
+        response = views.api_module_classes(self._request())
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(
+            data, {"modules": [{"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"}],
+                    "unreachable_hosts": []},
+        )
+
+    @override_settings(HUB_HOSTS=[{"name": "MONETS", "url": "http://monets", "token": "tok"}])
+    @patch("modules.proxy.call")
+    @patch("modules.services.build_module_classes")
+    def test_multi_host_merges_local_and_remote(self, mock_build, mock_call):
+        mock_build.return_value = {"cam1": "pyobs.modules.camera.BaseCamera"}
+        mock_call.return_value = {
+            "modules": [{"name": "telescope", "class": "pyobs.modules.telescope.BaseTelescope", "host": "localhost"}],
+            "unreachable_hosts": [],
+        }
+        response = views.api_module_classes(self._request())
+        data = json.loads(response.content)
+        self.assertCountEqual(
+            data["modules"],
+            [
+                {"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"},
+                {"name": "telescope", "class": "pyobs.modules.telescope.BaseTelescope", "host": "MONETS"},
+            ],
+        )
+        self.assertEqual(data["unreachable_hosts"], [])
+        mock_call.assert_called_once_with(self.hosts[0], "GET", "/api/modules/classes/")
+
+    @override_settings(HUB_HOSTS=[{"name": "MONETS", "url": "http://monets", "token": "tok"}])
+    @patch("modules.proxy.call")
+    @patch("modules.services.build_module_classes")
+    def test_unreachable_host_is_reported_not_fatal(self, mock_build, mock_call):
+        mock_build.return_value = {"cam1": "pyobs.modules.camera.BaseCamera"}
+        mock_call.side_effect = Exception("connection refused")
+        response = views.api_module_classes(self._request())
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(
+            data["modules"], [{"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"}]
+        )
+        self.assertEqual(len(data["unreachable_hosts"]), 1)
+        self.assertEqual(data["unreachable_hosts"][0]["name"], "MONETS")
+
+    @override_settings(HUB_HOSTS=[{"name": "MONETS", "url": "http://monets", "token": "tok"}])
+    @patch("modules.proxy.call")
+    @patch("modules.services.build_module_classes")
+    def test_nested_hub_preserves_sub_host_tags_instead_of_collapsing_them(self, mock_build, mock_call):
+        """MONETS is itself a hub with its own sub-host "south" -- its response is already
+        host-tagged (it went through this same view), including a "cam1" on both its own
+        localhost and "south". Re-flattening that into one {name: class} dict per remote
+        would silently drop one of the two "cam1" entries; each inner host must survive,
+        with only MONETS's own "localhost" rows re-tagged to "MONETS"."""
+        mock_build.return_value = {}
+        mock_call.return_value = {
+            "modules": [
+                {"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"},
+                {"name": "cam1", "class": "pyobs.modules.camera.Sbig", "host": "south"},
+            ],
+            "unreachable_hosts": [],
+        }
+        response = views.api_module_classes(self._request())
+        data = json.loads(response.content)
+        self.assertCountEqual(
+            data["modules"],
+            [
+                {"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "MONETS"},
+                {"name": "cam1", "class": "pyobs.modules.camera.Sbig", "host": "south"},
+            ],
+        )
+
+    @override_settings(HUB_HOSTS=[{"name": "MONETS", "url": "http://monets", "token": "tok"}])
+    @patch("modules.proxy.call")
+    @patch("modules.services.build_module_classes")
+    def test_nested_hubs_unreachable_sub_host_is_propagated(self, mock_build, mock_call):
+        mock_build.return_value = {}
+        mock_call.return_value = {
+            "modules": [],
+            "unreachable_hosts": [{"name": "south", "error": "connection refused"}],
+        }
+        response = views.api_module_classes(self._request())
+        data = json.loads(response.content)
+        self.assertEqual(data["unreachable_hosts"], [{"name": "south", "error": "connection refused"}])
+
+    @override_settings(HUB_HOSTS=[{"name": "MONETS", "url": "http://monets", "token": "tok"}])
+    @patch("modules.proxy.call")
+    @patch("modules.services.build_module_classes")
+    def test_remote_on_old_flat_dict_shape_is_reported_not_silently_dropped(self, mock_build, mock_call):
+        """A HUB_HOSTS remote not yet upgraded past #68 still answers with the pre-existing
+        flat {name: class} shape (no "modules" key) -- during a rolling deployment this must
+        surface as unreachable, not silently contribute zero modules with no explanation."""
+        mock_build.return_value = {"cam1": "pyobs.modules.camera.BaseCamera"}
+        mock_call.return_value = {"telescope": "pyobs.modules.telescope.BaseTelescope"}
+        response = views.api_module_classes(self._request())
+        data = json.loads(response.content)
+        self.assertEqual(
+            data["modules"], [{"name": "cam1", "class": "pyobs.modules.camera.BaseCamera", "host": "localhost"}]
+        )
+        self.assertEqual(len(data["unreachable_hosts"]), 1)
+        self.assertEqual(data["unreachable_hosts"][0]["name"], "MONETS")
 
 
 class ApiAllLogStatsAcksTests(unittest.TestCase):
