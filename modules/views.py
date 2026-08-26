@@ -15,7 +15,6 @@ from django.views.decorators.http import require_GET, require_POST
 
 from modules import ejabberd, proxy, services
 
-
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def login_view(request):
@@ -221,7 +220,7 @@ def packages(request):
 
 def git_config_page(request):
     ctx = {"active_git_config": True}
-    
+
     ctx["git_enabled"] = True
     ctx["config_dir"] = ""
 
@@ -245,7 +244,7 @@ def git_config_page(request):
     ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"].get("ahead", 0) == 0)
     ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
     ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
-    
+
     return render(request, "modules/git_config.html", ctx)
 
 
@@ -644,7 +643,7 @@ def api_all_logs(request):
                 unreachable.append({"name": host_name, "error": str(e)})
                 continue
         multi_host = len(host_selections) > 1
-        line_lists.append([_tag_host(l, host_name) for l in host_lines] if multi_host else host_lines)
+        line_lists.append([_tag_host(line, host_name) for line in host_lines] if multi_host else host_lines)
 
     log_lines = services.merge_log_lines(line_lists, lines)
     return JsonResponse({"lines": log_lines, "unreachable_hosts": unreachable})
@@ -751,15 +750,57 @@ def api_shared_config(request, name: str):
 
 @require_GET
 def api_module_classes(request):
-    """Every configured module's class: on this host (issue #65) -- dumb, hub-facing, always
-    local, like api_acl_matrix/api_comm_user_map below: no _active_host proxying, since an
-    external caller (e.g. pyobs-portal) crossing a hub boundary already targets the
-    specific host it wants, authenticated via the existing HUB_CLIENTS shared-secret
-    mechanism (modules/middleware.py's HubTokenMiddleware), not a new auth scheme. Lets that
-    caller filter modules by interface (ICamera, ITelescope, ...) on its own side, using its
-    own pyobs-core install -- this app never imports pyobs.interfaces or the module's actual
-    class to answer this."""
-    return JsonResponse(services.build_module_classes())
+    """Every configured module's class: across the whole fleet (issue #65, extended by #68) --
+    fleet-aggregating like api_all_logs above, not "always local" anymore: loops
+    ["localhost"] + HUB_HOSTS, using proxy.get_host_config + proxy.call for the remote
+    branches (same pattern as api_all_logs), and merges with services.merge_module_classes.
+    This composes for nested hubs for free -- when a hub instance is asked, whatever
+    HUB_HOSTS *it* has configured gets folded in automatically: a remote's own response is
+    already host-tagged (it went through this same view), so each row's inner host is kept
+    as-is (only its "localhost" tag is rewritten to the outer hub's name) instead of being
+    re-flattened into one dict per remote -- otherwise a same-named module on two of a
+    remote's own sub-hosts would silently collide one level deeper than the exact failure
+    this endpoint exists to eliminate. Authenticated via the existing HUB_CLIENTS
+    shared-secret mechanism (modules/middleware.py's HubTokenMiddleware), not a new auth
+    scheme. Lets the caller (e.g. pyobs-portal) filter modules by interface (ICamera,
+    ITelescope, ...) on its own side, using its own pyobs-core install -- this app never
+    imports pyobs.interfaces or the module's actual class to answer this.
+
+    Response shape (breaking change from the old flat {module_name: class} dict -- see
+    module-classes-fleet-aggregation.md):
+        {"modules": [{"name": ..., "class": ..., "host": ...}, ...],
+         "unreachable_hosts": [{"name": ..., "error": ...}, ...]}
+    """
+    per_host: list[tuple[str, dict[str, str]]] = []
+    unreachable: list[dict] = []
+    for host_name in ["localhost"] + [h["name"] for h in getattr(settings, "HUB_HOSTS", [])]:
+        if host_name == "localhost":
+            per_host.append((host_name, services.build_module_classes()))
+            continue
+        host_cfg = proxy.get_host_config(host_name)
+        if not host_cfg:
+            continue
+        try:
+            data = proxy.call(host_cfg, "GET", "/api/modules/classes/")
+        except Exception as e:
+            unreachable.append({"name": host_name, "error": str(e)})
+            continue
+        if "modules" not in data:
+            # A HUB_HOSTS remote still on the pre-#68 flat-dict shape (mid-rollout fleet) --
+            # surfaced rather than silently contributing nothing, which .get("modules", [])
+            # would otherwise do.
+            unreachable.append({"name": host_name, "error": "unexpected response shape (host not upgraded?)"})
+            continue
+        unreachable.extend(data.get("unreachable_hosts", []))
+        by_host: dict[str, dict[str, str]] = {}
+        for m in data["modules"]:
+            inner_host = m.get("host") or "localhost"
+            host = host_name if inner_host == "localhost" else inner_host
+            by_host.setdefault(host, {})[m["name"]] = m["class"]
+        per_host.extend(by_host.items())
+
+    modules = services.merge_module_classes(per_host)
+    return JsonResponse({"modules": modules, "unreachable_hosts": unreachable})
 
 
 @require_GET

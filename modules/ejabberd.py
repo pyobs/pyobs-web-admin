@@ -48,6 +48,7 @@ def _ctl_returncode(command: str, *args: str) -> int:
 
 def _parse_session_line(line: str, has_jid: bool) -> dict:
     parts = line.split("\t")
+    session: dict[str, str | int]
     if has_jid:
         jid, *rest = parts
         session = {"jid": jid, **dict(zip(_SESSION_FIELDS, rest))}
