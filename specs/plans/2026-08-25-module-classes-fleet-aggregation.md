@@ -130,7 +130,20 @@ caller actually needs. New shape:
 ### Progress log
 
 pyobs-web-admin side implemented: `services.merge_module_classes` added, `api_module_classes`
-rewritten to loop `["localhost"] + HUB_HOSTS` and merge (mirroring `api_all_logs`), 7 new unit
-tests (4 service-level, 3 view-level) all passing alongside the existing 306. Not yet verified
-against a real hub pair. Portal-side change filed as its own issue (pyobs-portal#119) rather
-than implemented here, per this doc's note that it's a separate repo/PR.
+rewritten to loop `["localhost"] + HUB_HOSTS` and merge (mirroring `api_all_logs`). Not yet
+verified against a real hub pair. Portal-side change filed as its own issue (pyobs-portal#119)
+rather than implemented here, per this doc's note that it's a separate repo/PR.
+
+PR #72 review (2026-08-26) found the initial remote-branch handling re-flattened a remote's
+already host-tagged rows into one `{name: class}` dict per remote, which silently collided
+same-named modules on two of *that remote's own* sub-hosts when it was itself a hub -- one
+level deeper than the exact bug this endpoint exists to fix. Fixed: each row's inner host is
+now preserved (only an inner `"localhost"` tag is rewritten to the outer hub's name), so
+nested-hub composition is actually "for free" as the docstring claims, not just for one hop.
+Also fixed per that review: a remote's own `unreachable_hosts` are now propagated up instead
+of swallowed, and a remote still answering with the pre-#68 flat-dict shape (mid-rollout
+fleet) is now reported as unreachable instead of silently contributing zero modules. Added 3
+more tests for these cases (nested-hub tag preservation, nested unreachable propagation,
+old-shape remote) -- 10 new tests total, 316/316 passing. Also fixed in the same PR: CI
+pyrefly was red on `develop` (pre-existing from #70) over the gitignored
+`local_settings.py` import; added it to `ignore-missing-imports`.

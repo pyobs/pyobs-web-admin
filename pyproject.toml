@@ -37,6 +37,9 @@ project-includes = ["modules", "pyobs_web_admin"]
 project-excludes = ["**/docs/", "**/migrations/"]
 python-version = "3.12.0"
 preset = "legacy"
+# local_settings.py is gitignored (optional per-deployment override, see settings.py's
+# try/except ImportError) -- never present in CI or a fresh checkout.
+ignore-missing-imports = ["pyobs_web_admin.local_settings"]
 
 [tool.pyrefly.errors]
 redundant-cast = "warn"
