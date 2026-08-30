@@ -53,8 +53,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "pyobs_web_admin.wsgi.application"
 
-# SQLite: only used for the Keycloak-linked User table (django.contrib.auth) - the shared
-# admin/password login below stays fully DB-free.
+# SQLite: the Keycloak-linked User table (django.contrib.auth) and, since SESSION_ENGINE is
+# database-backed (below), every session - shared admin/password login included.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -62,8 +62,13 @@ DATABASES = {
     }
 }
 
-# Sessions themselves stay in signed cookies regardless (no session table needed)
-SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
+# Server-side sessions, backed by the same sqlite3 db as the Keycloak-linked User table above -
+# NOT signed_cookies. pyobs-auth's CallbackView stores the Keycloak refresh token in the session
+# so it can be silently renewed later; a cookie-backed session would serialize that (a bearer
+# credential that can mint fresh access tokens indefinitely) into the browser - signed, but not
+# encrypted, so readable by the client. `manage.py migrate` creates the `django_session` table
+# (django.contrib.sessions is already in INSTALLED_APPS).
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
 
 # Distinct from other pyobs Django apps (e.g. portal) so browser cookies don't
 # collide when both are run on localhost at once - cookies are scoped by host, not port.

@@ -44,7 +44,7 @@ filter their logs, and view and edit their configuration files — all from a br
 | WSGI server | Gunicorn |
 | Frontend | Bootstrap 5 (CDN), CodeMirror 5 (CDN), vanilla JS |
 | Package manager | uv |
-| Auth | Shared admin/password login (cookie sessions, no database) plus optional Keycloak SSO (SQLite, one table, for the Keycloak-linked `User` only) |
+| Auth | Shared admin/password login plus optional Keycloak SSO; both share one SQLite db (sessions table for both, `User` table for Keycloak-linked accounts only) |
 | Hub auth | Pre-shared token in `X-Hub-Token` header; CSRF bypassed for hub requests |
 
 ---
@@ -245,8 +245,12 @@ access or handing out the shared password.
    `["/pyobs-web-admin"]` — create that group in the realm and add whoever should have access to
    it (Keycloak admin console) before anyone tries to log in, or every login is refused as "not
    authorized".
-3. Run `manage.py migrate` (creates `db.sqlite3` — only used for the Keycloak-linked `User`
-   table; the shared admin/password login and sessions stay fully DB-free either way).
+3. Run `manage.py migrate` (creates `db.sqlite3`, used for the Keycloak-linked `User` table and,
+   as of this version, sessions too — `SESSION_ENGINE` is now database-backed rather than signed
+   cookies, since a Keycloak session carries a refresh token that shouldn't be serialized into
+   the browser. This applies to every session app-wide, including the shared admin/password
+   login's — it's no longer fully DB-free, but it's the one Django setting shared by both login
+   paths, so it can't be split per-path).
 
 The login page then shows a "Log in with Keycloak" button. A first-time Keycloak login mints a
 local `User` (linked to an existing one by email, falling back to username, if either matches),
