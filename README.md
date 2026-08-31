@@ -34,7 +34,7 @@ filter their logs, and view and edit their configuration files — all from a br
 - **ejabberd / XMPP user management** (optional, builds on the above) — register, reset password, ban/unban, unregister, and kick XMPP accounts, either from a module's own Overview tab or from a fleet-wide **Users** page (`/xmpp-users/`) listing every registered account across every host, cross-referenced against which module(s) use it and which one is actually running. Safe by design for an identity shared across more than one module's `comm.user` — a password reset writes back to every module sharing it, and destructive actions name which other modules are affected before you confirm (see [ejabberd user management](#ejabberd-user-management))
 - **Responsive** — works on mobile with a slide-in sidebar
 - **No pyobs-core dependency** — communicates with `pyobs` directly via subprocess; no Python imports from pyobs-core
-- **Keycloak login** (optional) — SSO on top of the default shared admin/password login, with per-person activate/deactivate via Django's built-in admin site (see [Keycloak login](#keycloak-login))
+- **Keycloak login** (optional) — SSO on top of the default shared admin/password login, with per-person access granted/revoked via Keycloak group membership (see [Keycloak login](#keycloak-login))
 
 ## Technology
 
@@ -44,7 +44,7 @@ filter their logs, and view and edit their configuration files — all from a br
 | WSGI server | Gunicorn |
 | Frontend | Bootstrap 5 (CDN), CodeMirror 5 (CDN), vanilla JS |
 | Package manager | uv |
-| Auth | Shared admin/password login (cookie sessions, no database) plus optional Keycloak SSO (SQLite, one table, for the Keycloak-linked `User` only) |
+| Auth | Shared admin/password login plus optional Keycloak SSO; both share one SQLite db (sessions table for both, `User` table for Keycloak-linked accounts only) |
 | Hub auth | Pre-shared token in `X-Hub-Token` header; CSRF bypassed for hub requests |
 
 ---
@@ -186,6 +186,9 @@ ADMIN_PASSWORD_HASH = "pbkdf2_sha256$..."   # see generation command above
 #     "IDP_HINT": "gwdg",
 #     "IDP_LABEL": "GWDG",
 #     "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
+#     # Only members of this Keycloak group are authorized to use web-admin - create it (and add
+#     # people to it) in the Keycloak admin console before anyone logs in.
+#     "REQUIRED_GROUPS": ["/pyobs-web-admin"],
 # }
 
 # pyobs paths
@@ -228,9 +231,9 @@ EJABBERDCTL = "ejabberdctl"                     # required for user management w
 
 The shared admin/password login above is the default and always available — Keycloak is an
 additive option on top of it, not a replacement, so it stays working as a break-glass fallback
-if Keycloak itself is unreachable. Unlike the shared account, each Keycloak-linked account can
-be individually activated or deactivated, so you can grant or revoke one person's access without
-touching anyone else's or handing out the shared password.
+if Keycloak itself is unreachable. Unlike the shared account, a Keycloak-linked person's access
+is granted or revoked individually via Keycloak group membership, without touching anyone else's
+access or handing out the shared password.
 
 ### Enabling it
 
@@ -238,13 +241,23 @@ touching anyone else's or handing out the shared password.
    `https://your.domain.com/accounts/keycloak/callback/`, post-logout redirect URI
    `https://your.domain.com/`).
 2. Add the `PYOBS_AUTH` block shown in [Configuration](#configuration) to `local_settings.py`,
-   filling in `SERVER_URL`, `CLIENT_ID`, and `CLIENT_SECRET`.
-3. Run `manage.py migrate` (creates `db.sqlite3` — only used for the Keycloak-linked `User`
-   table; the shared admin/password login and sessions stay fully DB-free either way).
+   filling in `SERVER_URL`, `CLIENT_ID`, and `CLIENT_SECRET`. `REQUIRED_GROUPS` defaults to
+   `["/pyobs-web-admin"]` — create that group in the realm and add whoever should have access to
+   it (Keycloak admin console) before anyone tries to log in, or every login is refused as "not
+   authorized".
+3. Run `manage.py migrate` (creates `db.sqlite3`, used for the Keycloak-linked `User` table and,
+   as of this version, sessions too — `SESSION_ENGINE` is now database-backed rather than signed
+   cookies, since a Keycloak session carries a refresh token that shouldn't be serialized into
+   the browser. This applies to every session app-wide, including the shared admin/password
+   login's — it's no longer fully DB-free, but it's the one Django setting shared by both login
+   paths, so it can't be split per-path). Expired sessions aren't purged automatically — run
+   `manage.py clearsessions` periodically (e.g. a daily cron/systemd timer) or `django_session`
+   grows unbounded in a long-lived deployment.
 
 The login page then shows a "Log in with Keycloak" button. A first-time Keycloak login mints a
-local `User` (linked to an existing one by email, falling back to username, if either matches)
-with `is_active=False` — it can't do anything until activated.
+local `User` (linked to an existing one by email, falling back to username, if either matches),
+active immediately — whether they're actually let in is decided by `REQUIRED_GROUPS` above, not
+by anything in this app's own database.
 
 Setting `IDP_HINT` (plus `IDP_LABEL` for the button text) switches the login page to two buttons:
 "Log in with `<IDP_LABEL>`" goes straight to that identity provider (skipping Keycloak's own
@@ -252,13 +265,15 @@ login/IdP-selection page), and "Log in with local Keycloak account" keeps the lo
 reachable for anyone without that IdP's identity. Leave `IDP_HINT` unset for the single-button
 behavior above.
 
-### Activating / deactivating a user
+### Granting or revoking a person's access
 
-Django's built-in admin site is mounted at `/admin/` for exactly this — it isn't gated behind
-this app's own `/login/` page (Django's own is-staff-gated login handles it instead), and both
-the shared admin/password account and any other Django superuser can get in. Under **Users**,
-toggle **Active** on a Keycloak-linked account to grant or revoke their access; nothing else
-about that page needs touching.
+This is now done in the Keycloak admin console, not this app's Django admin: add or remove the
+person from the `/pyobs-web-admin` group (or whatever `REQUIRED_GROUPS` is set to). The change
+takes effect at their next login. Django's `/admin/` site is still mounted (the shared
+admin/password account and any other Django superuser can still get in there for other reasons),
+but toggling a Keycloak-linked account's **Active** flag there no longer does anything by
+default — see `pyobs_auth`'s `ENFORCE_LOCAL_ACTIVE` setting if you want that as an additional,
+Keycloak-independent kill switch on top of the group gate.
 
 The shared admin/password account works at `/admin/` directly (no prior visit to `/login/`
 needed first) because `manage.py migrate` syncs a matching superuser `User` automatically — see
