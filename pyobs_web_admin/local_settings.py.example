@@ -50,7 +50,8 @@ ADMIN_PASSWORD_HASH = ""
 # button either). Unlike the shared admin account, a Keycloak-linked person's access is granted
 # or revoked via Keycloak group membership (REQUIRED_GROUPS below), not local activation -- new
 # accounts mint active by default. Run `manage.py migrate` once before first use (creates
-# db.sqlite3, only used for this User table).
+# db.sqlite3, holding the User table and, since sessions are now DB-backed, every session too --
+# shared admin/password login included).
 # PYOBS_AUTH = {
 #     "SERVER_URL": "https://keycloak.example.org",
 #     "REALM": "pyobs",

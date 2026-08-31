@@ -250,7 +250,9 @@ access or handing out the shared password.
    cookies, since a Keycloak session carries a refresh token that shouldn't be serialized into
    the browser. This applies to every session app-wide, including the shared admin/password
    login's — it's no longer fully DB-free, but it's the one Django setting shared by both login
-   paths, so it can't be split per-path).
+   paths, so it can't be split per-path). Expired sessions aren't purged automatically — run
+   `manage.py clearsessions` periodically (e.g. a daily cron/systemd timer) or `django_session`
+   grows unbounded in a long-lived deployment.
 
 The login page then shows a "Log in with Keycloak" button. A first-time Keycloak login mints a
 local `User` (linked to an existing one by email, falling back to username, if either matches),
