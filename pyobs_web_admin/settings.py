@@ -25,6 +25,10 @@ MIDDLEWARE = [
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # after AuthenticationMiddleware (needs request.user) - re-checks a Keycloak-backed session's
+    # authorization once its access token expires, instead of only at next login. See pyobs-auth's
+    # docs/source/configuration.rst, "Authorization: claims vs. local is_active".
+    "pyobs_auth.middleware.KeycloakSessionRefreshMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.common.CommonMiddleware",
     "modules.middleware.HubTokenMiddleware",
