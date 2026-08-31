@@ -69,6 +69,10 @@ ADMIN_PASSWORD_HASH = ""
 #     # Only members of this Keycloak group are authorized to use web-admin -- create it (and
 #     # add people to it) in the Keycloak admin console before anyone logs in.
 #     "REQUIRED_GROUPS": ["/pyobs-web-admin"],
+#     # Keycloak-independent kill switch, layered on top of REQUIRED_GROUPS above: an admin can
+#     # deactivate a specific local User (Django admin) regardless of their Keycloak group
+#     # membership.
+#     "ENFORCE_LOCAL_ACTIVE": True,
 # }
 
 # Hub: allow this instance to be controlled by a hub (leave empty to disable).
