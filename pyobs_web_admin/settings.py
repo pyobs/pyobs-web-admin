@@ -53,8 +53,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "pyobs_web_admin.wsgi.application"
 
-# SQLite: only used for the Keycloak-linked User table (django.contrib.auth) - the shared
-# admin/password login below stays fully DB-free.
+# SQLite: the Keycloak-linked User table (django.contrib.auth) and, since SESSION_ENGINE is
+# database-backed (below), every session - shared admin/password login included.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -62,8 +62,13 @@ DATABASES = {
     }
 }
 
-# Sessions themselves stay in signed cookies regardless (no session table needed)
-SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
+# Server-side sessions, backed by the same sqlite3 db as the Keycloak-linked User table above -
+# NOT signed_cookies. pyobs-auth's CallbackView stores the Keycloak refresh token in the session
+# so it can be silently renewed later; a cookie-backed session would serialize that (a bearer
+# credential that can mint fresh access tokens indefinitely) into the browser - signed, but not
+# encrypted, so readable by the client. `manage.py migrate` creates the `django_session` table
+# (django.contrib.sessions is already in INSTALLED_APPS).
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
 
 # Distinct from other pyobs Django apps (e.g. portal) so browser cookies don't
 # collide when both are run on localhost at once - cookies are scoped by host, not port.
@@ -87,10 +92,12 @@ ADMIN_PASSWORD_HASH = ""
 
 # Keycloak login (optional addon on top of the shared admin/password login above, not a
 # replacement - leave SERVER_URL unset to disable it entirely; the login page won't show the
-# button either). Unlike the shared admin account, each Keycloak-linked User can be individually
-# deactivated (Django admin, or `manage.py shell`) without affecting anyone else - see
-# pyobs_web_admin.authentication.keycloak.resolve_user. New accounts mint inactive by default and
-# need local activation before they can log in.
+# button either). Authorization is the REQUIRED_GROUPS claims gate below (Keycloak group
+# membership), not local activation - see pyobs-core's specs/design/shared-authz-keycloak.md.
+# The Keycloak admin console is the people-management surface now: granting/revoking access to
+# this service is done there (assign/remove someone from the web-admin group), not in this app's
+# Django admin. (pyobs-auth's ENFORCE_LOCAL_ACTIVE setting is available if a deployment still
+# wants a local, Keycloak-independent per-user kill switch on top of the group gate.)
 PYOBS_AUTH = {
     "SERVER_URL": "",
     "REALM": "pyobs",
@@ -104,6 +111,10 @@ PYOBS_AUTH = {
     "IDP_HINT": "",
     "IDP_LABEL": "",
     "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
+    # Claims-based authorization gate (pyobs-auth >=2.1): membership in this Keycloak group is
+    # what authorizes a user to use web-admin at all. Empty disables the gate entirely, so leave
+    # this set unless every Keycloak login should be authorized regardless of group membership.
+    "REQUIRED_GROUPS": ["/pyobs-web-admin"],
 }
 
 # Hub: list of remote hosts this instance can control
