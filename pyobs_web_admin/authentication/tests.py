@@ -19,9 +19,11 @@ class ResolveUserTests(TestCase):
         self.assertEqual(user.email, "new@example.org")
         self.assertEqual(KeycloakIdentity.objects.get(user=user).keycloak_sub, "sub-1")
 
-    def test_new_user_is_created_inactive(self):
+    def test_new_user_is_created_active(self):
+        # Authorization is now the PYOBS_AUTH['REQUIRED_GROUPS'] claims gate, not local
+        # activation - see pyobs-core's specs/design/shared-authz-keycloak.md.
         user = resolve_user({"sub": "sub-2", "email": "pending@example.org"})
-        self.assertFalse(user.is_active)
+        self.assertTrue(user.is_active)
 
     def test_same_sub_resolves_to_the_same_user_on_a_later_login(self):
         first = resolve_user({"sub": "sub-3", "email": "person@example.org"})

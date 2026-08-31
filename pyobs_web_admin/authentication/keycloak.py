@@ -3,11 +3,11 @@
 Mirrors pyobs-archive/pyobs-portal's resolver: Keycloak's `sub` claim is the join key
 (see pyobs-core's shared-auth design doc), stored on KeycloakIdentity. First Keycloak login for
 an existing local User (matched by email, falling back to username) links the two rather than
-minting a second, disconnected User. Newly-minted accounts default to is_active=False -
-pyobs-auth's CallbackView/KeycloakAuthentication refuse an inactive user, so a fresh Keycloak
-login needs local activation (Django admin, or `manage.py shell`) before it can do anything -
-this is also the revocation mechanism: flip is_active back to False to cut a single person's
-access without touching anyone else or the shared admin/password login.
+minting a second, disconnected User. Newly-minted accounts are active by default: authorization
+is now the PYOBS_AUTH['REQUIRED_GROUPS'] claims gate (Keycloak group membership), not local
+activation - see pyobs-core's specs/design/shared-authz-keycloak.md. Granting/revoking a
+person's access to web-admin is done in the Keycloak admin console (group membership) rather
+than this app's Django admin.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def resolve_user(claims: dict[str, Any]) -> User | None:
         user = User.objects.filter(username=username).first()
     if user is None:
         user = User.objects.create(
-            username=username, email=email or "", is_active=False
+            username=username, email=email or "", is_active=True
         )
 
     KeycloakIdentity.objects.update_or_create(  # pyrefly: ignore [missing-attribute]

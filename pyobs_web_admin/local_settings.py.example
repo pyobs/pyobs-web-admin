@@ -47,10 +47,11 @@ ADMIN_PASSWORD_HASH = ""
 
 # Keycloak login (optional addon on top of the shared admin/password login above, not a
 # replacement -- leave SERVER_URL unset to disable it entirely; the login page won't show the
-# button either). Unlike the shared admin account, each Keycloak-linked User can be individually
-# deactivated at /admin/ without affecting anyone else -- new accounts mint inactive by default
-# and need local activation there before they can log in. Run `manage.py migrate` once before
-# first use (creates db.sqlite3, only used for this User table).
+# button either). Unlike the shared admin account, a Keycloak-linked person's access is granted
+# or revoked via Keycloak group membership (REQUIRED_GROUPS below), not local activation -- new
+# accounts mint active by default. Run `manage.py migrate` once before first use (creates
+# db.sqlite3, holding the User table and, since sessions are now DB-backed, every session too --
+# shared admin/password login included).
 # PYOBS_AUTH = {
 #     "SERVER_URL": "https://keycloak.example.org",
 #     "REALM": "pyobs",
@@ -65,6 +66,13 @@ ADMIN_PASSWORD_HASH = ""
 #     "IDP_HINT": "gwdg",
 #     "IDP_LABEL": "GWDG",
 #     "USER_RESOLVER": "pyobs_web_admin.authentication.keycloak.resolve_user",
+#     # Only members of this Keycloak group are authorized to use web-admin -- create it (and
+#     # add people to it) in the Keycloak admin console before anyone logs in.
+#     "REQUIRED_GROUPS": ["/pyobs-web-admin"],
+#     # Keycloak-independent kill switch, layered on top of REQUIRED_GROUPS above: an admin can
+#     # deactivate a specific local User (Django admin) regardless of their Keycloak group
+#     # membership.
+#     "ENFORCE_LOCAL_ACTIVE": True,
 # }
 
 # Hub: allow this instance to be controlled by a hub (leave empty to disable).
