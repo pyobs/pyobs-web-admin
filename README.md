@@ -189,6 +189,10 @@ ADMIN_PASSWORD_HASH = "pbkdf2_sha256$..."   # see generation command above
 #     # Only members of this Keycloak group are authorized to use web-admin - create it (and add
 #     # people to it) in the Keycloak admin console before anyone logs in.
 #     "REQUIRED_GROUPS": ["/pyobs-web-admin"],
+#     # Keycloak-independent kill switch, layered on top of REQUIRED_GROUPS above: an admin can
+#     # deactivate a specific local User (Django admin) regardless of their Keycloak group
+#     # membership.
+#     "ENFORCE_LOCAL_ACTIVE": True,
 # }
 
 # pyobs paths
@@ -271,9 +275,10 @@ This is now done in the Keycloak admin console, not this app's Django admin: add
 person from the `/pyobs-web-admin` group (or whatever `REQUIRED_GROUPS` is set to). The change
 takes effect at their next login. Django's `/admin/` site is still mounted (the shared
 admin/password account and any other Django superuser can still get in there for other reasons),
-but toggling a Keycloak-linked account's **Active** flag there no longer does anything by
-default — see `pyobs_auth`'s `ENFORCE_LOCAL_ACTIVE` setting if you want that as an additional,
-Keycloak-independent kill switch on top of the group gate.
+with the `ENFORCE_LOCAL_ACTIVE` setting above (recommended, and the example config's default),
+toggling a Keycloak-linked account's **Active** flag there still works too, as an additional,
+Keycloak-independent kill switch on top of the group gate. Leave `ENFORCE_LOCAL_ACTIVE` unset if
+you'd rather Keycloak group membership be the only thing that matters.
 
 The shared admin/password account works at `/admin/` directly (no prior visit to `/login/`
 needed first) because `manage.py migrate` syncs a matching superuser `User` automatically — see

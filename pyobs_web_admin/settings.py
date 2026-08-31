@@ -115,6 +115,11 @@ PYOBS_AUTH = {
     # what authorizes a user to use web-admin at all. Empty disables the gate entirely, so leave
     # this set unless every Keycloak login should be authorized regardless of group membership.
     "REQUIRED_GROUPS": ["/pyobs-web-admin"],
+    # Keycloak-independent kill switch, layered on top of REQUIRED_GROUPS above: an admin can
+    # deactivate a specific local User (Django admin) regardless of their Keycloak group
+    # membership. True preserves this service's pre-2.1 behavior, where is_active was always
+    # the gate.
+    "ENFORCE_LOCAL_ACTIVE": True,
 }
 
 # Hub: list of remote hosts this instance can control
