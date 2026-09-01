@@ -18,3 +18,6 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
   — make `api_module_classes` fleet-aware instead of always-local, following the `api_all_logs`
   self-aggregating pattern. **implemented (pyobs-web-admin side); portal follow-up open** (#68,
   pyobs-portal#119)
+- [2026-09-01-update-all-packages.md](2026-09-01-update-all-packages.md) — sequential "update all"
+  button on the Packages page, queuing over the existing single-job update endpoint. **proposed**
+  (#79)

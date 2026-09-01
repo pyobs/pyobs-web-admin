@@ -5,9 +5,14 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h4 class="mb-0">Packages</h4>
-  <button class="btn btn-sm btn-outline-secondary" id="btn-refresh" onclick="loadPackages()">
-    <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
-  </button>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-primary" id="btn-update-all" onclick="updateAllPackages()" disabled>
+      <i class="bi bi-cloud-arrow-down-fill"></i><span class="d-none d-md-inline"> Update all (<span id="update-all-count">0</span>)</span>
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" id="btn-refresh" onclick="loadPackages()">
+      <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
+    </button>
+  </div>
 </div>
 
 <p class="text-secondary small">Installed <code>pyobs-*</code> packages and their latest release (PyPI, or the git remote's current commit for git-installed packages).</p>
@@ -101,6 +106,12 @@ function pkgRow(pkg) {
   return tr;
 }
 
+function updateBulkButtonState() {
+  const count = document.querySelectorAll('#packages-tbody button:not(:disabled)').length;
+  document.getElementById('update-all-count').textContent = count;
+  document.getElementById('btn-update-all').disabled = count === 0;
+}
+
 async function loadPackages() {
   const tbody = document.getElementById('packages-tbody');
   const errorBox = document.getElementById('packages-error');
@@ -113,50 +124,78 @@ async function loadPackages() {
       errorBox.textContent = data.error;
       errorBox.classList.remove('d-none');
       tbody.innerHTML = '';
+      updateBulkButtonState();
       return;
     }
     tbody.innerHTML = '';
     if (!data.packages.length) {
       tbody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-4">No pyobs-* packages found.</td></tr>';
+      updateBulkButtonState();
       return;
     }
     data.packages.forEach(pkg => tbody.appendChild(pkgRow(pkg)));
+    updateBulkButtonState();
   } catch (e) {
     errorBox.textContent = `Failed to load packages: ${e}`;
     errorBox.classList.remove('d-none');
     tbody.innerHTML = '';
+    updateBulkButtonState();
   }
 }
 
-let updatePollTimer = null;
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-function showUpdatePanel(name, state) {
+function showUpdatePanel(name, state, titlePrefix = '') {
   document.getElementById('update-panel').classList.remove('d-none');
   document.getElementById('update-panel-spinner').classList.toggle('d-none', state !== 'running');
   document.getElementById('update-panel-title').textContent =
-    state === 'running' ? `Updating ${name}…` : `Update ${name}: ${state}`;
+    state === 'running' ? `${titlePrefix}Updating ${name}…` : `${titlePrefix}Update ${name}: ${state}`;
 }
 
-function renderUpdateLog(status) {
-  showUpdatePanel(status.name, status.state);
+function renderUpdateLog(status, titlePrefix = '') {
+  showUpdatePanel(status.name, status.state, titlePrefix);
   const log = document.getElementById('update-panel-log');
   log.textContent = status.log || '(no output yet)';
   log.scrollTop = log.scrollHeight;
 }
 
+// Polls api_package_update_status every 1.5s, rendering live output on every tick, until the
+// job reaches a terminal state -- shared by the single-click flow (pollUpdateStatus) and the
+// "Update all" queue (updateAllPackages), which both need to actually wait for completion
+// rather than fire-and-forget (only one pip install can ever be in flight at a time -- see
+// specs/plans/2026-08-16-async-package-update.md -- so the queue can't start package i+1 until
+// package i's job has genuinely finished).
+//
+// updateGeneration guards against two overlapping poll loops (e.g. a fresh call superseding one
+// still in flight) double-driving the same panel -- mirrors the old clearTimeout(updatePollTimer)
+// this replaces.
+let updateGeneration = 0;
+
+async function awaitUpdateCompletion(titlePrefix = '') {
+  const myGeneration = ++updateGeneration;
+  while (true) {
+    let status;
+    try {
+      status = await (await fetch("{% url 'api_package_update_status' %}")).json();
+    } catch (e) {
+      await sleep(1500);
+      continue;
+    }
+    if (myGeneration !== updateGeneration) {
+      return status;
+    }
+    renderUpdateLog(status, titlePrefix);
+    if (!status.active) {
+      return status;
+    }
+    await sleep(1500);
+  }
+}
+
 async function pollUpdateStatus() {
-  let status;
-  try {
-    status = await (await fetch("{% url 'api_package_update_status' %}")).json();
-  } catch (e) {
-    updatePollTimer = setTimeout(pollUpdateStatus, 1500);
-    return;
-  }
-  renderUpdateLog(status);
-  if (status.active) {
-    updatePollTimer = setTimeout(pollUpdateStatus, 1500);
-    return;
-  }
+  const status = await awaitUpdateCompletion();
   // Terminal state: refresh the table either way (installed/latest may have changed even on a
   // partial failure). Only hide the panel on success -- a failure or interruption has output
   // worth reading, more useful than the old one-line alert().
@@ -197,7 +236,6 @@ async function updatePackage(name, btn) {
       btn.innerHTML = original;
       return;
     }
-    clearTimeout(updatePollTimer);
     showUpdatePanel(name, 'running');
     document.getElementById('update-panel-log').textContent = '(starting…)';
     pollUpdateStatus();
@@ -206,6 +244,87 @@ async function updatePackage(name, btn) {
     btn.disabled = false;
     btn.innerHTML = original;
   }
+}
+
+// ── Update all ───────────────────────────────────────────────────────────────
+//
+// Sequential queue over the same single-package start/poll endpoints -- there is no bulk
+// backend endpoint (see the plan doc): only one `pip install` can run host-wide at a time, so
+// this awaits each package's terminal state before starting the next rather than firing them
+// staggered like Dashboard's controlAll/controlOutdated do for module start/restart. A failed
+// or interrupted package does not stop the queue -- it's logged and the queue moves on, so a
+// single flaky package doesn't block updating the rest ("install as much as possible").
+
+function disableBulkControls() {
+  document.getElementById('btn-update-all').disabled = true;
+  document.getElementById('btn-refresh').disabled = true;
+  document.querySelectorAll('#packages-tbody button').forEach(b => b.disabled = true);
+}
+
+function renderQueueSummary(outcomes) {
+  document.getElementById('update-panel-spinner').classList.add('d-none');
+  const failedCount = outcomes.filter(o => o.state !== 'success').length;
+  document.getElementById('update-panel-title').textContent = failedCount
+    ? `Update all: ${outcomes.length - failedCount}/${outcomes.length} updated, ${failedCount} failed`
+    : `Update all: ${outcomes.length}/${outcomes.length} updated`;
+  document.getElementById('update-panel-log').textContent =
+    outcomes.map(o => `${o.name}: ${o.state}${o.detail ? ' — ' + o.detail : ''}`).join('\n');
+}
+
+async function updateAllPackages() {
+  // Guard against a job already running (started by a manual click, or resumed from another
+  // admin/tab) -- starting the queue on top of it would just have every queued package rejected
+  // with "Already updating X" until that job finishes, which reads as the queue itself failing.
+  let existing;
+  try {
+    existing = await (await fetch("{% url 'api_package_update_status' %}")).json();
+  } catch (e) {
+    existing = {active: false};
+  }
+  if (existing.active) {
+    alert(`Already updating ${existing.name} -- wait for it to finish before updating all.`);
+    return;
+  }
+
+  const queue = [...document.querySelectorAll('#packages-tbody tr[data-package]')]
+    .filter(row => !row.querySelector('button').disabled)
+    .map(row => row.dataset.package);
+  if (!queue.length) {
+    return;
+  }
+
+  disableBulkControls();
+  document.getElementById('update-panel').classList.remove('d-none');
+  const outcomes = [];
+  for (let i = 0; i < queue.length; i++) {
+    const name = queue[i];
+    const titlePrefix = `${i + 1}/${queue.length}: `;
+    document.getElementById('update-panel-spinner').classList.remove('d-none');
+    document.getElementById('update-panel-title').textContent = `${titlePrefix}Updating ${name}…`;
+    document.getElementById('update-panel-log').textContent = '(starting…)';
+
+    let started;
+    try {
+      const resp = await fetch(`/api/packages/${encodeURIComponent(name)}/update/`, {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCsrfToken()},
+      });
+      started = await resp.json();
+    } catch (e) {
+      outcomes.push({name, state: 'not-started', detail: String(e)});
+      continue;
+    }
+    if (!started.ok) {
+      outcomes.push({name, state: 'not-started', detail: started.message || started.error});
+      continue;
+    }
+    const finalStatus = await awaitUpdateCompletion(titlePrefix);
+    outcomes.push({name, state: finalStatus.state});
+  }
+
+  renderQueueSummary(outcomes);
+  document.getElementById('btn-refresh').disabled = false;
+  await loadPackages();
 }
 
 loadPackages();
