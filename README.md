@@ -25,7 +25,7 @@ filter their logs, and view and edit their configuration files — all from a br
   - *ACL* — point-and-click editor for the module's `acl:` block: click to allow/deny known modules, add other callers, toggle enforce/log mode
 - **New module** — a "+" next to the sidebar's Modules section creates a brand-new `<name>.yaml` config (a minimal starter with just a `class:` key) and takes you straight to its Config tab to fill in the rest
 - **Shared configs** — `*.shared.yaml` config fragments listed in a separate sidebar section with a YAML-highlighted config editor (no start/stop controls)
-- **Packages** (`/packages/`) — every installed `pyobs-*` package (plus anything else listed in `PYOBS_MANAGED_PACKAGES`) with its installed and latest-PyPI version, and a one-click Update button; git/URL-installed packages get a Reinstall action instead (see [Package management](#package-management))
+- **Packages** (`/packages/`) — every installed `pyobs-*` package (plus anything else listed in `PYOBS_MANAGED_PACKAGES`) with its installed and latest-PyPI version, and a one-click Update button, plus an *Update all* bulk action that queues every outdated package sequentially; git/URL-installed packages get a Reinstall action instead (see [Package management](#package-management))
 - **Overview** (`/overview/`) — fleet-wide summary, one row per configured host: reachable or not, running/stopped/total counts, aggregate CPU/RAM, linking into that host's own Dashboard, plus a package-version matrix (one row per `pyobs-*` package, one column per host) so version drift across the fleet is visible at a glance. Deliberately no bulk or per-module actions — those stay on the per-host Dashboard, since a fleet-wide "Stop All" from one button is a real footgun
 - **All Logs** (`/logs/`) — fleet-wide live log tail across every module on every configured host, same filtering and scroll-to-load-older behaviour as a module's own Logs tab
 - **ACL Matrix** (`/acl/`) — fleet-wide read-only matrix of which module can call which, merged across every configured host
@@ -484,8 +484,11 @@ host with one admin identity, not a shared or multi-tenant one.
 
 The **Packages** page (`/packages/`) lists every installed `pyobs-*` package (plus anything
 extra listed in `PYOBS_MANAGED_PACKAGES`) alongside its latest release on PyPI, and lets you
-update any of them with one click. It always reflects `pip`'s own view of the environment
-`PYOBS_EXEC` runs in (via the sibling `pip` next to it) — nothing here is invented or cached.
+update any of them with one click, or all outdated ones at once via **Update all**. Updates are
+serialized host-wide (only one `pip install` runs at a time), so Update all queues them
+sequentially rather than firing them in parallel — one package failing doesn't stop the rest from
+being attempted. It always reflects `pip`'s own view of the environment `PYOBS_EXEC` runs in (via
+the sibling `pip` next to it) — nothing here is invented or cached.
 The fleet-wide **Overview** page (`/overview/`) additionally shows a package-version matrix
 across every configured host, so a package that's drifted out of sync on one host is easy to
 spot.
