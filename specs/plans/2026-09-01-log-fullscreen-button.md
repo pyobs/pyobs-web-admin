@@ -1,6 +1,6 @@
 # Plan: fullscreen button for logs
 
-Status: proposed (#74)
+Status: implemented, closed (#74, PR #83)
 
 ## Problem
 
