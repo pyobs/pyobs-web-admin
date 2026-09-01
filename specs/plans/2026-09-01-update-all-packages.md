@@ -1,8 +1,13 @@
 # Plan: "Update all" button on the Packages page
 
-Status: proposed
+Status: implemented
 
-Related: #79. Builds on `specs/plans/2026-08-16-async-package-update.md` (the background-job/lock
+Landed: PR #81 ("Add \"Update all\" bulk action to the Packages page", commits `0129b78`/`fafba81`,
+merged `afea89b`) — the "Update all" button, `updateAllPackages()`'s sequential queue, and the
+`bulkRunning`/`awaitUpdateCompletion` guards on `templates/modules/packages.html`. No backend
+changes, per the proposal below. Closes #79.
+
+Related: builds on `specs/plans/2026-08-16-async-package-update.md` (the background-job/lock
 design below is consumed as-is, not changed).
 
 ## Problem
