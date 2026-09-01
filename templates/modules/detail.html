@@ -133,7 +133,7 @@
       <button class="btn btn-outline-secondary" onclick="acknowledgeLogs()" title="Mark current warnings/errors as seen">
         <i class="bi bi-check2-all me-1"></i>Acknowledge<span id="ack-new-badge" class="badge bg-danger ms-1 d-none">0</span>
       </button>
-      <button class="btn btn-outline-secondary" id="log-fullscreen-btn" onclick="toggleLogFullscreen()" title="Expand log to fullscreen">
+      <button class="btn btn-outline-secondary" id="log-fullscreen-btn" onclick="toggleLogFullscreen()" title="Expand log to fullscreen" aria-pressed="false">
         <i class="bi bi-arrows-fullscreen"></i>
       </button>
       <div class="form-check form-switch d-flex align-items-center ms-1 mb-0">
@@ -667,6 +667,7 @@ function toggleLogFullscreen() {
   const isFs = container.classList.toggle('log-fullscreen');
   icon.className = isFs ? 'bi bi-fullscreen-exit' : 'bi bi-arrows-fullscreen';
   btn.title = isFs ? 'Exit fullscreen' : 'Expand log to fullscreen';
+  btn.setAttribute('aria-pressed', String(isFs));
   if (isFs) document.addEventListener('keydown', escExitLogFullscreen);
   else document.removeEventListener('keydown', escExitLogFullscreen);
 }

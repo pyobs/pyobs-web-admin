@@ -16,25 +16,36 @@ so this must be added identically in both places.
 
 ## Design
 
-Overlay-only approach (no native `Element.requestFullscreen()`): a CSS class toggle makes the log
-`<pre>` fill the viewport via `position: fixed; inset: 0`. Chosen over the Fullscreen API because
-iOS Safari doesn't support `requestFullscreen()` on arbitrary elements, and the overlay is simpler
-to implement/test with one code path instead of two (native + fallback).
+Overlay-only approach (no native `Element.requestFullscreen()`): a CSS class toggle makes a
+wrapper around the toolbar + status line + `<pre>` fill the viewport via
+`position: fixed; inset: 0`. Chosen over the Fullscreen API because iOS Safari doesn't support
+`requestFullscreen()` on arbitrary elements, and the overlay is simpler to implement/test with one
+code path instead of two (native + fallback).
+
+**Implementation note:** the class must go on a wrapper (`#log-container`) around the toolbar and
+the `<pre>`, not on the `<pre>` alone — applying `position: fixed` to just the log box leaves the
+toolbar (a sibling `<div>` above it) behind the fixed layer, hiding filter/refresh/acknowledge/etc.
+entirely. Caught via a real browser check during implementation, not by DOM inspection alone (the
+DOM computed styles look fine either way — this is a visual/z-stacking issue).
 
 ### 1. CSS (added to both templates — `extra_head` block)
 
 `all_logs.html` has no `extra_head` block today; add one. `detail.html` already has one
-(lines 5–13) — append there.
+(lines 5–13) — append there. Both templates wrap the toolbar + `#log-older-status` + `<pre>` in a
+new `<div id="log-container">`.
 
 ```css
 .log-fullscreen {
   position: fixed; inset: 0; z-index: 1046; /* above sidebar (1044/1045), mobile navbar (1043) */
   background: var(--pyobs-surface-bg);
   display: flex; flex-direction: column;
-  padding: 1rem; margin: 0;
+  padding: 1rem; margin: 0; overflow: auto;
 }
-.log-fullscreen#log-output { flex: 1 1 auto; height: auto !important; }
+.log-fullscreen #log-output { flex: 1 1 auto; height: auto !important; min-height: 0; }
 ```
+
+`min-height: 0` on the flex child is required so the `<pre>` can shrink below its content height
+and scroll internally instead of the whole overlay growing past the viewport.
 
 Theme-aware via the existing `--pyobs-surface-bg` custom property (`templates/base.html:25-40`,
 defined for both light and dark).
@@ -42,10 +53,14 @@ defined for both light and dark).
 ### 2. Toolbar button (both files)
 
 ```html
-<button class="btn btn-outline-secondary" id="log-fullscreen-btn" onclick="toggleLogFullscreen()" title="Expand log to fullscreen">
+<button class="btn btn-outline-secondary" id="log-fullscreen-btn" onclick="toggleLogFullscreen()" title="Expand log to fullscreen" aria-pressed="false">
   <i class="bi bi-arrows-fullscreen"></i>
 </button>
 ```
+
+`aria-pressed` is kept in sync by `toggleLogFullscreen()` so screen-reader users get the toggle
+state (the file's other icon-only buttons rely on `title` alone, but this one is a stateful
+toggle, which is exactly the case `aria-pressed` is for).
 
 - `all_logs.html`: in the toolbar div (~line 44-79), under the module checkboxes.
 - `detail.html`: in the `#tab-logs` toolbar (~line 138 area), same relative position.
@@ -54,12 +69,13 @@ defined for both light and dark).
 
 ```js
 function toggleLogFullscreen() {
-  const pre = document.getElementById('log-output');
+  const container = document.getElementById('log-container');
   const btn = document.getElementById('log-fullscreen-btn');
   const icon = btn.querySelector('i');
-  const isFs = pre.classList.toggle('log-fullscreen');
+  const isFs = container.classList.toggle('log-fullscreen');
   icon.className = isFs ? 'bi bi-fullscreen-exit' : 'bi bi-arrows-fullscreen';
   btn.title = isFs ? 'Exit fullscreen' : 'Expand log to fullscreen';
+  btn.setAttribute('aria-pressed', String(isFs));
   if (isFs) document.addEventListener('keydown', escExitLogFullscreen);
   else document.removeEventListener('keydown', escExitLogFullscreen);
 }
