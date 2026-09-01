@@ -1281,12 +1281,13 @@ def _journal_entry_to_line(entry: dict) -> str:
     return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
 
 
-def _get_logs_journald(name: str, lines: int, before: datetime | None = None, since: datetime | None = None) -> list[str]:
+def _get_logs_journald(name: str, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None) -> list[str]:
     args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}"]
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
-    if before is not None:
-        args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
+    upper = _until_bound(before, until)
+    if upper is not None:
+        args += ["--until", f"{upper:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
     entries = _journalctl_json(args)
     return [_journal_entry_to_line(e) for e in entries]
@@ -1332,13 +1333,13 @@ def _log_identities(name: str) -> list[str]:
     return [primary, comm_user]
 
 
-def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None) -> list[str]:
+def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None, until: datetime | None = None) -> list[str]:
     validate_name(name)
     identities = _log_identities(name)
     if _log_backend() == "journald":
-        line_lists = [_get_logs_journald(i, lines, before, since) for i in identities]
+        line_lists = [_get_logs_journald(i, lines, before, since, until) for i in identities]
     else:
-        line_lists = [_get_logs_file(i, lines, since, before) for i in identities]
+        line_lists = [_get_logs_file(i, lines, since, before, until) for i in identities]
     # A module whose comm user differs from its config name logs under both identities (see
     # _log_identities) -- merge the two tails into one timestamp-ordered stream, trimmed to
     # the overall last `lines`, the same per-module approximation the fleet-wide merge uses.
@@ -1370,6 +1371,19 @@ def _naive_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
+def _until_bound(before: datetime | None, until: datetime | None) -> datetime | None:
+    """The window's effective upper bound: the tighter of the page-back cursor (`before`,
+    the oldest currently-loaded line) and the time-range end date (`until`). journald takes
+    a single --until and the file backend a single `before` cutoff, so the two upper-bound
+    sources collapse into one -- `before` never exceeds `until` (the cursor only moves
+    backward from the newest loaded line, which is itself within the window)."""
+    if before is None:
+        return until
+    if until is None:
+        return before
+    return min(before, until)
+
+
 def _file_offset_of_last_line_before(f, file_size: int, cutoff: datetime) -> int:
     """Binary search: the byte offset within `f` (already open in 'rb') of the last line whose
     timestamp is < `cutoff` (naive UTC), or 0 if the first line already satisfies it. Mirrors
@@ -1389,35 +1403,43 @@ def _file_offset_of_last_line_before(f, file_size: int, cutoff: datetime) -> int
     return lo
 
 
-def _get_logs_file(name: str, lines: int, since: datetime | None, before: datetime | None) -> list[str]:
-    """File-backend read of `name`'s flat log, bounded by [since, before] (both inclusive)
-    and trimmed to the last `lines` lines -- the same "tail within a window" semantics the
-    journald backend gets from `journalctl -n <lines> --since ... --until ...`.
+def _get_logs_file(name: str, lines: int, since: datetime | None, before: datetime | None, until: datetime | None = None) -> list[str]:
+    """File-backend read of `name`'s flat log, bounded by [since, until] (both inclusive,
+    `until` capped further by the page-back cursor `before`) and trimmed to the last `lines`
+    lines -- the same "tail within a window" semantics the journald backend gets from
+    `journalctl -n <lines> --since ... --until ...`.
 
     The common tail/auto-refresh case (`before is None`) stays a plain `tail -n` so the
     every-few-seconds refresh never re-reads a whole day of history: timestamps are monotonic,
-    so `tail -n lines` either lies entirely inside [since, now] (when the window holds >= lines
-    lines) or already includes the whole window plus some older lines, which the since-filter
-    then collapses to exactly the window. The `before` case (a scroll-to-top page-back) reads
-    forward from the first line >= since and stops at the first line > before, keeping only the
-    last `lines`. Without a `since` the file backend still can't page back -- `tail -n` has no
-    seek/offset concept to page further back with, and reading from offset 0 on every scroll
-    would re-read the whole file -- so that returns [] as before (see journald-logs.md)."""
+    so `tail -n lines` either lies entirely inside [since, until] (when the window holds >=
+    lines lines) or already includes the whole window plus some older lines, which the
+    since/until filters then collapse to exactly the window. The `before` case (a scroll-to-top
+    page-back) reads forward from the first line >= since and stops at the first line >
+    before, keeping only the last `lines`. Without a `since` the file backend still can't page
+    back -- `tail -n` has no seek/offset concept to page further back with, and reading from
+    offset 0 on every scroll would re-read the whole file -- so that returns [] as before (see
+    journald-logs.md)."""
     log_file = _log_dir() / f"{_active_name(name)}.log"
     if not log_file.exists():
         return []
     if before is not None and since is None:
         return []
     since_naive = _naive_utc(since) if since is not None else None
-    before_naive = _naive_utc(before) if before is not None else None
+    until_naive = _naive_utc(until) if until is not None else None
 
-    if before_naive is None:
+    if before is None:
         result = subprocess.run(["tail", "-n", str(lines), str(log_file)], capture_output=True, text=True)
         tail_lines = result.stdout.splitlines()
-        if since_naive is None:
+        if since_naive is None and until_naive is None:
             return tail_lines
-        return [line for line in tail_lines if (t := _file_line_ts(line)) is None or t >= since_naive]
+        return [
+            line for line in tail_lines
+            if (t := _file_line_ts(line)) is None
+            or ((since_naive is None or t >= since_naive) and (until_naive is None or t <= until_naive))
+        ]
 
+    # A page-back cursor and an end date are both upper bounds; the earlier one caps the window.
+    before_naive = min(_naive_utc(before), until_naive) if until_naive is not None else _naive_utc(before)
     with open(log_file, "rb") as f:
         f.seek(0, 2)
         file_size = f.tell()
@@ -1441,7 +1463,7 @@ def _get_logs_file(name: str, lines: int, since: datetime | None, before: dateti
         return list(buf)
 
 
-def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime | None = None, since: datetime | None = None) -> list[str]:
+def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None) -> list[str]:
     # names is None means "no PYOBS_MODULE restriction at all" -- broader than "every
     # currently configured module," since it also surfaces entries from a module whose
     # config has since been removed/renamed. names == [] means the caller explicitly
@@ -1455,8 +1477,9 @@ def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime
         args += [f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
-    if before is not None:
-        args += ["--until", f"{before:%Y-%m-%d %H:%M:%S} UTC"]
+    upper = _until_bound(before, until)
+    if upper is not None:
+        args += ["--until", f"{upper:%Y-%m-%d %H:%M:%S} UTC"]
     args += ["-n", str(lines)]
     entries = _journalctl_json(args)
     return [_journal_entry_to_line(e) for e in entries]
@@ -1481,7 +1504,7 @@ def merge_log_lines(line_lists: list[list[str]], lines: int) -> list[str]:
     return [line for _, _, _, line in entries[-lines:]]
 
 
-def _get_all_logs_file(names: list[str], lines: int, since: datetime | None, before: datetime | None) -> list[str]:
+def _get_all_logs_file(names: list[str], lines: int, since: datetime | None, before: datetime | None, until: datetime | None = None) -> list[str]:
     # Each module's own file has no cross-module time index, so the merge reads the windowed
     # tail from every file independently, then sorts the union by each line's own leading
     # timestamp and trims to the overall last `lines` -- an approximation (a module with
@@ -1491,12 +1514,12 @@ def _get_all_logs_file(names: list[str], lines: int, since: datetime | None, bef
     # search comment).
     line_lists = []
     for name in names:
-        line_lists.append(_get_logs_file(name, lines, since, before))
+        line_lists.append(_get_logs_file(name, lines, since, before, until))
     return merge_log_lines(line_lists, lines)
 
 
 def get_all_logs(
-    names: list[str] | None = None, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None
+    names: list[str] | None = None, lines: int = 300, filter_str: str = "", before: datetime | None = None, since: datetime | None = None, until: datetime | None = None
 ) -> list[str]:
     if names is not None:
         for name in names:
@@ -1514,9 +1537,9 @@ def get_all_logs(
                     expanded.append(ident)
         names = expanded
     if _log_backend() == "journald":
-        log_lines = _get_all_logs_journald(names, lines, before, since)
+        log_lines = _get_all_logs_journald(names, lines, before, since, until)
     else:
-        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines, since, before)
+        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines, since, before, until)
     if filter_str:
         log_lines = [line for line in log_lines if filter_str.lower() in line.lower()]
     return log_lines
