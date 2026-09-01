@@ -601,6 +601,19 @@ function startTimeParam() {
   return isNaN(d) ? null : d.toISOString();
 }
 
+// The time-end input (datetime-local, no zone) as an ISO-8601 UTC instant for the API's
+// `until` param. Same local-time interpretation as startTimeParam/applyFilters, so the
+// server-side upper bound and the client-side filter agree on the same instant. Without
+// this the end date is only a client-side filter -- the server keeps returning the newest
+// N lines, and any range ending before the newest activity gets filtered out entirely
+// ("no matching log lines" despite lines existing in the window).
+function endTimeParam() {
+  const v = document.getElementById('time-end').value;
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d) ? null : d.toISOString();
+}
+
 // ── Acknowledge (mark warnings/errors as seen) ──────────────────────────────────
 // Per-module "last acknowledged" timestamp in localStorage, shared with the fleet-wide
 // All Logs view (same key), so acknowledging here also clears this module's badges there.
@@ -741,6 +754,8 @@ async function fetchLogs() {
     const params = new URLSearchParams({lines: 300});
     const since = startTimeParam();
     if (since) params.set('since', since);
+    const until = endTimeParam();
+    if (until) params.set('until', until);
     const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
     const data = await resp.json();
     const incoming = data.lines || [];
@@ -795,6 +810,8 @@ async function fetchOlderLogs() {
     const params = new URLSearchParams({lines: 300, before: oldest.toISOString()});
     const since = startTimeParam();
     if (since) params.set('since', since);
+    const until = endTimeParam();
+    if (until) params.set('until', until);
     const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
     const data = await resp.json();
     // Dedup by exact line content -- --until is inclusive, so the oldest line already on
@@ -821,7 +838,9 @@ function clearTimeFilter() {
   document.getElementById('time-end').value   = '';
   localStorage.removeItem('log-time-start');
   localStorage.removeItem('log-time-end');
-  renderLogs();
+  // Both bounds are server-side now -- re-fetch the plain tail rather than re-rendering
+  // whatever since/until-windowed buffer is still in memory.
+  fetchLogs();
 }
 
 // ── Persist log settings ──────────────────────────────────────────────────────
@@ -885,7 +904,9 @@ document.getElementById('log-output').addEventListener('click', function (e) {
     timeStartEl.value = local;
     localStorage.setItem('log-time-start', local);
   }
-  renderLogs();
+  // Setting the value programmatically doesn't fire `change`, but both bounds are server-side
+  // now -- fetch so the server window matches what was just clicked.
+  fetchLogs();
 });
 
 // ── Config editor (CodeMirror) ────────────────────────────────────────────────

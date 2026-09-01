@@ -522,11 +522,12 @@ def api_deactivate(request, name: str):
 # ── Logs API ──────────────────────────────────────────────────────────────────
 
 def _parse_ts(raw: str | None) -> datetime | None:
-    """Parses a timestamp query param (an ISO-8601 instant) -- used for both `before` (the
+    """Parses a timestamp query param (an ISO-8601 instant) -- used for `before` (the
     oldest currently-loaded log line's own timestamp, sent by the log windows' scroll-to-top
-    "load older logs" fetch) and `since` (the time-range start date, sent once a start date is
-    set). Malformed/missing input is treated as "no cutoff" rather than a 400 -- same
-    tolerance api_all_log_stats' acks parsing already gives a per-module timestamp from the
+    "load older logs" fetch), `since` (the time-range start date, sent once a start date is
+    set) and `until` (the time-range end date, sent once an end date is set). Malformed/
+    missing input is treated as "no cutoff" rather than a 400 -- same tolerance
+    api_all_log_stats' acks parsing already gives a per-module timestamp from the
     same frontend-supplied-Date.toISOString() source."""
     if not raw:
         return None
@@ -542,18 +543,22 @@ def api_logs(request, name: str):
     lines = int(request.GET.get("lines", 300))
     before_raw = request.GET.get("before")
     since_raw = request.GET.get("since")
+    until_raw = request.GET.get("until")
     before = _parse_ts(before_raw)
     since = _parse_ts(since_raw)
+    until = _parse_ts(until_raw)
     if host:
         params = {"lines": lines}
         if before_raw:
             params["before"] = before_raw
         if since_raw:
             params["since"] = since_raw
+        if until_raw:
+            params["until"] = until_raw
         return _proxy(host, "GET", f"/api/modules/{name}/logs/", params=params)
     _get_module_or_404(name)
     filter_str = request.GET.get("filter", "")
-    log_lines = services.get_logs(name, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since)
+    log_lines = services.get_logs(name, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since, until=until)
     return JsonResponse({"lines": log_lines})
 
 
@@ -595,8 +600,10 @@ def api_all_logs(request):
     modules_param = request.GET.get("modules")
     before_raw = request.GET.get("before")
     since_raw = request.GET.get("since")
+    until_raw = request.GET.get("until")
     before = _parse_ts(before_raw)
     since = _parse_ts(since_raw)
+    until = _parse_ts(until_raw)
 
     all_host_names = ["localhost"] + [h["name"] for h in getattr(settings, "HUB_HOSTS", [])]
     if modules_param is None:
@@ -619,7 +626,7 @@ def api_all_logs(request):
             if names is not None:
                 for name in names:
                     _get_module_or_404(name)
-            host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since)
+            host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since, until=until)
         else:
             host_cfg = proxy.get_host_config(host_name)
             if not host_cfg:
@@ -637,6 +644,8 @@ def api_all_logs(request):
                     params["before"] = before_raw
                 if since_raw:
                     params["since"] = since_raw
+                if until_raw:
+                    params["until"] = until_raw
                 data = proxy.call(host_cfg, "GET", "/api/logs/", params=params)
                 host_lines = data.get("lines", [])
             except Exception as e:
