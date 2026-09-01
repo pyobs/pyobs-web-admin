@@ -21,3 +21,6 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
 - [2026-09-01-update-all-packages.md](2026-09-01-update-all-packages.md) — sequential "update all"
   button on the Packages page, queuing over the existing single-job update endpoint.
   **implemented, closed** (#79, PR #81)
+- [2026-09-01-log-fullscreen-button.md](2026-09-01-log-fullscreen-button.md) — fullscreen toggle
+  for the log console on All Logs and the per-module Logs tab, overlay-only (no native Fullscreen
+  API, for iOS Safari support). **proposed** (#74)
