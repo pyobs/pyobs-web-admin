@@ -216,6 +216,10 @@ async function resumeUpdateIfActive() {
     return;
   }
   if (status.active) {
+    // Disable immediately so the button doesn't sit there looking clickable (with a stale
+    // count) for the whole duration of someone else's job -- pollUpdateStatus's own
+    // loadPackages() call recomputes the real count/disabled state once it finishes.
+    document.getElementById('btn-update-all').disabled = true;
     pollUpdateStatus();
   }
 }
@@ -263,68 +267,89 @@ function disableBulkControls() {
 
 function renderQueueSummary(outcomes) {
   document.getElementById('update-panel-spinner').classList.add('d-none');
-  const failedCount = outcomes.filter(o => o.state !== 'success').length;
-  document.getElementById('update-panel-title').textContent = failedCount
-    ? `Update all: ${outcomes.length - failedCount}/${outcomes.length} updated, ${failedCount} failed`
+  const incompleteCount = outcomes.filter(o => o.state !== 'success').length;
+  document.getElementById('update-panel-title').textContent = incompleteCount
+    ? `Update all: ${outcomes.length - incompleteCount}/${outcomes.length} updated, ${incompleteCount} did not complete (see below)`
     : `Update all: ${outcomes.length}/${outcomes.length} updated`;
   document.getElementById('update-panel-log').textContent =
     outcomes.map(o => `${o.name}: ${o.state}${o.detail ? ' — ' + o.detail : ''}`).join('\n');
 }
 
+// Set synchronously, before any await, so two overlapping calls (a double click, or two browser
+// tabs open to the same page) can't both pass the "is a job already running?" check below and
+// start interleaved queues -- the flock in update_package_start already makes that safe
+// server-side, but two client-side loops racing each other still produced a garbled summary.
+// This closes the same-tab race; a second tab still has its own bulkRunning, so a genuinely
+// concurrent click from another admin's tab is only caught by the status-endpoint guard below
+// (best-effort, same as any other check-then-act read).
+let bulkRunning = false;
+
 async function updateAllPackages() {
-  // Guard against a job already running (started by a manual click, or resumed from another
-  // admin/tab) -- starting the queue on top of it would just have every queued package rejected
-  // with "Already updating X" until that job finishes, which reads as the queue itself failing.
-  let existing;
+  if (bulkRunning) {
+    return;
+  }
+  bulkRunning = true;
   try {
-    existing = await (await fetch("{% url 'api_package_update_status' %}")).json();
-  } catch (e) {
-    existing = {active: false};
-  }
-  if (existing.active) {
-    alert(`Already updating ${existing.name} -- wait for it to finish before updating all.`);
-    return;
-  }
-
-  const queue = [...document.querySelectorAll('#packages-tbody tr[data-package]')]
-    .filter(row => !row.querySelector('button').disabled)
-    .map(row => row.dataset.package);
-  if (!queue.length) {
-    return;
-  }
-
-  disableBulkControls();
-  document.getElementById('update-panel').classList.remove('d-none');
-  const outcomes = [];
-  for (let i = 0; i < queue.length; i++) {
-    const name = queue[i];
-    const titlePrefix = `${i + 1}/${queue.length}: `;
-    document.getElementById('update-panel-spinner').classList.remove('d-none');
-    document.getElementById('update-panel-title').textContent = `${titlePrefix}Updating ${name}…`;
-    document.getElementById('update-panel-log').textContent = '(starting…)';
-
-    let started;
+    // Guard against a job already running (started by a manual click, or resumed from another
+    // admin/tab) -- starting the queue on top of it would just have every queued package
+    // rejected with "Already updating X" until that job finishes, which reads as the queue
+    // itself failing.
+    let existing;
     try {
-      const resp = await fetch(`/api/packages/${encodeURIComponent(name)}/update/`, {
-        method: 'POST',
-        headers: {'X-CSRFToken': getCsrfToken()},
-      });
-      started = await resp.json();
+      existing = await (await fetch("{% url 'api_package_update_status' %}")).json();
     } catch (e) {
-      outcomes.push({name, state: 'not-started', detail: String(e)});
-      continue;
+      existing = {active: false};
     }
-    if (!started.ok) {
-      outcomes.push({name, state: 'not-started', detail: started.message || started.error});
-      continue;
+    if (existing.active) {
+      alert(`Already updating ${existing.name} -- wait for it to finish before updating all.`);
+      return;
     }
-    const finalStatus = await awaitUpdateCompletion(titlePrefix);
-    outcomes.push({name, state: finalStatus.state});
-  }
 
-  renderQueueSummary(outcomes);
-  document.getElementById('btn-refresh').disabled = false;
-  await loadPackages();
+    const queue = [...document.querySelectorAll('#packages-tbody tr[data-package]')]
+      .filter(row => !row.querySelector('button').disabled)
+      .map(row => row.dataset.package);
+    if (!queue.length) {
+      return;
+    }
+
+    disableBulkControls();
+    document.getElementById('update-panel').classList.remove('d-none');
+    const outcomes = [];
+    for (let i = 0; i < queue.length; i++) {
+      const name = queue[i];
+      const titlePrefix = `${i + 1}/${queue.length}: `;
+      document.getElementById('update-panel-spinner').classList.remove('d-none');
+      document.getElementById('update-panel-title').textContent = `${titlePrefix}Updating ${name}…`;
+      document.getElementById('update-panel-log').textContent = '(starting…)';
+
+      let started;
+      try {
+        const resp = await fetch(`/api/packages/${encodeURIComponent(name)}/update/`, {
+          method: 'POST',
+          headers: {'X-CSRFToken': getCsrfToken()},
+        });
+        started = await resp.json();
+      } catch (e) {
+        outcomes.push({name, state: 'not-started', detail: String(e)});
+        continue;
+      }
+      if (!started.ok) {
+        outcomes.push({name, state: 'not-started', detail: started.message || started.error});
+        continue;
+      }
+      // A missing/undefined state means the job's on-disk record vanished between the start
+      // POST and the first poll (e.g. a run-dir wipe or server restart mid-queue) -- treat that
+      // as interrupted rather than recording an undefined outcome.
+      const finalStatus = await awaitUpdateCompletion(titlePrefix);
+      outcomes.push({name, state: finalStatus.state || 'interrupted'});
+    }
+
+    renderQueueSummary(outcomes);
+    document.getElementById('btn-refresh').disabled = false;
+    await loadPackages();
+  } finally {
+    bulkRunning = false;
+  }
 }
 
 loadPackages();
