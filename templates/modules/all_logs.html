@@ -114,6 +114,20 @@ Loading…</pre>
 if (document.getElementById('log-output')) {
 let logTimer = null;
 let rawLogLines = [];
+let lastRenderedHtml = null;
+
+// Auto-refresh rebuilds #log-output every 3s, which would otherwise wipe an in-progress
+// text selection (issue #82) even when nothing changed. Pause the rebuild while the
+// selection has an endpoint inside the pane; it resumes on its own once selectionchange
+// next fires with the selection cleared or moved elsewhere (e.g. after copying and
+// clicking away), no separate mouseup/copy handling needed.
+let logSelectionActive = false;
+document.addEventListener('selectionchange', function () {
+  const sel = window.getSelection();
+  const pre = document.getElementById('log-output');
+  logSelectionActive = !!sel && !sel.isCollapsed
+    && (pre.contains(sel.anchorNode) || pre.contains(sel.focusNode));
+});
 
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -273,16 +287,20 @@ function applyFilters(lines) {
 }
 
 function renderLogs(skipAutoScroll) {
+  updateAckBadge(); // independent of #log-output's own DOM, so keep it live even below
+  if (logSelectionActive) return; // don't destroy an in-progress selection/copy (#82)
   const filtered = applyFilters(rawLogLines);
+  const html = filtered.length ? filtered.map(renderLine).join('\n') : '(no matching log lines)';
+  if (html === lastRenderedHtml) return; // no-op tick (e.g. unchanged tail): skip the rebuild
+  lastRenderedHtml = html;
   const pre = document.getElementById('log-output');
   // Captured before the re-render, which changes scrollHeight -- otherwise a refresh
   // while reading old logs would always look "near the bottom" of the freshly grown
   // content and yank the view back down even though we want to stay put while the
   // user has scrolled away from the tail.
   const wasNearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 40;
-  pre.innerHTML = filtered.length ? filtered.map(renderLine).join('\n') : '(no matching log lines)';
+  pre.innerHTML = html;
   if (!skipAutoScroll && wasNearBottom) pre.scrollTop = pre.scrollHeight;
-  updateAckBadge();
 }
 
 // ── Load older logs on scroll-to-top ────────────────────────────────────────────
