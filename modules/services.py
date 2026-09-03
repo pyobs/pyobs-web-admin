@@ -1914,9 +1914,27 @@ def git_pull() -> tuple[bool, str]:
     diverged branches also creates a merge commit, so the author identity is passed the same
     way git_commit() does -- without it, git refuses with "empty ident name" on a system where
     no global git identity is configured (e.g. the service user on iagvtsrv).
+
+    Auto-stashes uncommitted changes around the pull (seen live on astro159): git refuses to
+    merge over ANY uncommitted change to a file the incoming commits also touch, even when the
+    two edits are in non-overlapping regions of that file ("local changes ... would be
+    overwritten by merge") -- unlike the CONFLICT case below, that happens before a merge is
+    even attempted, so there's nothing to abort and no way to retry without first getting the
+    working tree clean. Stashing first (a clean tree just stashes nothing -- "No local changes
+    to save") and popping back after lets a normal 3-way merge reconcile non-overlapping edits
+    automatically, same as it would for two independently committed changes.
     """
+    if not _git_enabled():
+        return True, ""
+
     author_name = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_NAME", "pyobs-web-admin")
     author_email = getattr(settings, "PYOBS_CONFIG_GIT_AUTHOR_EMAIL", "pyobs-web-admin@localhost")
+
+    stash_ok, stash_msg = _git_run(["stash", "push", "-u", "-m", "pyobs-web-admin: auto-stash before pull"])
+    if not stash_ok:
+        return False, f"Failed to stash local changes before pull: {stash_msg}"
+    stashed = "No local changes to save" not in stash_msg
+
     ok, msg = _git_run([
         "-c", f"user.name={author_name}",
         "-c", f"user.email={author_email}",
@@ -1930,6 +1948,25 @@ def git_pull() -> tuple[bool, str]:
         # and tell the admin the conflict needs resolving on the host directly.
         _git_run(["merge", "--abort"])
         msg += "\n\nMerge aborted; repository restored to its previous state. Resolve the conflict manually via SSH on the host, then retry the pull."
+        if stashed:
+            msg += " Your uncommitted changes were stashed before this attempt (not lost); recover them via SSH with `git stash list` / `git stash pop` once the conflict above is resolved."
+        return False, msg
+    if not ok:
+        if stashed:
+            msg += "\n\nYour uncommitted changes were stashed before this attempt (not lost); recover them via SSH with `git stash pop`."
+        return False, msg
+
+    if stashed:
+        pop_ok, pop_msg = _git_run(["stash", "pop"])
+        if not pop_ok:
+            # git leaves the stash entry in place when popping conflicts, so nothing is lost --
+            # same "resolve manually, nothing lost" story as the CONFLICT branch above.
+            return False, (
+                f"Pull succeeded, but re-applying your uncommitted local changes failed: {pop_msg}\n\n"
+                "Your changes are safe in the stash (not lost); resolve manually via SSH with "
+                "`git stash list` / `git stash pop`."
+            )
+
     return ok, msg
 
 

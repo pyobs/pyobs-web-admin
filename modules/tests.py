@@ -3706,19 +3706,55 @@ class GitConfigTests(unittest.TestCase):
 
     # --- git_pull ---
 
+    def _clean_stash_result(self):
+        """git stash push on a clean tree: exit 0, "No local changes to save"."""
+        return self._mock_result(stdout="No local changes to save\n")
+
+    def _dirty_stash_result(self):
+        return self._mock_result(stdout="Saved working directory and index state On develop: pyobs-web-admin: auto-stash before pull\n")
+
     @patch("modules.services.subprocess.run")
     @patch("modules.services._git_enabled", return_value=True)
-    def test_git_pull(self, mock_enabled, mock_run):
-        ok = self._mock_result()
-        mock_run.side_effect = [ok]
+    def test_git_pull_clean_tree_stashes_nothing_and_pulls(self, mock_enabled, mock_run):
+        mock_run.side_effect = [self._clean_stash_result(), self._mock_result()]
         ok, _ = services.git_pull()
         self.assertTrue(ok)
-        self.assertEqual(mock_run.call_count, 1)
-        called_args = mock_run.call_args_list[0][0][0]
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertIn("stash", mock_run.call_args_list[0][0][0])
+        called_args = mock_run.call_args_list[1][0][0]
         self.assertIn("pull", called_args)
         self.assertIn("pull.rebase=false", called_args)
         self.assertTrue(any(a.startswith("user.name=") for a in called_args))
         self.assertTrue(any(a.startswith("user.email=") for a in called_args))
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_pull_stashes_dirty_changes_and_pops_after(self, mock_enabled, mock_run):
+        """Regression test: git refuses to merge over ANY uncommitted change to a file the
+        incoming commits also touch, even in a non-overlapping region ("local changes ...
+        would be overwritten by merge") -- seen live on astro159 for imagewatcher.yaml. Pull
+        must stash first and pop back after so a normal 3-way merge can reconcile it."""
+        mock_run.side_effect = [self._dirty_stash_result(), self._mock_result(), self._mock_result()]
+        ok, _ = services.git_pull()
+        self.assertTrue(ok)
+        self.assertEqual(mock_run.call_count, 3)
+        self.assertIn("stash", mock_run.call_args_list[0][0][0])
+        self.assertIn("pull", mock_run.call_args_list[1][0][0])
+        self.assertEqual(mock_run.call_args_list[2][0][0][-2:], ["stash", "pop"])
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_pull_leaves_stash_in_place_when_pop_conflicts(self, mock_enabled, mock_run):
+        """git itself refuses to drop a stash entry when popping it conflicts, so nothing is
+        lost -- the message just needs to tell the admin their changes are safe and how to
+        recover them, rather than claiming the pull failed outright."""
+        pop_conflict = self._mock_result(stdout="CONFLICT (content): Merge conflict in x.yaml", returncode=1)
+        mock_run.side_effect = [self._dirty_stash_result(), self._mock_result(), pop_conflict]
+        ok, msg = services.git_pull()
+        self.assertFalse(ok)
+        self.assertIn("Pull succeeded", msg)
+        self.assertIn("not lost", msg)
+        self.assertIn("stash", msg)
 
     @patch("modules.services.subprocess.run")
     @patch("modules.services._git_enabled", return_value=True)
@@ -3729,13 +3765,32 @@ class GitConfigTests(unittest.TestCase):
             returncode=1,
         )
         abort = self._mock_result()
-        mock_run.side_effect = [conflict, abort]
+        mock_run.side_effect = [self._clean_stash_result(), conflict, abort]
         ok, msg = services.git_pull()
         self.assertFalse(ok)
-        self.assertEqual(mock_run.call_count, 2)
-        self.assertIn("merge", mock_run.call_args_list[1][0][0])
-        self.assertIn("--abort", mock_run.call_args_list[1][0][0])
+        self.assertEqual(mock_run.call_count, 3)
+        self.assertIn("merge", mock_run.call_args_list[2][0][0])
+        self.assertIn("--abort", mock_run.call_args_list[2][0][0])
         self.assertIn("Resolve the conflict manually via SSH", msg)
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_pull_conflict_with_dirty_stash_mentions_recovering_it(self, mock_enabled, mock_run):
+        conflict = self._mock_result(stdout="CONFLICT (content): Merge conflict in x.yaml", returncode=1)
+        abort = self._mock_result()
+        mock_run.side_effect = [self._dirty_stash_result(), conflict, abort]
+        ok, msg = services.git_pull()
+        self.assertFalse(ok)
+        self.assertIn("stashed", msg)
+        self.assertIn("git stash pop", msg)
+
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=False)
+    def test_git_pull_disabled_is_a_noop(self, mock_enabled, mock_run):
+        ok, msg = services.git_pull()
+        self.assertTrue(ok)
+        self.assertEqual(msg, "")
+        mock_run.assert_not_called()
 
     # --- git_status ---
 
