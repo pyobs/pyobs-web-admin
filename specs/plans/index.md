@@ -18,3 +18,9 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
   — make `api_module_classes` fleet-aware instead of always-local, following the `api_all_logs`
   self-aggregating pattern. **implemented (pyobs-web-admin side); portal follow-up open** (#68,
   pyobs-portal#119)
+- [2026-09-01-update-all-packages.md](2026-09-01-update-all-packages.md) — sequential "update all"
+  button on the Packages page, queuing over the existing single-job update endpoint.
+  **implemented, closed** (#79, PR #81)
+- [2026-09-01-log-fullscreen-button.md](2026-09-01-log-fullscreen-button.md) — fullscreen toggle
+  for the log console on All Logs and the per-module Logs tab, overlay-only (no native Fullscreen
+  API, for iOS Safari support). **implemented, closed** (#74, PR #83)
