@@ -1,6 +1,7 @@
 import fcntl
 import json
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -9,9 +10,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import psutil
+import requests
 import yaml
 from django.contrib.auth.hashers import make_password
-from django.contrib.auth.models import User
+from django.contrib.auth.models import AnonymousUser, User
 from django.test import Client as DjangoClient
 from django.test import RequestFactory, override_settings
 from django.test import TestCase as DjangoTestCase
@@ -3688,6 +3690,20 @@ class GitConfigTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("fetch", mock_run.call_args[0][0])
 
+    @patch("modules.services.subprocess.run")
+    @patch("modules.services._git_enabled", return_value=True)
+    def test_git_fetch_forces_tags(self, mock_enabled, mock_run):
+        """Regression test: a deployment checkout's local tag can diverge from origin's (e.g.
+        a re-cut release), and plain `git fetch --tags` rejects that tag with "would clobber
+        existing tag" -- which fails the *entire* fetch, not just the one tag (seen live on
+        astro159 for a stale v2.0.1). --force makes a diverging local tag always lose to
+        origin, since these checkouts never create their own tags."""
+        mock_run.return_value = self._mock_result()
+        services.git_fetch()
+        called_args = mock_run.call_args[0][0]
+        self.assertIn("--tags", called_args)
+        self.assertIn("--force", called_args)
+
     # --- git_pull ---
 
     @patch("modules.services.subprocess.run")
@@ -3827,6 +3843,104 @@ class GitConfigTests(unittest.TestCase):
         with patch("modules.services._config_dir", return_value=self.tmp_path):
             services.save_config("test", "---\nupdated\n")
         mock_run.assert_called_once()
+
+
+class GitConfigPagePushDisabledTests(unittest.TestCase):
+    """Regression test: git_push() (modules/services.py) is a plain `git push`, no
+    force/rebase, so pushing while behind the remote is a guaranteed non-fast-forward
+    rejection. The Push button must stay disabled whenever Pull is (behind > 0), even with
+    local unpushed commits or uncommitted changes that would otherwise enable it."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _push_disabled(self, **status_overrides):
+        status = {
+            "branch": "develop",
+            "ahead": 0,
+            "behind": 0,
+            "clean": True,
+            "dirty": False,
+            "modified_files": [],
+            "new_files": [],
+            "deleted_files": [],
+            "last_commit": "",
+            "last_commit_time": "",
+        }
+        status.update(status_overrides)
+        request = self.factory.get("/git-config/")
+        request.session = {}
+        request.user = AnonymousUser()
+        with patch("modules.services.git_status", return_value=status):
+            response = views.git_config_page(request)
+        content = response.content.decode()
+        return bool(re.search(r'id="btn-git-push"[^>]*\bdisabled\b', content))
+
+    def test_disabled_while_behind_despite_unpushed_local_commits(self):
+        self.assertTrue(self._push_disabled(ahead=2, behind=66))
+
+    def test_disabled_while_behind_despite_dirty_uncommitted_changes(self):
+        self.assertTrue(self._push_disabled(behind=1, clean=False, dirty=True, modified_files=["a.yaml"]))
+
+    def test_enabled_when_ahead_and_not_behind(self):
+        self.assertFalse(self._push_disabled(ahead=2, behind=0))
+
+    def test_disabled_when_nothing_to_push(self):
+        self.assertTrue(self._push_disabled())
+
+
+class ProxyRemoteErrorMessageTests(unittest.TestCase):
+    """Regression test: _proxy() (modules/views.py) used to stringify any proxy.call()
+    exception into a bare {"error": str(e)}, discarding the remote host's own JSON body --
+    e.g. astro159's api_git_fetch returning {"success": false, "message": "<real git
+    error>"} on a 502 became just "Operation failed" in the UI, with the actual cause lost.
+    _proxy() should now surface the remote's own body when it's JSON."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _request(self):
+        request = self.factory.post("/api/git/fetch/")
+        request.session = {"active_host": "astro159"}
+        return request
+
+    def _http_error(self, status_code, json_body=None, text_body=None):
+        response = MagicMock()
+        response.status_code = status_code
+        if json_body is not None:
+            response.json.return_value = json_body
+        else:
+            response.json.side_effect = ValueError("not JSON")
+        response.text = text_body or ""
+        error = requests.exceptions.HTTPError(response=response)
+        return error
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159:8765", "token": "tok"}])
+    @patch("modules.proxy.call")
+    def test_surfaces_remote_json_error_message(self, mock_call):
+        mock_call.side_effect = self._http_error(502, {"success": False, "message": "fetch failed: rejected tag"})
+        response = views.api_git_fetch(self._request())
+        self.assertEqual(response.status_code, 502)
+        data = json.loads(response.content)
+        self.assertEqual(data, {"success": False, "message": "fetch failed: rejected tag"})
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159:8765", "token": "tok"}])
+    @patch("modules.proxy.call")
+    def test_falls_back_to_generic_error_when_remote_body_is_not_json(self, mock_call):
+        mock_call.side_effect = self._http_error(502, json_body=None, text_body="<html>Bad Gateway</html>")
+        response = views.api_git_fetch(self._request())
+        self.assertEqual(response.status_code, 502)
+        data = json.loads(response.content)
+        self.assertIn("error", data)
+
+    @override_settings(HUB_HOSTS=[{"name": "astro159", "url": "http://astro159:8765", "token": "tok"}])
+    @patch("modules.proxy.call")
+    def test_non_http_connection_error_still_falls_back_generically(self, mock_call):
+        mock_call.side_effect = requests.exceptions.ConnectionError("connection refused")
+        response = views.api_git_fetch(self._request())
+        self.assertEqual(response.status_code, 502)
+        data = json.loads(response.content)
+        self.assertIn("connection refused", data["error"])
 
 
 class SetHostNextRedirectTests(unittest.TestCase):

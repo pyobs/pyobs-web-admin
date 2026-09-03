@@ -4,6 +4,7 @@ import secrets
 from datetime import datetime
 from typing import Any
 
+import requests
 from django.conf import settings
 from django.contrib.auth import login as auth_login
 from django.contrib.auth.hashers import check_password
@@ -99,6 +100,14 @@ def _proxy(host: dict, method: str, path: str, **kwargs) -> JsonResponse:
     try:
         data = proxy.call(host, method, path, **kwargs)
         return JsonResponse(data)
+    except requests.exceptions.HTTPError as e:
+        # Surface the remote host's own JSON body (e.g. {"success": false, "message": "..."})
+        # instead of just stringifying the HTTP status -- callers like gitFetch() read
+        # data.message, which is otherwise silently lost behind a generic "Operation failed".
+        try:
+            return JsonResponse(e.response.json(), status=e.response.status_code)
+        except ValueError:
+            return JsonResponse({"error": str(e)}, status=502)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=502)
 
@@ -241,7 +250,13 @@ def git_config_page(request):
         ctx["git_repo_exists"] = False
 
     ctx["pull_disabled"] = not ctx["git_status"]["branch"] or ctx["git_status"]["behind"] == 0
-    ctx["push_disabled"] = not ctx["git_status"]["branch"] or (ctx["git_status"]["clean"] and ctx["git_status"].get("ahead", 0) == 0)
+    ctx["push_disabled"] = (
+        not ctx["git_status"]["branch"]
+        or (ctx["git_status"]["clean"] and ctx["git_status"].get("ahead", 0) == 0)
+        # git_push() is a plain `git push`, no force/rebase -- pushing while behind is a
+        # guaranteed non-fast-forward rejection, so route through Pull first instead.
+        or ctx["git_status"].get("behind", 0) > 0
+    )
     ctx["reset_disabled"] = not ctx["git_status"]["dirty"]
     ctx["git_change_count"] = len(ctx["git_status"].get("new_files", [])) + len(ctx["git_status"].get("modified_files", [])) + len(ctx["git_status"].get("deleted_files", []))
 

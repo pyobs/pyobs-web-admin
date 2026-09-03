@@ -1775,8 +1775,13 @@ def git_clone() -> tuple[bool, str]:
 
 
 def git_fetch() -> tuple[bool, str]:
-    """Fetch remote updates without modifying the working tree."""
-    return _git_run(["fetch", "--tags"])
+    """Fetch remote updates without modifying the working tree.
+
+    Uses --force on tags: these are deployment checkouts that never create their own tags, so a
+    local tag diverging from origin (e.g. a re-cut release) should always lose to origin rather
+    than blocking the whole fetch with a "would clobber existing tag" rejection.
+    """
+    return _git_run(["fetch", "--tags", "--force"])
 
 
 def git_status() -> dict:
