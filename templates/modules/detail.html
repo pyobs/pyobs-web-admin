@@ -85,6 +85,7 @@
         <tr id="stat-memory-row" class="d-none"><th class="text-muted fw-normal pe-4">Memory</th><td id="stat-memory"></td></tr>
         <tr id="stat-cpu-row" class="d-none"><th class="text-muted fw-normal pe-4">CPU</th><td id="stat-cpu"></td></tr>
         <tr id="stat-versions-row" class="d-none"><th class="text-muted fw-normal pe-4">Versions</th><td id="stat-versions"></td></tr>
+        <tr id="stat-config-row" class="d-none"><th class="text-muted fw-normal pe-4">Config</th><td id="stat-config"></td></tr>
         {% if ejabberd_enabled %}
         <tr id="stat-ejabberd-row" class="d-none">
           <th class="text-muted fw-normal pe-4">XMPP</th>
@@ -303,6 +304,7 @@ async function updateStatus() {
   const pidRow = document.getElementById('stat-pid-row');
   const uptimeRow = document.getElementById('stat-uptime-row');
   const versionsRow = document.getElementById('stat-versions-row');
+  const configRow = document.getElementById('stat-config-row');
   if (data.stats) {
     document.getElementById('stat-pid').textContent = data.stats.pid;
     pidRow.classList.remove('d-none');
@@ -333,8 +335,18 @@ async function updateStatus() {
       document.getElementById('stat-versions').textContent = 'unknown';
     }
     versionsRow.classList.remove('d-none');
+    if (data.config_stale === true) {
+      document.getElementById('stat-config').innerHTML =
+        '<span class="text-warning"><i class="bi bi-exclamation-triangle-fill"></i> changed since start — restart needed</span>';
+    } else if (data.config_stale === false) {
+      document.getElementById('stat-config').innerHTML = '<span class="text-secondary">up to date</span>';
+    } else {
+      document.getElementById('stat-config').textContent = 'unknown';
+    }
+    configRow.classList.remove('d-none');
   } else {
     versionsRow.classList.add('d-none');
+    configRow.classList.add('d-none');
   }
 }
 
