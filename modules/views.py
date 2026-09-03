@@ -462,9 +462,10 @@ def api_all_statuses(request):
         status = services.get_module_status(m)
         stats = services.get_module_stats(m) if status == "running" else None
         versions, outdated = _versions_and_outdated(m, status, installed)
+        config_stale = services.config_stale(m) if status == "running" else None
         result.append({
             "name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m),
-            "versions": versions, "outdated": outdated,
+            "versions": versions, "outdated": outdated, "config_stale": config_stale,
         })
     return JsonResponse({"modules": result, "installed": installed})
 
@@ -479,7 +480,11 @@ def api_status(request, name: str):
     stats = services.get_module_stats(name) if status == "running" else None
     installed = _installed_pyobs_versions()
     versions, outdated = _versions_and_outdated(name, status, installed)
-    return JsonResponse({"status": status, "stats": stats, "versions": versions, "outdated": outdated, "installed": installed})
+    config_stale = services.config_stale(name) if status == "running" else None
+    return JsonResponse({
+        "status": status, "stats": stats, "versions": versions, "outdated": outdated,
+        "installed": installed, "config_stale": config_stale,
+    })
 
 
 # ── Control API ───────────────────────────────────────────────────────────────

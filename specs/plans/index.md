@@ -24,3 +24,6 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
 - [2026-09-01-log-fullscreen-button.md](2026-09-01-log-fullscreen-button.md) — fullscreen toggle
   for the log console on All Logs and the per-module Logs tab, overlay-only (no native Fullscreen
   API, for iOS Safari support). **implemented, closed** (#74, PR #83)
+- [2026-09-03-flag-modules-on-config-drift.md](2026-09-03-flag-modules-on-config-drift.md) — flag
+  running modules whose config file changed since they started, reusing the "Restart outdated"
+  package-version-drift UI pattern. **implemented, closed** (#89)

@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -983,6 +984,45 @@ def _is_alive(pid: int) -> bool:
         return False
 
 
+# ── Config drift ──────────────────────────────────────────────────────────────
+#
+# Modules load their YAML config once at startup and never hot-reload it, so there's no way to
+# ask a running process "does your config still match what's on disk" directly -- unlike package
+# versions, it never logs anything to compare against (see get_module_versions). Instead,
+# start_module() hashes the config file as it launches and stores that hash next to the PID file;
+# config_stale() compares it against the file's current hash lazily, at poll time, mirroring how
+# stale_packages() compares running-vs-installed without ever hooking the write side. This means
+# no write path (save_config, save_shared_config, git_pull, git_reset, ...) needs to know about
+# this feature at all -- a module goes stale on the next poll regardless of which of those touched
+# its config, including via a shared {include} fragment none of them named directly.
+
+def _config_hash_file(name: str) -> Path:
+    return _run_dir() / f"{_active_name(name)}.config.sha256"
+
+
+def _hash_config(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def config_stale(name: str) -> bool | None:
+    """Whether name's on-disk config has changed since the running process last started.
+
+    None means unknown, not "fresh" -- either the module was never snapshotted (started before
+    this feature shipped, or its run dir was cleared) or its config file is currently missing.
+    """
+    snap_file = _config_hash_file(name)
+    if not snap_file.exists():
+        return None
+    config_file = _config_dir() / f"{name}.yaml"
+    if not config_file.exists():
+        return None
+    try:
+        snapshot = snap_file.read_text().strip()
+    except OSError:
+        return None
+    return snapshot != _hash_config(config_file)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_module_status(name: str) -> str:
@@ -1037,6 +1077,7 @@ def start_module(name: str) -> tuple[bool, str]:
     for _ in range(15):
         pid = _read_pid(name)
         if pid and _is_alive(pid):
+            _config_hash_file(name).write_text(_hash_config(config_file))
             return True, f"Started {name} (PID {pid})"
         time.sleep(0.2)
 
