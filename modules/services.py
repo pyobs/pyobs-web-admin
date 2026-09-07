@@ -1315,7 +1315,25 @@ def _journal_entry_to_line(entry: dict) -> str:
     # real module's log lines doubled up the file:line info instead of stripping it.
     code_file = os.path.basename(entry.get("CODE_FILE", "?"))
     code_line = entry.get("CODE_LINE", "?")
-    message = entry.get("MESSAGE", "")
+    message = entry.get("MESSAGE")
+    if message is None:
+        # Seen live (2026-09-07): a %-style log call whose argument was itself None
+        # (`log.error("... %s", e)` with e somehow None) arrived with a JSON-null MESSAGE --
+        # crashed this function outright before this fix. MESSAGE_RAW/ARGUMENTS_N are still
+        # sent alongside it, so reconstruct from those instead of dropping/crashing.
+        raw = entry.get("MESSAGE_RAW")
+        if raw is None:
+            message = "<no message>"
+        else:
+            args = []
+            i = 0
+            while f"ARGUMENTS_{i}" in entry:
+                args.append(entry[f"ARGUMENTS_{i}"])
+                i += 1
+            try:
+                message = raw % tuple(args) if args else raw
+            except Exception:
+                message = raw
     prefix = f"{module} {code_file}:{code_line} "
     if message.startswith(prefix):
         message = message[len(prefix):]
