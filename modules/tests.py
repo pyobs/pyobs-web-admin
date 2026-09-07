@@ -1394,6 +1394,28 @@ class LogBackendJournaldTests(unittest.TestCase):
         '"__SEQNUM_ID":"ca9321337fb04d6f8365c542905d8539","_GID":"1000"}'
     )
 
+    # Captured live on iag50srv, 2026-09-07: a %-style log call whose argument was itself
+    # None (`log.error("Failed to update tasks from backend: %s", e)` in
+    # pyobs-core's taskarchive.py, with `e` somehow None) arrived with MESSAGE as JSON null --
+    # crashed _journal_entry_to_line outright before it learned to fall back to
+    # MESSAGE_RAW/ARGUMENTS_N. See services.py's _journal_entry_to_line for the fix.
+    _NULL_MESSAGE_ENTRY = (
+        '{"__REALTIME_TIMESTAMP":"1788786292460508",'
+        '"CODE_FILE":"/opt/pyobs/venv/lib/python3.13/site-packages/pyobs/robotic/storage/lco/taskarchive.py",'
+        '"LOGGER_NAME":"pyobs.robotic.storage.lco.taskarchive",'
+        '"_MACHINE_ID":"7868b23e726a46cf922ffd62d265b7a3","MESSAGE":null,"_UID":"1001",'
+        '"_SYSTEMD_UNIT":"pyobs-web-admin.service","EXTRA_PYOBS_MODULE":"mastermind",'
+        '"_BOOT_ID":"da6a339b17604e9d897bfd20a94ad16b","_HOSTNAME":"iag50srv","PYOBS_MODULE":"mastermind",'
+        '"_PID":"1311239","_TRANSPORT":"journal","THREAD_ID":"139770656257920",'
+        '"_SYSTEMD_SLICE":"system.slice","CODE_FUNC":"_check_for_changes","SYSLOG_FACILITY":"23",'
+        '"THREAD_NAME":"MainThread","CODE_MODULE":"taskarchive","RELATIVE_USEC":"2113106863",'
+        '"EXTRA_TASKNAME":"Task-27","__MONOTONIC_TIMESTAMP":"3388759136585",'
+        '"_GID":"1001","_COMM":"pyobs","ARGUMENTS_0":null,"__SEQNUM":"1404540",'
+        '"CODE":"taskarchive._check_for_changes:73",'
+        '"MESSAGE_RAW":"Failed to update tasks from backend: %s","PID":"1311239",'
+        '"CODE_LINE":"73","SYSLOG_IDENTIFIER":"pyobs","PRIORITY":"3","PROCESS_NAME":"MainProcess"}'
+    )
+
     def setUp(self):
         # Seed the version-detection cache so _journald_module_tag() doesn't shell out to
         # `pip list` on every call (which would both slow these tests down and add an
@@ -1430,6 +1452,17 @@ class LogBackendJournaldTests(unittest.TestCase):
              "-n", "300", "-o", "json", "--no-pager"],
             capture_output=True, text=True,
         )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_reconstructs_null_message_from_message_raw(self, mock_run):
+        mock_run.return_value = self._mock_result(self._NULL_MESSAGE_ENTRY + "\n")
+        lines = services.get_logs("mastermind", lines=300)
+        ts = datetime.fromtimestamp(1788786292460508 / 1_000_000)
+        self.assertEqual(lines, [
+            f"{ts:%Y-%m-%d %H:%M:%S} [ERROR] (mastermind) taskarchive.py:73 "
+            f"Failed to update tasks from backend: None",
+        ])
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
