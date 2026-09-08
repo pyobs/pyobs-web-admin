@@ -3018,6 +3018,7 @@ class ApiModuleClassesTests(unittest.TestCase):
     def _request(self):
         return self.factory.get("/api/modules/classes/")
 
+    @override_settings(HUB_HOSTS=[])
     @patch("modules.services.build_module_classes")
     def test_single_host_no_hub_hosts_returns_local_modules_in_new_shape(self, mock_build):
         mock_build.return_value = {"cam1": "pyobs.modules.camera.BaseCamera"}

@@ -307,6 +307,19 @@ def module_detail(request, name: str):
 
 
 def shared_detail(request, name: str):
+    host = _active_host(request)
+    if host:
+        try:
+            cfg_data = proxy.call(host, "GET", f"/api/shared/{name}/config/")
+            config = cfg_data.get("content", "")
+        except Exception:
+            config = ""
+        return render(request, "modules/shared_detail.html", {
+            "config_name": name,
+            "config": config,
+            "active_shared": name,
+            "config_dir": "(remote)",
+        })
     _get_shared_or_404(name)
     return render(request, "modules/shared_detail.html", {
         "config_name": name,
@@ -759,7 +772,27 @@ def api_create_module(request):
         return JsonResponse({"success": False, "error": str(e)}, status=409)
 
 
+@require_GET
+def api_shared_configs(request):
+    """Hub-facing, always-local (like api_all_statuses) -- queried directly via proxy.call
+    by another instance's sidebar_modules context processor to list a remote host's shared
+    config names, since sidebar_modules already resolves local-vs-hub itself rather than
+    going through the session-active-host dance api_shared_config/shared_detail use."""
+    return JsonResponse({"shared": services.list_shared_configs()})
+
+
 def api_shared_config(request, name: str):
+    host = _active_host(request)
+    if host:
+        if request.method == "GET":
+            return _proxy(host, "GET", f"/api/shared/{name}/config/")
+        if request.method == "POST":
+            try:
+                data = json.loads(request.body)
+            except json.JSONDecodeError as e:
+                return JsonResponse({"success": False, "error": str(e)}, status=400)
+            return _proxy(host, "POST", f"/api/shared/{name}/config/", json=data)
+        return JsonResponse({"error": "Method not allowed"}, status=405)
     _get_shared_or_404(name)
     if request.method == "GET":
         return JsonResponse({"content": services.get_shared_config(name) or ""})

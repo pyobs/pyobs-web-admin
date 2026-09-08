@@ -41,7 +41,11 @@ def sidebar_modules(request):
             ])
         except Exception:
             modules = []
-        shared = []
+        try:
+            shared_data = proxy.call(host_config, "GET", "/api/shared/")
+            shared = shared_data.get("shared", [])
+        except Exception:
+            shared = []
     else:
         raw_names = services.list_modules()
         modules = _sort_modules([

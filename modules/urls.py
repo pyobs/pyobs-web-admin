@@ -34,6 +34,7 @@ urlpatterns = [
     path("api/modules/<str:name>/log-stats/", views.api_log_stats, name="api_log_stats"),
     path("api/log-stats/", views.api_all_log_stats, name="api_all_log_stats"),
     path("api/modules/<str:name>/config/", views.api_config, name="api_config"),
+    path("api/shared/", views.api_shared_configs, name="api_shared_configs"),
     path("api/shared/<str:name>/config/", views.api_shared_config, name="api_shared_config"),
     path("api/modules/<str:name>/acl/", views.api_acl, name="api_acl"),
     path("api/acl-matrix/", views.api_acl_matrix, name="api_acl_matrix"),
