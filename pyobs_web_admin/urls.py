@@ -1,9 +1,13 @@
 from django.contrib import admin
 from django.urls import include, path
+from django.views.generic.base import RedirectView
 
 from modules.views import login_view, logout_view
 
 urlpatterns = [
+    # Browsers request this at the site root regardless of STATIC_URL; redirect rather than
+    # duplicate static-serving machinery.
+    path("favicon.ico", RedirectView.as_view(url="/static/img/favicon.ico", permanent=True)),
     path("login/", login_view, name="login"),
     path("logout/", logout_view, name="logout"),
     path("accounts/keycloak/", include("pyobs_auth.urls")),
