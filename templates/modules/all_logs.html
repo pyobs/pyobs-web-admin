@@ -257,8 +257,10 @@ function renderLine(line) {
   return `<span class="log-line"${styleAttr}${timeAttr}>${e}${newBadge}</span>`;
 }
 
+// Text search runs server-side now (fetchLogs/fetchOlderLogs send `filter`) -- rawLogLines
+// already only contains matches, so applyFilters only has the other, still-client-only
+// filters left to apply.
 function applyFilters(lines) {
-  const text        = document.getElementById('log-filter').value.toLowerCase();
   const startVal    = document.getElementById('time-start').value;
   const endVal      = document.getElementById('time-end').value;
   const startDate   = startVal ? new Date(startVal) : null;
@@ -274,7 +276,6 @@ function applyFilters(lines) {
       const levelIdx = level ? LEVEL_ORDER.indexOf(level) : -1;
       if (levelIdx < minLevelIdx) return false;
     }
-    if (text && !line.toLowerCase().includes(text)) return false;
     if (startDate || endDate) {
       const t = parseLogTime(line);
       if (t) {
@@ -306,9 +307,30 @@ function renderLogs(skipAutoScroll) {
 // ── Load older logs on scroll-to-top ────────────────────────────────────────────
 let loadingOlderLogs = false;
 let noMoreOlderLogs = false;
+let searchFailed = false;
 
 function setOlderStatus(text) {
   document.getElementById('log-older-status').textContent = text || '';
+}
+
+// Only while actively searching (filter set): if any host's per-request result errored
+// (search failure or a since-page-load connectivity drop -- api_all_logs's unreachable_hosts
+// doesn't distinguish the two in this JSON, see views.py), flag the search as incomplete
+// rather than letting it look like a clean "no matches". Gated on `filter` so this doesn't
+// turn into a status line that flashes on every 3s refresh whenever a fleet host is just
+// routinely down -- that case already has its own page-load banner above.
+function updateSearchStatus(filter, data) {
+  const failedHosts = data.unreachable_hosts || [];
+  if (filter && failedHosts.length) {
+    searchFailed = true;
+    setOlderStatus(`Search incomplete -- unreachable or failed: ${failedHosts.map(h => h.name).join(', ')}`);
+    return true;
+  }
+  if (searchFailed) {
+    searchFailed = false;
+    setOlderStatus('');
+  }
+  return false;
 }
 
 async function fetchOlderLogs() {
@@ -321,6 +343,7 @@ async function fetchOlderLogs() {
   const prevScrollHeight = pre.scrollHeight;
   const prevScrollTop = pre.scrollTop;
   try {
+    const filter = filterEl.value;
     const params = new URLSearchParams({
       lines: 300, modules: selectedModules().join(','), before: oldest.toISOString(),
     });
@@ -328,8 +351,10 @@ async function fetchOlderLogs() {
     if (since) params.set('since', since);
     const until = endTimeParam();
     if (until) params.set('until', until);
+    if (filter) params.set('filter', filter);
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
     const data = await resp.json();
+    if (updateSearchStatus(filter, data)) return;
     // Dedup by exact line content -- --until is inclusive, so the oldest line already on
     // screen (or one sharing its second-granularity timestamp) can come back in this batch.
     const existing = new Set(rawLogLines);
@@ -389,13 +414,16 @@ if (savedModules) {
 // every 3s regardless.
 window.fetchLogs = async function fetchLogs() {
   try {
+    const filter = filterEl.value;
     const params = new URLSearchParams({lines: 300, modules: selectedModules().join(',')});
     const since = startTimeParam();
     if (since) params.set('since', since);
     const until = endTimeParam();
     if (until) params.set('until', until);
+    if (filter) params.set('filter', filter);
     const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
     const data = await resp.json();
+    if (updateSearchStatus(filter, data)) return;
     const incoming = data.lines || [];
     // Issue #44: notify for lines that arrived since the last fetch -- diffed against the
     // pre-merge buffer, so "new" means "not already shown". Runs before mergeWithOlderHistory,
@@ -534,9 +562,23 @@ if (notificationsToggleEl) {
     updateNotificationsDeniedNote();
   }
 }
+// Debounced (300ms) since the phrase is now a server-side search, not a client re-render --
+// one request per pause in typing instead of one per keystroke. On each actual search (not
+// every keystroke) the in-memory history is dropped and re-fetched, same reasoning as
+// timeStartEl below: rawLogLines may hold non-matching lines from the previous phrase (or the
+// unfiltered tail), and "Beginning of available logs" belongs to the *previous* phrase's
+// search, not this one.
+let filterDebounce = null;
 filterEl.addEventListener('input', function () {
   localStorage.setItem('log-filter', this.value);
-  renderLogs();
+  clearTimeout(filterDebounce);
+  filterDebounce = setTimeout(function () {
+    rawLogLines = [];
+    noMoreOlderLogs = false;
+    searchFailed = false;
+    setOlderStatus('');
+    fetchLogs();
+  }, 300);
 });
 unackedOnlyEl.addEventListener('change', function () {
   localStorage.setItem('log-unacked-only', this.checked);

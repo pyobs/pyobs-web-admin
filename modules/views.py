@@ -577,6 +577,7 @@ def api_logs(request, name: str):
     before_raw = request.GET.get("before")
     since_raw = request.GET.get("since")
     until_raw = request.GET.get("until")
+    filter_str = request.GET.get("filter", "")
     before = _parse_ts(before_raw)
     since = _parse_ts(since_raw)
     until = _parse_ts(until_raw)
@@ -588,10 +589,14 @@ def api_logs(request, name: str):
             params["since"] = since_raw
         if until_raw:
             params["until"] = until_raw
+        if filter_str:
+            params["filter"] = filter_str
         return _proxy(host, "GET", f"/api/modules/{name}/logs/", params=params)
     _get_module_or_404(name)
-    filter_str = request.GET.get("filter", "")
-    log_lines = services.get_logs(name, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since, until=until)
+    try:
+        log_lines = services.get_logs(name, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since, until=until)
+    except services.LogSearchError as e:
+        return JsonResponse({"error": str(e)}, status=502)
     return JsonResponse({"lines": log_lines})
 
 
@@ -659,7 +664,14 @@ def api_all_logs(request):
             if names is not None:
                 for name in names:
                     _get_module_or_404(name)
-            host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since, until=until)
+            try:
+                host_lines = services.get_all_logs(names, lines=min(lines, 2000), filter_str=filter_str, before=before, since=since, until=until)
+            except services.LogSearchError as e:
+                # Reuses unreachable_hosts (same UI path other per-host failures already use)
+                # rather than a separate error channel -- "search failed" prefix keeps it from
+                # reading as a plain connectivity failure like the other entries there.
+                unreachable.append({"name": host_name, "error": f"search failed: {e}"})
+                continue
         else:
             host_cfg = proxy.get_host_config(host_name)
             if not host_cfg:

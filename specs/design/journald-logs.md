@@ -1,10 +1,10 @@
-# pyobs-web-admin: journald-backed module logging — v1.5 (2026-08-19)
+# pyobs-web-admin: journald-backed module logging — v1.6 (2026-09-14)
 
 ## Status
 
 **Implemented and verified live end-to-end** (Work Plan items 1–4; see Progress log), including
 the previously-open group-less service-account case — see v1.3 in Progress log and the updated
-Cross-user journal read permission section. No open items remain.
+Cross-user journal read permission section. No open items remain from v1.0–v1.5.
 v1.1 adds auto-detection: `PYOBS_LOG_BACKEND`'s default changed from `"file"` to `None`
 (auto-detect from `pyobsd`'s own config file), not a Work Plan item originally but a real gap
 closed after `pyobsd` (`pyobs-core`'s daemon manager) turned out to read its own global
@@ -18,6 +18,23 @@ filter: setting a start date now loads logs since that instant (journald via `jo
 --since`, file via a `[since, before]` timestamp window), and the file backend's
 scroll-to-top page-back works once a start date is set — see Progress log and Design's
 "Pagination: load older logs".
+**v1.6:** the log windows' free-text filter is now a real server-side search (streamed file
+scan / `journalctl --grep`) over full history instead of a client-side substring test over
+whatever page happened to be loaded — see Progress log and Design's new "Server-side search"
+section. Verified live end-to-end on this box against both backends (real `journalctl`, a real
+flat log file, through the real `api_logs` view, not just mocked unit tests) — and that live
+run caught a real bug the mocked tests couldn't have: `journalctl --grep <pattern>` with zero
+matches exits 1 with empty stdout *and* empty stderr, so the first version of the new
+"raise on nonzero exit" error check would have turned every ordinary non-matching search into a
+502. Fixed before landing — see Progress log. **Also click-tested in a real Chrome browser** against a scratch dev server (isolated settings,
+config dir, log dir, and sqlite db — the real deployment untouched) on `detail.html`'s Logs tab:
+typed a phrase matching only the file's oldest line (500 lines back, well outside the default
+unfiltered tail) and watched it appear; confirmed via the network log that `filter=` is sent on
+every request, including auto-refresh polls every 3s (debounce means one request per pause in
+typing, not one per keystroke — no per-character spam observed); cleared the phrase and watched
+the view cleanly fall back to the unfiltered tail. `all_logs.html`'s equivalent path (and the
+error/`unreachable_hosts` display in both) was not separately click-tested — that page shares
+the same JS pattern already exercised on `detail.html`, but hasn't been driven independently.
 
 ## Progress log
 
@@ -121,6 +138,75 @@ scroll-to-top page-back works once a start date is set — see Progress log and 
   `execute()`/`BackgroundTask`. Tests: journald and file-backend merge cases for
   `get_logs`/`get_log_stats`/`get_all_logs`, the no-comm and equal-identity single-query cases,
   and shared-comm-user dedup; full suite passes.
+
+- **Implemented and verified live at the HTTP/service layer — v1.6, server-side log search
+  (issue #95).** The free-
+  text filter in both log windows only ever matched against whatever page was already loaded
+  (last ~300 lines, or whatever the current `since`/`until` window happened to fetch), so a
+  phrase could never be found further back, and there was no way to search history at all. Now
+  a real search: `modules/services.py` gains `_search_logs_file` (streamed line-by-line scan of
+  the flat log, from `since`'s byte offset or byte 0, same `filter_str.lower() in line.lower()`
+  semantics as the old post-hoc filter it replaces) and adds `--grep <re.escape(filter_str)>
+  --case-sensitive=false` to `_get_logs_journald`/`_get_all_logs_journald`'s existing
+  `journalctl` invocation. `get_logs`/`get_all_logs` route to the search path only when
+  `filter_str` is set; the old post-fetch Python substring filter is removed entirely. See
+  Design's "Server-side search" section for the two things worth knowing before trusting this
+  blindly: journald's `--grep` only matches the raw `MESSAGE` field (not the reconstructed
+  `ts [LEVEL] (module) file:line message` display line), and plain unfiltered file-backend
+  pagination without a `since` still returns `[]` exactly as before -- only the *search* path
+  gained full-history reach. `_journalctl_json` gained an opt-in `check=True` that raises a new
+  `LogSearchError` on a nonzero `journalctl` exit (previously silently swallowed as an empty
+  result, indistinguishable from "no matches") -- opt-in so the two unrelated existing callers
+  (`_get_module_versions_journald`, `_get_log_stats_journald`) keep their old tolerant
+  behavior. `modules/views.py`: `api_logs`/`api_all_logs` catch `LogSearchError` (`api_logs`
+  returns a top-level `{"error": ...}` 502; `api_all_logs`'s per-host loop reports it through
+  the existing `unreachable_hosts` list, prefixed `"search failed: "` so it doesn't read as a
+  plain connectivity drop). **Also fixed, found while reading the code, not in the original
+  issue text:** `api_logs`'s host-proxy branch never forwarded the `filter` query param to the
+  remote hub host at all -- masked until now by the client doing its own filtering on whatever
+  came back; a proxied module's search would otherwise have silently done nothing once
+  client-side filtering was removed. Frontend (`detail.html`, `all_logs.html`, kept in lockstep
+  per this doc's existing convention): `applyFilters()` drops its `text`/`includes()` branch,
+  `fetchLogs`/`fetchOlderLogs` send `filter`, the filter `<input>` is debounced 300ms before
+  triggering a fetch, and a phrase change clears in-memory history/pager state exactly like a
+  `since` change already does. `all_logs.html` additionally surfaces `unreachable_hosts` from
+  these JSON responses live for the first time (previously only shown from a separate, page-
+  load-only server-rendered banner) -- gated on a filter actually being active, so an
+  ordinarily-down fleet host doesn't start flashing a status line on every 3s auto-refresh.
+  Tests added/updated in `modules/tests.py` per the plan
+  (`specs/plans/2026-09-14-server-side-log-search.md`); `uv run python manage.py test modules`
+  — 354/354 passing, no regressions (re-run again after the live-verification fix below, still
+  354/354) (existing `LogBackendJournaldTests`/`GetAllLogsTests`
+  `_mock_result` helpers needed a `returncode=0` default added, since the new `check=True` path
+  in `_journalctl_json` would otherwise treat every mocked call's un-set `MagicMock().returncode`
+  as a failure). `ruff check`/`pyrefly check` both clean on the changed files.
+  **Live-verified on this box (`husserLaptop`), real `journalctl` and a real flat log file, not
+  just mocks:**
+  1. Emitted ~40 synthetic journal entries under `SYSLOG_IDENTIFIER=pyobs`,
+  `PYOBS_MODULE=grep_verify_test_<ts>` (via `logger --journald`), with one distinctive phrase
+  planted in the *oldest* entry. `journalctl ... --grep <phrase> --case-sensitive=false -n 5
+  -o json --no-pager` found it despite `-n 5` and the phrase being ~40 entries back — confirms
+  the "`-n` + a filter implies `--reverse`, so full-history search comes free" claim from the
+  Design section against the real binary, not just the man page. Then ran
+  `services.get_logs(...)` itself (real subprocess, no mock) against the same entries with the
+  same result.
+  2. **A real bug the mocked unit tests could not have caught, found by this live check:**
+  `journalctl --grep <phrase>` with **zero matches** exits **1** with **empty** stdout and
+  stderr — not 0. The first version of `_journalctl_json`'s `check=True` raised `LogSearchError`
+  on any nonzero exit, which would have turned every ordinary non-matching search into a 502.
+  Confirmed a genuine failure (bad argument, malformed `--since`) also exits non-zero but always
+  writes something to stderr, so the fix checks *both* `returncode != 0` and non-empty `stderr`
+  before raising. Added `test_get_logs_journalctl_no_match_with_grep_does_not_raise` (and the
+  `get_all_logs` equivalent) to lock this in; full suite re-run after the fix, still 354/354.
+  3. A real flat log file (~70 lines, one `ERROR` line near the top containing a distinctive
+  phrase) through the *actual* `views.api_logs` view (Django `RequestFactory`, no mocking below
+  the view) confirmed: a plain unfiltered `lines=5` fetch returns only the newest 5 (no needle),
+  a `filter=`-bearing request with the same `lines=5` finds the needle line regardless, and a
+  phrase with no match returns `{"lines": []}` at HTTP 200, not an error.
+  **Still not done: no manual click-through of `detail.html`/`all_logs.html` in an actual
+  browser** — the JS (debounce, history reset, `unreachable_hosts` rendering, the error-status
+  display) has not been exercised outside its own logic reading, only the server side has real
+  live verification so far.
 
 ## Motivation
 
@@ -339,6 +425,59 @@ paging back without a start date remains a journald-only capability; with a star
 works on both backends. The frontend sends `since` on the initial fetch and every page-back,
 and a start-date change clears the in-memory history and re-fetches rather than just
 re-filtering.
+
+### Server-side search (v1.6)
+
+The free-text filter box used to run entirely client-side, over whatever page `fetchLogs` had
+already loaded — a phrase could never match anything older than the current `lines` tail, no
+matter how far back the actual match sat in the file/journal. v1.6 makes the phrase a real
+search, matched where the data lives.
+
+**File backend.** `_search_logs_file` scans the flat log line by line from `since`'s byte offset
+(computed the same way `_get_logs_file`'s page-back case already does, via
+`_file_offset_of_last_line_before`) or byte 0 if no `since` is set, testing
+`filter_str.lower() in line.lower()` against every line and keeping the most recent `lines`
+matches in a bounded `deque`. This is the same substring semantics the old post-hoc filter used
+— nothing about *what* counts as a match changed, only *how much of the file* gets looked at.
+Chosen over shelling out to `grep` for testability (no subprocess to mock) and because the
+existing Python substring test is already exactly the semantics wanted.
+
+**Journald backend.** `_get_logs_journald`/`_get_all_logs_journald` add `--grep
+<re.escape(filter_str)> --case-sensitive=false` to the existing `-n <lines> --since ... --until
+...` invocation. Verified against `man journalctl`: "When used with `--lines=` (not prefixed
+with `+`), `--reverse` is implied" — so `-n` combined with a filter already scans backward
+through the whole (`--since`-bounded, or otherwise unbounded) journal and stops once `<lines>`
+matches are found. No separate "search vs. tail" code path was needed on this side, unlike the
+file backend — adding the two flags was the entire change.
+
+**Known narrowing, accepted deliberately: `--grep` only sees the raw `MESSAGE` field.**
+`_journal_entry_to_line` reconstructs each display line as `f"{ts} [{level}] ({module})
+{code_file}:{code_line} {message}"` — the timestamp and `[LEVEL]` bracket are synthesized during
+that Python reconstruction and are not part of the raw journal `MESSAGE` journalctl greps
+against. Concretely: a phrase like `ERROR` stops matching by level once this ships (there is
+already a dedicated "Min level" dropdown for that), and searching for a literal timestamp string
+stops working. Module name, `file:line`, and the actual log text remain fully searchable,
+because pyobs's own journald formatter bakes `"<module> <file>:<line> "` into `MESSAGE` itself
+(see the Read layer section above) — only the display-only prefix is out of reach.
+
+**Deliberately not fixed: plain (non-search) file-backend pagination without `since` still
+returns `[]`.** A server-side search that scans from `since`'s offset (or byte 0) forward gives
+the file backend genuine full-history *search* reach it never had before, but extending that to
+plain unfiltered scroll-back would mean a full-file scan on every scroll-to-top with no phrase
+entered — exactly the "common case stays a plain `tail -n`" cost the v1.4 design deliberately
+avoided (see "Start date" above). This boundary is unchanged from v1.2/v1.4: paging back without
+a start date is still journald-only unless a search phrase is also present.
+
+**Error surfacing.** `_journalctl_json` gained an opt-in `check=True` (default `False`, so the
+two unrelated existing callers — module-version detection, log stats — keep silently tolerating
+a denied/failed `journalctl` the way they always have) that raises `LogSearchError` on a nonzero
+exit instead of returning whatever partial/empty output came back. `get_logs`/`get_all_logs`'s
+journald and file-search paths propagate it; `api_logs` turns it into a top-level `{"error":
+...}` JSON response (502) instead of `{"lines": [...]}`; `api_all_logs`'s per-host loop reports
+it through the existing `unreachable_hosts` list (prefixed `"search failed: "`) so a search
+failure on one fleet host doesn't read as that host simply being offline. Both frontend
+templates check for this and show a distinct status instead of rendering "(no matching log
+lines)".
 
 ### What doesn't change
 

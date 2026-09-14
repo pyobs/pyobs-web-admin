@@ -15,6 +15,7 @@ import requests
 import yaml
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import AnonymousUser, User
+from django.http import JsonResponse
 from django.test import Client as DjangoClient
 from django.test import RequestFactory, override_settings
 from django.test import TestCase as DjangoTestCase
@@ -1427,9 +1428,11 @@ class LogBackendJournaldTests(unittest.TestCase):
     def _clear_version_cache(self):
         services._pyobs_core_version_cache = None
 
-    def _mock_result(self, stdout):
+    def _mock_result(self, stdout, returncode=0, stderr=""):
         result = MagicMock()
         result.stdout = stdout
+        result.returncode = returncode
+        result.stderr = stderr
         return result
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
@@ -1481,11 +1484,58 @@ class LogBackendJournaldTests(unittest.TestCase):
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
-    def test_get_logs_filter_str_applies_after_reconstruction(self, mock_run):
-        mock_run.return_value = self._mock_result(self._DEBUG_ENTRY + "\n" + self._CRITICAL_ENTRY + "\n")
-        lines = services.get_logs("camera_verify_test", filter_str="critical")
-        self.assertEqual(len(lines), 1)
-        self.assertIn("critical line", lines[0])
+    def test_get_logs_filter_str_adds_grep_args(self, mock_run):
+        """A search phrase becomes journalctl's own --grep (issue #95) rather than a Python
+        post-filter over the reconstructed lines -- matching now happens server-side, in
+        journalctl itself, so this only verifies the command asks for it correctly (the mock
+        can't exercise journalctl's actual matching)."""
+        mock_run.return_value = self._mock_result(self._CRITICAL_ENTRY + "\n")
+        services.get_logs("camera_verify_test", filter_str="critical")
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_verify_test",
+             "--grep", "critical", "--case-sensitive=false", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_filter_str_is_regex_escaped(self, mock_run):
+        """A literal substring search, not a user-supplied regex -- otherwise a phrase like
+        "a.b" or "error(1)" would silently mean something different (or fail to compile) once
+        interpreted as journalctl's PCRE --grep pattern instead of a plain substring."""
+        mock_run.return_value = self._mock_result("")
+        services.get_logs("camera_verify_test", filter_str="error(1).log")
+        args = mock_run.call_args[0][0]
+        self.assertIn(re.escape("error(1).log"), args)
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_journalctl_failure_raises_log_search_error(self, mock_run):
+        """A denied/malformed journalctl call must be distinguishable from a real "no matches"
+        -- previously _journalctl_json silently returned [] either way. Verified live (this
+        box, real journalctl): a genuine failure (bad argument, malformed --since, ...) exits
+        non-zero *and* writes something to stderr -- both conditions, not returncode alone
+        (see the next test)."""
+        mock_run.return_value = self._mock_result("", returncode=1, stderr="Failed to parse timestamp: not-a-date")
+        with self.assertRaises(services.LogSearchError):
+            services.get_logs("camera_verify_test", filter_str="critical")
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_journalctl_no_match_with_grep_does_not_raise(self, mock_run):
+        """Live-verified surprise (this box, real journalctl): `--grep <pattern>` with zero
+        matches exits 1 with *empty* stdout and stderr -- not 0. A search finding nothing is
+        the ordinary, expected outcome and must return [], not raise -- checking returncode
+        alone (an earlier version of this function did) would have broken every non-matching
+        search."""
+        mock_run.return_value = self._mock_result("", returncode=1, stderr="")
+        self.assertEqual(services.get_logs("camera_verify_test", filter_str="nonexistent phrase"), [])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_journalctl_success_does_not_raise(self, mock_run):
+        mock_run.return_value = self._mock_result("", returncode=0)
+        self.assertEqual(services.get_logs("camera_verify_test"), [])
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
@@ -1925,6 +1975,82 @@ class LogBackendJournaldTests(unittest.TestCase):
                 "2026-07-04 09:00:00 [INFO] (camera) x.py:2 mid",
             ])
 
+    # ── File backend: server-side search (issue #95) ────────────────────────────
+
+    def test_file_backend_filter_finds_match_beyond_tail_window(self):
+        """A phrase search scans the whole file, not just a tail-`lines` window like the old
+        post-hoc filter (applied only to an already `tail -n`-truncated read) -- a match sitting
+        well before the newest `lines` entries must still be found."""
+        with tempfile.TemporaryDirectory() as tmp:
+            filler = "".join(
+                f"2026-07-04 08:{i:02d}:00 [INFO] (camera) x.py:{i} filler line {i}\n" for i in range(59)
+            )
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 07:00:00 [INFO] (camera) x.py:0 needle here\n" + filler
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", lines=5, filter_str="needle")
+            self.assertEqual(lines, ["2026-07-04 07:00:00 [INFO] (camera) x.py:0 needle here"])
+
+    def test_file_backend_filter_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 Something ERROR happened\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", filter_str="error")
+            self.assertEqual(len(lines), 1)
+
+    def test_file_backend_filter_no_match_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello\n"
+            )
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", filter_str="needle")
+            self.assertEqual(lines, [])
+
+    def test_file_backend_filter_lines_caps_most_recent_matches(self):
+        """`lines` bounds the number of *matches* returned (the most recent ones), not the
+        number of lines scanned -- per issue #95's point 2."""
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "".join(
+                f"2026-07-04 08:{i:02d}:00 [INFO] (camera) x.py:{i} needle {i}\n" for i in range(5)
+            )
+            (Path(tmp) / "camera.log").write_text(text)
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", lines=2, filter_str="needle")
+            self.assertEqual(lines, [
+                "2026-07-04 08:03:00 [INFO] (camera) x.py:3 needle 3",
+                "2026-07-04 08:04:00 [INFO] (camera) x.py:4 needle 4",
+            ])
+
+    def test_file_backend_filter_since_excludes_earlier_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 needle old\n"
+                "2026-07-04 09:00:00 [INFO] (camera) x.py:2 needle new\n"
+            )
+            since = datetime(2026, 7, 4, 8, 30, 0, tzinfo=UTC)
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", filter_str="needle", since=since)
+            self.assertEqual(lines, ["2026-07-04 09:00:00 [INFO] (camera) x.py:2 needle new"])
+
+    def test_file_backend_filter_before_without_since_still_searches(self):
+        """Unlike a plain (non-search) `before` request, which returns [] without a `since`
+        (_get_logs_file has no seek/offset concept to page back with) -- a search has no cheap
+        tail fast-path to protect, so it always scans from byte 0 (or since's offset) forward
+        regardless of whether `before` is also set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "camera.log").write_text(
+                "2026-07-04 08:00:00 [INFO] (camera) x.py:1 needle early\n"
+                "2026-07-04 09:00:00 [INFO] (camera) x.py:2 needle late\n"
+            )
+            before = datetime(2026, 7, 4, 8, 30, 0, tzinfo=UTC)
+            with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
+                lines = services.get_logs("camera", filter_str="needle", before=before)
+            self.assertEqual(lines, ["2026-07-04 08:00:00 [INFO] (camera) x.py:1 needle early"])
+
 
 # ── journald PYOBS_MODULE version gating ─────────────────────────────────────
 
@@ -2295,9 +2421,11 @@ class GetAllLogsTests(unittest.TestCase):
     def _clear_version_cache(self):
         services._pyobs_core_version_cache = None
 
-    def _mock_result(self, stdout):
+    def _mock_result(self, stdout, returncode=0, stderr=""):
         result = MagicMock()
         result.stdout = stdout
+        result.returncode = returncode
+        result.stderr = stderr
         return result
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
@@ -2450,7 +2578,10 @@ class GetAllLogsTests(unittest.TestCase):
                 lines = services.get_all_logs(lines=300)
             self.assertEqual(lines, ["2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera"])
 
-    def test_filter_str_applies_after_merge(self):
+    def test_file_backend_filter_str_searches_each_module_then_merges(self):
+        """Each selected module's own log is searched independently (via _search_logs_file,
+        not a post-hoc filter over an already-merged tail), then the per-module matches are
+        merged and sorted, same as the unfiltered case."""
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "camera.log").write_text(
                 "2026-07-04 08:00:00 [INFO] (camera) x.py:1 hello camera\n"
@@ -2461,6 +2592,26 @@ class GetAllLogsTests(unittest.TestCase):
             with override_settings(PYOBS_LOG_DIR=tmp, PYOBS_LOG_BACKEND="file"):
                 lines = services.get_all_logs(names=["camera", "telescope"], lines=300, filter_str="telescope")
             self.assertEqual(lines, ["2026-07-04 08:00:01 [INFO] (telescope) y.py:1 hello telescope"])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_filter_str_adds_grep_args(self, mock_run):
+        mock_run.return_value = self._mock_result("")
+        services.get_all_logs(names=["camera"], lines=300, filter_str="critical")
+        mock_run.assert_called_once_with(
+            ["journalctl", "SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera",
+             "--grep", "critical", "--case-sensitive=false", "-n", "300", "-o", "json", "--no-pager"],
+            capture_output=True, text=True,
+        )
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_journald_filter_str_no_match_does_not_raise(self, mock_run):
+        """Same live-verified `--grep`-with-no-matches-exits-1-with-empty-stderr behavior as
+        LogBackendJournaldTests' equivalent get_logs test, exercised through get_all_logs's
+        own _journalctl_json(check=True) call."""
+        mock_run.return_value = self._mock_result("", returncode=1, stderr="")
+        self.assertEqual(services.get_all_logs(names=["camera"], lines=300, filter_str="nonexistent"), [])
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
@@ -3303,6 +3454,77 @@ class ApiLogsBeforeParamTests(unittest.TestCase):
         mock_get_all_logs.assert_called_once_with(
             ["camera"], lines=300, filter_str="", before=None, since=None, until=datetime(2026, 7, 15, 10, 0, 0, tzinfo=UTC)
         )
+
+    @patch("modules.services.get_logs")
+    @patch("modules.services.list_modules")
+    def test_api_logs_forwards_filter_to_get_logs(self, mock_list_modules, mock_get_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_logs.return_value = []
+        request = self.factory.get("/api/modules/camera/logs/", {"lines": 300, "filter": "error"})
+        request.session = {}
+        views.api_logs(request, "camera")
+        mock_get_logs.assert_called_once_with(
+            "camera", lines=300, filter_str="error", before=None, since=None, until=None
+        )
+
+    @patch("modules.views._proxy")
+    @patch("modules.views._active_host")
+    def test_api_logs_forwards_filter_to_proxied_host(self, mock_active_host, mock_proxy):
+        """Regression test: api_logs' host-proxy branch used to build its forwarded `params`
+        from lines/before/since/until only, dropping `filter` entirely -- a search against a
+        module viewed through a remote hub host silently did nothing (masked previously by the
+        client re-filtering whatever page came back; not masked once that client-side filter
+        is removed, see issue #95)."""
+        mock_active_host.return_value = {"name": "remote1"}
+        mock_proxy.return_value = JsonResponse({"lines": []})
+        request = self.factory.get("/api/modules/camera/logs/", {"lines": 300, "filter": "error"})
+        request.session = {}
+        views.api_logs(request, "camera")
+        mock_proxy.assert_called_once_with(
+            {"name": "remote1"}, "GET", "/api/modules/camera/logs/", params={"lines": 300, "filter": "error"}
+        )
+
+    @patch("modules.services.get_logs")
+    @patch("modules.services.list_modules")
+    def test_api_logs_search_error_returns_502_not_empty_lines(self, mock_list_modules, mock_get_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_logs.side_effect = services.LogSearchError("journalctl exited 1")
+        request = self.factory.get("/api/modules/camera/logs/", {"lines": 300, "filter": "error"})
+        request.session = {}
+        response = views.api_logs(request, "camera")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(json.loads(response.content), {"error": "journalctl exited 1"})
+
+    @patch("modules.services.get_all_logs")
+    @patch("modules.services.list_modules")
+    def test_api_all_logs_forwards_filter_to_get_all_logs(self, mock_list_modules, mock_get_all_logs):
+        mock_list_modules.return_value = ["camera"]
+        mock_get_all_logs.return_value = []
+        request = self.factory.get("/api/logs/", {"lines": 300, "modules": "localhost:camera", "filter": "error"})
+        request.session = {}
+        views.api_all_logs(request)
+        mock_get_all_logs.assert_called_once_with(
+            ["camera"], lines=300, filter_str="error", before=None, since=None, until=None
+        )
+
+    @patch("modules.services.get_all_logs")
+    @patch("modules.services.list_modules")
+    def test_api_all_logs_local_search_error_reported_via_unreachable_hosts(self, mock_list_modules, mock_get_all_logs):
+        """A local search failure must not look identical to that host simply being offline
+        (issue #95's "no matches" vs. "search failed" ask) -- reuses the existing
+        unreachable_hosts channel (rather than aborting the whole fleet-wide response) with a
+        distinguishing "search failed:" prefix, and still returns 200 with partial results."""
+        mock_list_modules.return_value = ["camera"]
+        mock_get_all_logs.side_effect = services.LogSearchError("boom")
+        request = self.factory.get("/api/logs/", {"lines": 300, "modules": "localhost:camera", "filter": "error"})
+        request.session = {}
+        response = views.api_all_logs(request)
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(data["lines"], [])
+        self.assertEqual(len(data["unreachable_hosts"]), 1)
+        self.assertEqual(data["unreachable_hosts"][0]["name"], "localhost")
+        self.assertIn("search failed: boom", data["unreachable_hosts"][0]["error"])
 
 
 # ── Running module versions API ─────────────────────────────────────────────────
