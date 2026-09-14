@@ -25,6 +25,12 @@ from modules.pyobs_config import pre_process_yaml
 
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
 
+
+class LogSearchError(Exception):
+    """A log search (file scan or journalctl --grep) failed outright -- distinct from a search
+    that ran fine and found nothing, so callers can tell the two apart instead of both looking
+    like an empty result."""
+
 # Used only to serialize a *fresh* acl: block for _replace_local_acl_block -- ruamel's
 # round-trip dumper reads more like hand-written YAML (indented block sequences, minimal
 # quoting) than plain pyyaml's default output. Not used for reading/round-tripping a whole
@@ -1290,8 +1296,23 @@ def _journald_module_tag(name: str) -> str:
     return name
 
 
-def _journalctl_json(args: list[str]) -> list[dict]:
+def _journalctl_json(args: list[str], check: bool = False) -> list[dict]:
+    """check=True raises LogSearchError on a genuine failure (a denied/malformed --grep, say)
+    instead of silently returning whatever partial/empty output came back -- opt-in because the
+    existing callers (module-version detection, log stats) already tolerate a quiet empty
+    result and shouldn't start raising through call sites that never expected it.
+
+    Verified live on this box: `journalctl --grep <pattern>` with zero matches exits 1 with
+    *empty* stderr -- that is the ordinary "no matches" outcome a search must still report as
+    an empty list, not an error. A real failure (bad argument, malformed timestamp, etc.) also
+    exits non-zero but always writes something to stderr. So the failure signal is "non-zero
+    exit AND non-empty stderr", not exit code alone -- checking returncode alone (an earlier
+    version of this function did, before this was caught by live-testing rather than the mocked
+    unit tests, which default returncode/stderr to values that never exercised this distinction)
+    would have raised LogSearchError on every ordinary non-matching search."""
     result = subprocess.run(["journalctl", *args, "-o", "json", "--no-pager"], capture_output=True, text=True)
+    if check and result.returncode != 0 and result.stderr.strip():
+        raise LogSearchError(result.stderr.strip())
     entries = []
     for raw in result.stdout.splitlines():
         try:
@@ -1340,15 +1361,24 @@ def _journal_entry_to_line(entry: dict) -> str:
     return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
 
 
-def _get_logs_journald(name: str, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None) -> list[str]:
+def _get_logs_journald(
+    name: str, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None, filter_str: str = ""
+) -> list[str]:
     args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}"]
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     upper = _until_bound(before, until)
     if upper is not None:
         args += ["--until", f"{upper:%Y-%m-%d %H:%M:%S} UTC"]
+    if filter_str:
+        # re.escape keeps this a literal substring match (today's `filter_str.lower() in
+        # line.lower()` semantics), not a user-supplied regex; --case-sensitive=false matches
+        # the ".lower()" half. "-n" with a --grep filter implies --reverse (see man journalctl),
+        # so this already scans backward through the *whole* bounded journal and stops once
+        # `lines` matches are found -- full-history search comes for free, no separate code path.
+        args += ["--grep", re.escape(filter_str), "--case-sensitive=false"]
     args += ["-n", str(lines)]
-    entries = _journalctl_json(args)
+    entries = _journalctl_json(args, check=True)
     return [_journal_entry_to_line(e) for e in entries]
 
 
@@ -1396,16 +1426,15 @@ def get_logs(name: str, lines: int = 300, filter_str: str = "", before: datetime
     validate_name(name)
     identities = _log_identities(name)
     if _log_backend() == "journald":
-        line_lists = [_get_logs_journald(i, lines, before, since, until) for i in identities]
+        line_lists = [_get_logs_journald(i, lines, before, since, until, filter_str) for i in identities]
+    elif filter_str:
+        line_lists = [_search_logs_file(i, lines, filter_str, since, before, until) for i in identities]
     else:
         line_lists = [_get_logs_file(i, lines, since, before, until) for i in identities]
     # A module whose comm user differs from its config name logs under both identities (see
     # _log_identities) -- merge the two tails into one timestamp-ordered stream, trimmed to
     # the overall last `lines`, the same per-module approximation the fleet-wide merge uses.
-    log_lines = line_lists[0] if len(line_lists) == 1 else merge_log_lines(line_lists, lines)
-    if filter_str:
-        log_lines = [line for line in log_lines if filter_str.lower() in line.lower()]
-    return log_lines
+    return line_lists[0] if len(line_lists) == 1 else merge_log_lines(line_lists, lines)
 
 
 _TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
@@ -1522,7 +1551,52 @@ def _get_logs_file(name: str, lines: int, since: datetime | None, before: dateti
         return list(buf)
 
 
-def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None) -> list[str]:
+def _search_logs_file(
+    name: str, lines: int, filter_str: str, since: datetime | None, before: datetime | None, until: datetime | None = None
+) -> list[str]:
+    """Streamed substring search over `name`'s whole flat log (or from `since`'s byte offset, if
+    given), the file-backend counterpart of journald's `--grep`. Same case-insensitive
+    `filter_str.lower() in line.lower()` semantics as the old post-hoc filter this replaces --
+    just applied while scanning the file instead of after truncating to a `tail -n` window, so a
+    match beyond the newest `lines` lines is actually found. Returns at most the last `lines`
+    matches; unlike `_get_logs_file`, a `before` without `since` does not early-return [] here --
+    a search has no cheap `tail -n` fast path to protect, so it always scans from `since`'s
+    offset (or byte 0) forward regardless of whether `before` is also set.
+    """
+    log_file = _log_dir() / f"{_active_name(name)}.log"
+    if not log_file.exists():
+        return []
+    since_naive = _naive_utc(since) if since is not None else None
+    upper = _until_bound(before, until)
+    upper_naive = _naive_utc(upper) if upper is not None else None
+
+    with open(log_file, "rb") as f:
+        start = 0
+        if since_naive is not None:
+            f.seek(0, 2)
+            file_size = f.tell()
+            if file_size == 0:
+                return []
+            start = _file_offset_of_last_line_before(f, file_size, since_naive)
+        f.seek(start)
+        if start > 0:
+            f.readline()  # skip the (possibly partial) line at the seek point
+        buf: deque[str] = deque(maxlen=lines)
+        for raw in f:
+            line = raw.decode("utf-8", errors="replace").rstrip("\n")
+            t = _file_line_ts(line)
+            if since_naive is not None and t is not None and t < since_naive:
+                continue
+            if upper_naive is not None and t is not None and t > upper_naive:
+                break
+            if filter_str.lower() in line.lower():
+                buf.append(line)
+        return list(buf)
+
+
+def _get_all_logs_journald(
+    names: list[str] | None, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None, filter_str: str = ""
+) -> list[str]:
     # names is None means "no PYOBS_MODULE restriction at all" -- broader than "every
     # currently configured module," since it also surfaces entries from a module whose
     # config has since been removed/renamed. names == [] means the caller explicitly
@@ -1539,8 +1613,11 @@ def _get_all_logs_journald(names: list[str] | None, lines: int, before: datetime
     upper = _until_bound(before, until)
     if upper is not None:
         args += ["--until", f"{upper:%Y-%m-%d %H:%M:%S} UTC"]
+    if filter_str:
+        # See _get_logs_journald for why this already searches full history.
+        args += ["--grep", re.escape(filter_str), "--case-sensitive=false"]
     args += ["-n", str(lines)]
-    entries = _journalctl_json(args)
+    entries = _journalctl_json(args, check=True)
     return [_journal_entry_to_line(e) for e in entries]
 
 
@@ -1563,7 +1640,9 @@ def merge_log_lines(line_lists: list[list[str]], lines: int) -> list[str]:
     return [line for _, _, _, line in entries[-lines:]]
 
 
-def _get_all_logs_file(names: list[str], lines: int, since: datetime | None, before: datetime | None, until: datetime | None = None) -> list[str]:
+def _get_all_logs_file(
+    names: list[str], lines: int, since: datetime | None, before: datetime | None, until: datetime | None = None, filter_str: str = ""
+) -> list[str]:
     # Each module's own file has no cross-module time index, so the merge reads the windowed
     # tail from every file independently, then sorts the union by each line's own leading
     # timestamp and trims to the overall last `lines` -- an approximation (a module with
@@ -1573,7 +1652,10 @@ def _get_all_logs_file(names: list[str], lines: int, since: datetime | None, bef
     # search comment).
     line_lists = []
     for name in names:
-        line_lists.append(_get_logs_file(name, lines, since, before, until))
+        if filter_str:
+            line_lists.append(_search_logs_file(name, lines, filter_str, since, before, until))
+        else:
+            line_lists.append(_get_logs_file(name, lines, since, before, until))
     return merge_log_lines(line_lists, lines)
 
 
@@ -1596,12 +1678,8 @@ def get_all_logs(
                     expanded.append(ident)
         names = expanded
     if _log_backend() == "journald":
-        log_lines = _get_all_logs_journald(names, lines, before, since, until)
-    else:
-        log_lines = _get_all_logs_file(names if names is not None else list_modules(), lines, since, before, until)
-    if filter_str:
-        log_lines = [line for line in log_lines if filter_str.lower() in line.lower()]
-    return log_lines
+        return _get_all_logs_journald(names, lines, before, since, until, filter_str)
+    return _get_all_logs_file(names if names is not None else list_modules(), lines, since, before, until, filter_str)
 
 
 def _get_log_stats_file(name: str, since: datetime | None = None) -> dict:

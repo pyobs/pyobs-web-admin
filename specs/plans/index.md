@@ -27,3 +27,8 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
 - [2026-09-03-flag-modules-on-config-drift.md](2026-09-03-flag-modules-on-config-drift.md) — flag
   running modules whose config file changed since they started, reusing the "Restart outdated"
   package-version-drift UI pattern. **implemented, closed** (#89)
+- [2026-09-14-server-side-log-search.md](2026-09-14-server-side-log-search.md) — move log-window
+  text search from client-side filtering of the last ~300 lines to a real server-side grep
+  (streamed scan for the file backend, `journalctl --grep` for journald), over full history when
+  no start date is set. **implemented, live-verified (HTTP/service layer + real browser
+  click-through on detail.html)** (#95)
