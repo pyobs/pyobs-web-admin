@@ -808,6 +808,15 @@ function renderLogs(skipAutoScroll) {
   if (!skipAutoScroll && wasNearBottom) pre.scrollTop = pre.scrollHeight;
 }
 
+// A failed request's body isn't this API's JSON -- Django renders an HTML error page for a
+// 500 -- so resp.json() throws, which the bare catch used to swallow and leave the pane
+// silently stale. Raise a readable error instead, so both callers below can report it.
+async function fetchJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
 async function fetchLogs() {
   try {
     const params = new URLSearchParams({lines: 300});
@@ -817,8 +826,7 @@ async function fetchLogs() {
     if (until) params.set('until', until);
     const filter = filterEl.value;
     if (filter) params.set('filter', filter);
-    const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`/api/modules/${MODULE}/logs/?${params}`);
     if (data.error) {
       searchFailed = true;
       setOlderStatus(`Search failed: ${data.error}`);
@@ -844,7 +852,10 @@ async function fetchLogs() {
     }
     rawLogLines = mergeWithOlderHistory(incoming);
     renderLogs();
-  } catch (_) {}
+  } catch (e) {
+    searchFailed = true;
+    setOlderStatus(`Could not load logs: ${e.message || e}`);
+  }
 }
 
 // A plain refresh only ever asks for the newest N lines, so replacing rawLogLines outright
@@ -888,8 +899,7 @@ async function fetchOlderLogs() {
     if (until) params.set('until', until);
     const filter = filterEl.value;
     if (filter) params.set('filter', filter);
-    const resp = await fetch(`/api/modules/${MODULE}/logs/?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`/api/modules/${MODULE}/logs/?${params}`);
     if (data.error) {
       searchFailed = true;
       setOlderStatus(`Search failed: ${data.error}`);
@@ -909,7 +919,9 @@ async function fetchOlderLogs() {
       pre.scrollTop = prevScrollTop + (pre.scrollHeight - prevScrollHeight);
       setOlderStatus('');
     }
-  } catch (_) {
+  } catch (e) {
+    searchFailed = true;
+    setOlderStatus(`Could not load logs: ${e.message || e}`);
   } finally {
     loadingOlderLogs = false;
   }

@@ -333,6 +333,15 @@ function updateSearchStatus(filter, data) {
   return false;
 }
 
+// A failed request's body isn't this API's JSON -- Django renders an HTML error page for a
+// 500 -- so resp.json() throws, which the bare catch used to swallow and leave the pane
+// silently stale. Raise a readable error instead, so both callers below can report it.
+async function fetchJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
 async function fetchOlderLogs() {
   if (loadingOlderLogs || noMoreOlderLogs || rawLogLines.length === 0) return;
   const oldest = parseLogTime(rawLogLines[0]);
@@ -352,8 +361,7 @@ async function fetchOlderLogs() {
     const until = endTimeParam();
     if (until) params.set('until', until);
     if (filter) params.set('filter', filter);
-    const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`{% url 'api_all_logs' %}?${params}`);
     if (updateSearchStatus(filter, data)) return;
     // Dedup by exact line content -- --until is inclusive, so the oldest line already on
     // screen (or one sharing its second-granularity timestamp) can come back in this batch.
@@ -368,7 +376,9 @@ async function fetchOlderLogs() {
       pre.scrollTop = prevScrollTop + (pre.scrollHeight - prevScrollHeight);
       setOlderStatus('');
     }
-  } catch (_) {
+  } catch (e) {
+    searchFailed = true;
+    setOlderStatus(`Could not load logs: ${e.message || e}`);
   } finally {
     loadingOlderLogs = false;
   }
@@ -421,8 +431,7 @@ window.fetchLogs = async function fetchLogs() {
     const until = endTimeParam();
     if (until) params.set('until', until);
     if (filter) params.set('filter', filter);
-    const resp = await fetch(`{% url 'api_all_logs' %}?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`{% url 'api_all_logs' %}?${params}`);
     if (updateSearchStatus(filter, data)) return;
     const incoming = data.lines || [];
     // Issue #44: notify for lines that arrived since the last fetch -- diffed against the
@@ -437,7 +446,10 @@ window.fetchLogs = async function fetchLogs() {
     }
     rawLogLines = mergeWithOlderHistory(incoming);
     renderLogs();
-  } catch (_) {}
+  } catch (e) {
+    searchFailed = true;
+    setOlderStatus(`Could not load logs: ${e.message || e}`);
+  }
 };
 
 // A plain refresh only ever asks for the newest N lines, so replacing rawLogLines outright
