@@ -1417,6 +1417,46 @@ class LogBackendJournaldTests(unittest.TestCase):
         '"CODE_LINE":"73","SYSLOG_IDENTIFIER":"pyobs","PRIORITY":"3","PROCESS_NAME":"MainProcess"}'
     )
 
+    # Captured live on iag50srv, 2026-09-19: mastermind's darkbias calibration script failing
+    # against an unreachable archive (https://archive.monet.uni-goettingen.de/ answering 502)
+    # logs the exception with its traceback, so MESSAGE contains newlines -- and journald's JSON
+    # export serializes any field containing a non-printable byte as an array of byte values
+    # rather than a string (systemd's Journal JSON Format). That made every fetched window
+    # containing one of these entries 500 (`'list' object has no attribute 'startswith'`).
+    # The traceback text is the real captured message, truncated after its first frames; the
+    # entry is built with json.dumps so its 200-odd-byte MESSAGE list stays maintainable.
+    _BYTE_ARRAY_MESSAGE_TEXT = (
+        "mastermind darkbias.py:202 Could not determine night or query archive for science exptimes.\n"
+        "Traceback (most recent call last):\n"
+        '  File "/opt/pyobs/venv/lib/python3.13/site-packages/pyobs/robotic/scripts/calibration/darkbias.py", '
+        "line 200, in can_run\n"
+        "    await science_exptimes_for_night(self.archive, self.site, night)\n"
+        "ValueError: Could not query frames: <html>...502 Bad Gateway...</html>"
+    )
+    _BYTE_ARRAY_MESSAGE_ENTRY = json.dumps({
+        "__REALTIME_TIMESTAMP": "1789815583765585",
+        "CODE_FILE": (
+            "/opt/pyobs/venv/lib/python3.13/site-packages/pyobs/robotic/scripts/calibration/darkbias.py"
+        ),
+        "CODE_LINE": "202",
+        "CODE_FUNC": "can_run",
+        "CODE_MODULE": "darkbias",
+        "LOGGER_NAME": "pyobs.robotic.scripts.calibration.darkbias",
+        "PYOBS_MODULE": "mastermind",
+        "EXTRA_PYOBS_MODULE": "mastermind",
+        "EXTRA_TASKNAME": "Task-22",
+        "SYSLOG_IDENTIFIER": "pyobs",
+        "SYSLOG_FACILITY": "23",
+        "PRIORITY": "3",
+        "MESSAGE": list(_BYTE_ARRAY_MESSAGE_TEXT.encode()),
+        "MESSAGE_RAW": "Could not determine night or query archive for science exptimes.",
+        "_HOSTNAME": "iag50srv",
+        "_COMM": "pyobs",
+        "PROCESS_NAME": "MainProcess",
+        "PID": "1235992",
+        "THREAD_NAME": "MainThread",
+    })
+
     def setUp(self):
         # Seed the version-detection cache so _journald_module_tag() doesn't shell out to
         # `pip list` on every call (which would both slow these tests down and add an
@@ -1466,6 +1506,18 @@ class LogBackendJournaldTests(unittest.TestCase):
             f"{ts:%Y-%m-%d %H:%M:%S} [ERROR] (mastermind) taskarchive.py:73 "
             f"Failed to update tasks from backend: None",
         ])
+
+    @override_settings(PYOBS_LOG_BACKEND="journald")
+    @patch("modules.services.subprocess.run")
+    def test_get_logs_reconstructs_byte_array_message(self, mock_run):
+        """journald hands back a byte-array MESSAGE for any entry whose text has a non-printable
+        byte -- a logged exception's traceback being the everyday case. The reconstructed line
+        keeps the traceback's own newlines, exactly like the file backend's formatter does."""
+        mock_run.return_value = self._mock_result(self._BYTE_ARRAY_MESSAGE_ENTRY + "\n")
+        lines = services.get_logs("mastermind", lines=300)
+        ts = datetime.fromtimestamp(1789815583765585 / 1_000_000)
+        body = self._BYTE_ARRAY_MESSAGE_TEXT[len("mastermind darkbias.py:202 "):]
+        self.assertEqual(lines, [f"{ts:%Y-%m-%d %H:%M:%S} [ERROR] (mastermind) darkbias.py:202 {body}"])
 
     @override_settings(PYOBS_LOG_BACKEND="journald")
     @patch("modules.services.subprocess.run")
