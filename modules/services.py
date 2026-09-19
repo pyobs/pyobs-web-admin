@@ -1322,6 +1322,22 @@ def _journalctl_json(args: list[str], check: bool = False) -> list[dict]:
     return entries
 
 
+def _journal_text(value: Any) -> Any:
+    """Normalizes a journald JSON field value to text where the field is conceptually text.
+
+    `journalctl -o json` serializes any field containing a non-printable byte -- in practice a
+    newline, which every logged exception's traceback has -- as an array of byte values instead
+    of a string (systemd's Journal JSON Format). Everything downstream assumes text, so a
+    single such entry used to crash the whole fetch: `'list' object has no attribute
+    'startswith'` on mastermind's recurring archive-failure traceback (2026-09-19). Byte arrays
+    are decoded; every other value is passed through untouched, so int/float `ARGUMENTS_N`
+    entries keep the type %-formatting needs.
+    """
+    if isinstance(value, list):
+        return bytes(value).decode("utf-8", "replace")
+    return value
+
+
 def _journal_entry_to_line(entry: dict) -> str:
     # tz=timezone.utc: the reconstructed line's timestamp has no zone marker (matching the
     # file backend's shape), so it must actually *be* UTC regardless of the host OS's local
@@ -1336,20 +1352,20 @@ def _journal_entry_to_line(entry: dict) -> str:
     # real module's log lines doubled up the file:line info instead of stripping it.
     code_file = os.path.basename(entry.get("CODE_FILE", "?"))
     code_line = entry.get("CODE_LINE", "?")
-    message = entry.get("MESSAGE")
+    message = _journal_text(entry.get("MESSAGE"))
     if message is None:
         # Seen live (2026-09-07): a %-style log call whose argument was itself None
         # (`log.error("... %s", e)` with e somehow None) arrived with a JSON-null MESSAGE --
         # crashed this function outright before this fix. MESSAGE_RAW/ARGUMENTS_N are still
         # sent alongside it, so reconstruct from those instead of dropping/crashing.
-        raw = entry.get("MESSAGE_RAW")
+        raw = _journal_text(entry.get("MESSAGE_RAW"))
         if raw is None:
             message = "<no message>"
         else:
             args = []
             i = 0
             while f"ARGUMENTS_{i}" in entry:
-                args.append(entry[f"ARGUMENTS_{i}"])
+                args.append(_journal_text(entry[f"ARGUMENTS_{i}"]))
                 i += 1
             try:
                 message = raw % tuple(args) if args else raw
