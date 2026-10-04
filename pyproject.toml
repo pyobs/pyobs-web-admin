@@ -1,10 +1,11 @@
 [project]
 name = "pyobs-web-admin"
-version = "2.3.6"
+version = "2.3.7"
 description = "Web-based administration interface for pyobs robotic telescope modules"
 authors = [
     { name = "Tim-Oliver Husser", email = "thusser@uni-goettingen.de" },
 ]
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "django>=6.0.7",
