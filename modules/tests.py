@@ -1229,6 +1229,78 @@ class PyobsdAutoDetectTests(unittest.TestCase):
         self.assertEqual(services._log_backend(), "journald")
 
 
+class ClearStalePidTests(unittest.TestCase):
+    """An empty/garbage PID file makes pyobs silently fail to daemonize (seen live on astro159)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.run_dir = Path(self.tmp.name)
+        self._settings = override_settings(PYOBS_RUN_DIR=str(self.run_dir))
+        self._settings.enable()
+        self.pf = self.run_dir / "camera.pid"
+
+    def tearDown(self):
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _age(self, seconds: int):
+        old = time.time() - seconds
+        os.utime(self.pf, (old, old))
+
+    def test_old_empty_file_is_removed(self):
+        self.pf.write_text("")
+        self._age(60)
+        self.assertEqual(services.get_module_status("camera"), "stopped")
+        self.assertFalse(self.pf.exists())
+
+    def test_old_garbage_file_is_removed(self):
+        self.pf.write_text("not a pid")
+        self._age(60)
+        services._clear_stale_pid("camera")
+        self.assertFalse(self.pf.exists())
+
+    def test_fresh_empty_file_is_kept(self):
+        self.pf.write_text("")
+        self.assertEqual(services.get_module_status("camera"), "stopped")
+        self.assertTrue(self.pf.exists())
+
+    @patch("modules.services._is_alive", return_value=False)
+    def test_dead_pid_is_removed(self, _alive):
+        self.pf.write_text("4242")
+        services._clear_stale_pid("camera")
+        self.assertFalse(self.pf.exists())
+
+    @patch("modules.services._is_alive", return_value=True)
+    def test_live_pid_is_kept(self, _alive):
+        self.pf.write_text("4242")
+        self._age(60)
+        services._clear_stale_pid("camera")
+        self.assertTrue(self.pf.exists())
+
+    def test_missing_file_is_fine(self):
+        services._clear_stale_pid("camera")
+
+    def test_start_module_clears_old_empty_pid_file(self):
+        (self.run_dir / "cfg").mkdir()
+        (self.run_dir / "cfg" / "camera.yaml").write_text("class: x\n")
+        self.pf.write_text("")
+        self._age(60)
+        seen = {}
+
+        def _run(args, **kwargs):
+            seen["existed"] = self.pf.exists()
+            self.pf.write_text("4242")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with override_settings(PYOBS_CONFIG_DIR=str(self.run_dir / "cfg"), PYOBS_EXEC="pyobs",
+                               PYOBS_LOG_BACKEND="journald", PYOBS_CONFIG_GIT_ENABLED=False), \
+                patch("modules.services.subprocess.run", side_effect=_run), \
+                patch("modules.services._is_alive", return_value=True):
+            ok, _ = services.start_module("camera")
+        self.assertTrue(ok)
+        self.assertFalse(seen["existed"])
+
+
 # ── journald log backend (see journald-logs.md) ─────────────────────────────────
 
 class StartModuleLogBackendTests(unittest.TestCase):
