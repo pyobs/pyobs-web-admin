@@ -990,6 +990,31 @@ def _is_alive(pid: int) -> bool:
         return False
 
 
+# python-daemon creates the PID file empty and writes the PID a moment later, so an empty file
+# younger than this is a start in progress, not a leftover.
+_PID_FILE_GRACE_SECONDS = 10
+
+
+def _clear_stale_pid(name: str) -> None:
+    """Delete name's PID file if it can't belong to a live process.
+
+    That covers a dead PID and content that isn't an integer (e.g. an empty file left by a start
+    that died mid-write). pyobs silently fails to daemonize against such a file, so it has to go.
+    """
+    pf = _pid_file(name)
+    pid = _read_pid(name)
+    if pid is not None:
+        if not _is_alive(pid):
+            pf.unlink(missing_ok=True)
+        return
+    try:
+        if time.time() - pf.stat().st_mtime < _PID_FILE_GRACE_SECONDS:
+            return
+    except OSError:
+        return
+    pf.unlink(missing_ok=True)
+
+
 # ── Config drift ──────────────────────────────────────────────────────────────
 #
 # Modules load their YAML config once at startup and never hot-reload it, so there's no way to
@@ -1035,12 +1060,9 @@ def get_module_status(name: str) -> str:
     """Returns 'running', 'stopped', or 'unknown'."""
     validate_name(name)
     pid = _read_pid(name)
-    if pid is None:
-        return "stopped"
-    if _is_alive(pid):
+    if pid is not None and _is_alive(pid):
         return "running"
-    # stale PID file — clean up silently
-    _pid_file(name).unlink(missing_ok=True)
+    _clear_stale_pid(name)
     return "stopped"
 
 
@@ -1049,6 +1071,8 @@ def start_module(name: str) -> tuple[bool, str]:
 
     if get_module_status(name) == "running":
         return False, f"{name} is already running"
+
+    _clear_stale_pid(name)
 
     config_file = _config_dir() / f"{name}.yaml"
     if not config_file.exists():
