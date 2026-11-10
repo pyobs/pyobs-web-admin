@@ -325,7 +325,7 @@ crypto = [
 
 [[package]]
 name = "pyobs-auth"
-version = "2.1.0"
+version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -333,9 +333,9 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/1b/97619d256a38b43db09075c64d254a84ba0d4d770f79321bcc8c041c6789/pyobs_auth-2.1.0.tar.gz", hash = "sha256:9c21dc3b84839d3fcffc6ed449493f0e270362180a614f748b6d6f6db51aff95", size = 14847, upload-time = "2026-08-31T07:56:02.964Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/7f/ecfa83eb3108bea4481d7911a7d06635b9932f0a0a7d10bec14f751cbf28/pyobs_auth-2.1.2.tar.gz", hash = "sha256:358dfd319d8d1b7a64414190894aa9df3e11db4b86bc189ab0fd577e4e6ef436", size = 15500, upload-time = "2026-10-04T19:53:28.675Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/49/5808430e3d31db785aacd7998d2b37aa544535750c9ba75b35f1277d0cd9/pyobs_auth-2.1.0-py3-none-any.whl", hash = "sha256:3324995130b8103849e426faa2990a646893634cf6fc2dbff7b631c8f1cb083c", size = 18603, upload-time = "2026-08-31T07:56:01.757Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/39/54465d524a27c08bc221f2fbd7198f67a6a5cab83989be09028e7b194626/pyobs_auth-2.1.2-py3-none-any.whl", hash = "sha256:b323cdd297dec7a742761924757f6d402e01b57aacbbfb229fd8f772afdebf20", size = 19228, upload-time = "2026-10-04T19:53:27.689Z" },
 ]
 
 [[package]]
