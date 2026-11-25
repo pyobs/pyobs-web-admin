@@ -9,6 +9,8 @@ Entries for releases before this file existed were generated from commit subject
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-25
+
 - Show modules that are shutting down as `stopping`, with how long they may still take (pyobs-core >= 2.29).
   Stop no longer kills a module after 5 s, which cut a camera's warm-up; it only sends SIGTERM.
 - Kill button for a stopping module.
@@ -16,6 +18,18 @@ Entries for releases before this file existed were generated from commit subject
 - Start is refused while a module is stopping or being restarted.
 - Fix: starting a module timed out (and killed it) when web-admin ran with a socket as stdin, e.g. under
   `manage.py runserver`.
+
+## [2.3.10] - 2026-10-12
+
+- Remove empty or unparseable PID files so pyobs can daemonize again
+
+## [2.3.9] - 2026-10-04
+
+- LICENSE: put email on the copyright line so GitHub detects MIT
+
+## [2.3.8] - 2026-10-04
+
+- Add CONTRIBUTING.md and CHANGELOG.md, add readme and project URLs to pyproject.toml
 
 ## [2.3.7] - 2026-10-04
 
