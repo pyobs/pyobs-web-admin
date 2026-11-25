@@ -27,6 +27,7 @@ urlpatterns = [
     path("api/modules/<str:name>/status/", views.api_status, name="api_status"),
     path("api/modules/<str:name>/start/", views.api_start, name="api_start"),
     path("api/modules/<str:name>/stop/", views.api_stop, name="api_stop"),
+    path("api/modules/<str:name>/kill/", views.api_kill, name="api_kill"),
     path("api/modules/<str:name>/activate/", views.api_activate, name="api_activate"),
     path("api/modules/<str:name>/deactivate/", views.api_deactivate, name="api_deactivate"),
     path("api/modules/<str:name>/restart/", views.api_restart, name="api_restart"),

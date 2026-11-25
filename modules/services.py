@@ -7,6 +7,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -1015,6 +1016,27 @@ def _clear_stale_pid(name: str) -> None:
     pf.unlink(missing_ok=True)
 
 
+# ── Stop file ────────────────────────────────────────────────────────────────
+#
+# pyobs-core (since 2.29, pyobs.utils.shutdown) writes "<pid file>.stopping" on SIGTERM and removes it at the end
+# of its shutdown. It holds the deadline (epoch seconds, a float) until which the module may still take, e.g. while
+# a camera warms up. Keep this in sync with pyobs.utils.shutdown.STOP_FILE_SUFFIX and read_stop_deadline().
+
+_STOP_FILE_SUFFIX = ".stopping"
+
+
+def _stop_file(name: str) -> Path:
+    pf = _pid_file(name)
+    return pf.with_name(pf.name + _STOP_FILE_SUFFIX)
+
+
+def _read_stop_deadline(name: str) -> float | None:
+    try:
+        return float(_stop_file(name).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
 # ── Config drift ──────────────────────────────────────────────────────────────
 #
 # Modules load their YAML config once at startup and never hot-reload it, so there's no way to
@@ -1057,20 +1079,31 @@ def config_stale(name: str) -> bool | None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_module_status(name: str) -> str:
-    """Returns 'running', 'stopped', or 'unknown'."""
+    """Returns 'running', 'stopping' (got SIGTERM and is still shutting down, see _stop_file), or 'stopped'."""
     validate_name(name)
     pid = _read_pid(name)
     if pid is not None and _is_alive(pid):
-        return "running"
+        return "stopping" if _stop_file(name).exists() else "running"
     _clear_stale_pid(name)
+    _stop_file(name).unlink(missing_ok=True)
     return "stopped"
 
 
-def start_module(name: str) -> tuple[bool, str]:
+def get_stop_deadline(name: str) -> float | None:
+    """Epoch seconds until which a stopping module may still take to shut down, or None if unknown."""
+    return _read_stop_deadline(name)
+
+
+def start_module(name: str, _restart_job: bool = False) -> tuple[bool, str]:
     validate_name(name)
 
-    if get_module_status(name) == "running":
+    status = get_module_status(name)
+    if status == "running":
         return False, f"{name} is already running"
+    if status == "stopping":
+        return False, f"{name} is still shutting down"
+    if not _restart_job and restart_in_progress(name):
+        return False, f"{name} is being restarted"
 
     _clear_stale_pid(name)
 
@@ -1094,7 +1127,9 @@ def start_module(name: str) -> tuple[bool, str]:
     try:
         # pyobs daemonizes itself (python-daemon double-fork) when --pid-file is given.
         # The immediate child exits quickly; subprocess.run returns with code 0.
-        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        # stdin from /dev/null: python-daemon doesn't detach if stdin is a socket (it takes that for inetd), and
+        # then this call runs into the timeout, which kills the module
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
     except subprocess.TimeoutExpired:
         return False, "Timed out waiting for module to start"
     except FileNotFoundError:
@@ -1115,6 +1150,9 @@ def start_module(name: str) -> tuple[bool, str]:
 
 
 def stop_module(name: str) -> tuple[bool, str]:
+    """Sends SIGTERM and returns right away. The module shuts down on its own, which can take long (e.g. a
+    cooled camera warming up), and shows as "stopping" until it is gone. Since pyobs-core 2.29, a module whose
+    shutdown hangs ends itself after its deadline. kill_module() is for when that can't wait."""
     validate_name(name)
 
     pid = _read_pid(name)
@@ -1122,25 +1160,49 @@ def stop_module(name: str) -> tuple[bool, str]:
         _pid_file(name).unlink(missing_ok=True)
         return False, f"{name} is not running"
 
+    # a second SIGTERM would kill a module with an older pyobs-core in the middle of its shutdown
+    if _stop_file(name).exists():
+        return True, f"{name} is already shutting down"
+
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError as e:
         return False, str(e)
+    return True, f"Stopping {name}"
 
-    # Wait up to 5 s for graceful exit
-    for _ in range(25):
-        if not _is_alive(pid):
-            _pid_file(name).unlink(missing_ok=True)
-            return True, f"Stopped {name}"
-        time.sleep(0.2)
 
-    # Force-kill if it didn't respond
+# how long kill_module() waits for a killed module to be gone
+_KILL_WAIT_SECONDS = 5.0
+
+
+def kill_module(name: str) -> tuple[bool, str]:
+    """Sends SIGKILL right away, also to a module that is shutting down. Cuts a camera's warm-up."""
+    validate_name(name)
+
+    pid = _read_pid(name)
+    if pid is None or not _is_alive(pid):
+        _remove_run_files(name)
+        return False, f"{name} is not running"
+
     try:
         os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
+    except OSError as e:
+        return False, str(e)
+
+    # SIGKILL can't end a process stuck in the kernel (e.g. in a USB driver call) until that call returns.
+    # Keep the PID file of such a process, so that it doesn't show as stopped and can't be started twice.
+    deadline = time.time() + _KILL_WAIT_SECONDS
+    while _is_alive(pid):
+        if time.time() >= deadline:
+            return False, f"{name} (PID {pid}) is still alive after SIGKILL, probably stuck in a driver call"
+        time.sleep(0.1)
+    _remove_run_files(name)
+    return True, f"Killed {name}"
+
+
+def _remove_run_files(name: str) -> None:
     _pid_file(name).unlink(missing_ok=True)
-    return True, f"Force-killed {name} (did not exit after SIGTERM)"
+    _stop_file(name).unlink(missing_ok=True)
 
 
 _process_cache: dict[str, psutil.Process] = {}
@@ -1287,10 +1349,115 @@ def activate_module(name: str) -> tuple[bool, str]:
 
 
 def restart_module(name: str) -> tuple[bool, str]:
+    """Restarts a module. A stopped one is just started. For a running one, the stop can take long (e.g. a camera
+    warming up), so a detached job does it (manage.py restart_module, see run_restart()), and this returns right
+    away. The module shows as "stopping" and then "running"."""
     validate_name(name)
-    stopped, msg = stop_module(name)
-    ok, start_msg = start_module(name)
-    return ok, start_msg
+    _run_dir().mkdir(parents=True, exist_ok=True)
+    # the check for a running job and writing the lock must happen in one step, else two requests at the same time
+    # both start a job
+    flock_fd = os.open(_restart_flock_file(name), os.O_CREAT | os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(flock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False, f"{name} is already being restarted"
+        return _restart_module_locked(name)
+    finally:
+        os.close(flock_fd)  # also releases the flock
+
+
+def _restart_module_locked(name: str) -> tuple[bool, str]:
+    if restart_in_progress(name):
+        return False, f"{name} is already being restarted"
+    if get_module_status(name) == "stopped":
+        return start_module(name)
+
+    log_file = _restart_log_file(name)
+    try:
+        with open(log_file, "w") as log:
+            proc = subprocess.Popen(
+                [sys.executable, str(settings.BASE_DIR / "manage.py"), "restart_module", name],
+                cwd=settings.BASE_DIR,
+                start_new_session=True,  # survives this request, and a restart of web-admin (KillMode=process)
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+    except OSError as e:
+        return False, f"Could not start restart job: {e}"
+    try:
+        create_time = psutil.Process(proc.pid).create_time()
+    except psutil.NoSuchProcess:
+        create_time = None
+    _restart_lock_file(name).write_text(json.dumps({"pid": proc.pid, "pid_create_time": create_time}))
+    return True, f"Restarting {name}"
+
+
+def restart_in_progress(name: str) -> bool:
+    """Whether a restart job for name is still running."""
+    try:
+        lock = json.loads(_restart_lock_file(name).read_text())
+    except (OSError, ValueError):
+        return False
+    pid = lock.get("pid")
+    if pid and _pkg_update_process_alive(pid, lock.get("pid_create_time")) and not _is_zombie(pid):
+        return True
+    _restart_lock_file(name).unlink(missing_ok=True)
+    return False
+
+
+def _is_zombie(pid: int) -> bool:
+    """The restart job is a child of the gunicorn worker that started it, so once it exits it stays a zombie
+    (still "alive" for os.kill(pid, 0)) until that worker happens to reap it."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+# how long run_restart() waits for a module that asked for no extra time, before it sends SIGKILL; the same as
+# pyobsd's default stop_timeout
+_RESTART_STOP_TIMEOUT = 30.0
+
+
+def run_restart(name: str) -> tuple[bool, str]:
+    """The restart job itself, run detached by restart_module(): stops the module, waits until it is gone, starts
+    it again. Waits for the deadline from the stop file (at least _RESTART_STOP_TIMEOUT) and sends SIGKILL after
+    that, for modules with a pyobs-core that doesn't end itself."""
+    try:
+        validate_name(name)
+        pid = _read_pid(name)
+        if pid is not None and _is_alive(pid):
+            if not _stop_file(name).exists():
+                os.kill(pid, signal.SIGTERM)
+            default_deadline = time.time() + _RESTART_STOP_TIMEOUT
+            # keep the last deadline seen, the module removes its stop file a moment before it exits
+            requested: float | None = None
+            while _is_alive(pid):
+                requested = _read_stop_deadline(name) or requested
+                if time.time() >= max(default_deadline, requested or 0.0):
+                    ok, msg = kill_module(name)
+                    if not ok:
+                        return False, msg
+                    break
+                time.sleep(0.5)
+            _remove_run_files(name)
+        return start_module(name, _restart_job=True)
+    finally:
+        _restart_lock_file(name).unlink(missing_ok=True)
+
+
+def _restart_lock_file(name: str) -> Path:
+    return _run_dir() / f"{_active_name(name)}.restart.json"
+
+
+def _restart_flock_file(name: str) -> Path:
+    return _run_dir() / f"{_active_name(name)}.restart.flock"
+
+
+def _restart_log_file(name: str) -> Path:
+    return _run_dir() / f"{_active_name(name)}.restart.log"
 
 
 # ── journald log backend ─────────────────────────────────────────────────────

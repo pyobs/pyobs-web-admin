@@ -130,6 +130,9 @@
       <button class="btn btn-sm btn-outline-danger" title="Stop" data-action="stop" onclick="quickControl('{{ mod }}', 'stop', this)">
         <i class="bi bi-stop-fill"></i>
       </button>
+      <button class="btn btn-sm btn-danger d-none" title="Kill right away, without waiting for the shutdown" data-action="kill" onclick="quickControl('{{ mod }}', 'kill', this)">
+        <i class="bi bi-x-octagon"></i>
+      </button>
       {% if mod|slice:':1' == '_' %}
       <button class="btn btn-sm btn-outline-success ms-1" title="Activate" onclick="toggleActive('{{ mod }}', 'activate', this)">
         <i class="bi bi-eye"></i>
@@ -156,7 +159,18 @@
 }
 </style>
 <script>
-const STATUS_COLORS = {running: 'success', stopped: 'danger', unknown: 'secondary'};
+const STATUS_COLORS = {running: 'success', stopping: 'warning', stopped: 'danger', unknown: 'secondary'};
+
+// "stopping (up to 37 min)", "running (restarting)"
+function statusText(m) {
+  let text = m.status;
+  if (m.status === 'stopping' && m.stop_deadline) {
+    const s = Math.max(0, Math.round(m.stop_deadline - Date.now() / 1000));
+    if (s > 0) text += ` (up to ${s < 120 ? `${s} s` : `${Math.round(s / 60)} min`})`;
+  }
+  if (m.restarting) text += ' (restarting)';
+  return text;
+}
 
 function fmtUptime(s) {
   if (s < 60) return `${s}s`;
@@ -250,7 +264,7 @@ async function refreshAllStatuses() {
       document.querySelectorAll(`.status-badge[data-module="${m.name}"]`).forEach(badge => {
         const cls = STATUS_COLORS[m.status] || 'secondary';
         badge.className = `badge rounded-pill status-badge ${m.status} bg-${cls}`;
-        badge.textContent = m.status;
+        badge.textContent = statusText(m);
       });
       const ramEl = document.querySelector(`.module-ram[data-module="${m.name}"]`);
       const cpuEl = document.querySelector(`.module-cpu[data-module="${m.name}"]`);
@@ -272,13 +286,13 @@ async function refreshAllStatuses() {
         if (isConfigStale) ind.title = 'Config file changed since this module started — restart needed';
       });
       if (isConfigStale) configStaleCount++;
-      if (m.status === 'running') {
+      if (m.status === 'running' || m.status === 'stopping') {
         running++;
         if (m.stats) { totalRamMb += m.stats.memory_mb; totalCpu += m.stats.cpu_percent; }
       } else if (!m.name.startsWith('_')) stopped++;
       const row = document.querySelector(`tr[data-module-row="${m.name}"]`);
       if (row) {
-        row.dataset.sortStatus = m.status === 'running' ? 0 : m.name.startsWith('_') ? 2 : 1;
+        row.dataset.sortStatus = (m.status === 'running' || m.status === 'stopping') ? 0 : m.name.startsWith('_') ? 2 : 1;
         row.dataset.sortRam = m.stats ? m.stats.memory_mb : -1;
         row.dataset.sortCpu = m.stats ? m.stats.cpu_percent : -1;
         row.dataset.sortUptime = m.stats ? m.stats.uptime_seconds : -1;
@@ -287,9 +301,11 @@ async function refreshAllStatuses() {
         row.dataset.outdated = isOutdated ? '1' : '';
         row.dataset.configStale = isConfigStale ? '1' : '';
         const isRunning = m.status === 'running';
-        row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning);
-        row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning);
+        const isStopping = m.status === 'stopping';
+        row.querySelector('[data-action="start"]')?.toggleAttribute('disabled', isRunning || isStopping || m.restarting);
+        row.querySelector('[data-action="restart"]')?.toggleAttribute('disabled', !isRunning || m.restarting);
         row.querySelector('[data-action="stop"]')?.toggleAttribute('disabled', !isRunning);
+        row.querySelector('[data-action="kill"]')?.classList.toggle('d-none', !isStopping);
       }
     });
     const elRunning = document.getElementById('stat-running');
@@ -310,6 +326,7 @@ async function refreshAllStatuses() {
 }
 
 async function quickControl(name, action, btn) {
+  if (action === 'kill' && !confirm(`Kill ${name} right away? This cuts its shutdown short, e.g. a camera stays cold.`)) return;
   btn.disabled = true;
   try {
     const resp = await fetch(`/api/modules/${name}/${action}/`, {
