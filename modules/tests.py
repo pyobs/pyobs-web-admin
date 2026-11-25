@@ -4641,8 +4641,10 @@ def on_term(*_):
     global exit_at
     if exit_at is not None:
         return
-    with open(pid_file + ".stopping", "w") as f:
+    # atomic like pyobs-core, so a reader never sees an empty stop file
+    with open(pid_file + ".stopping.tmp", "w") as f:
         f.write(str(time.time() + extend))
+    os.replace(pid_file + ".stopping.tmp", pid_file + ".stopping")
     exit_at = time.time() + delay
 signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == "ignore" else on_term)
 with open(pid_file + ".tmp", "w") as f:
