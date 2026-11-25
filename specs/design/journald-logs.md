@@ -78,7 +78,7 @@ the same JS pattern already exercised on `detail.html`, but hasn't been driven i
   permissions question, not a code-correctness one.
 - **Done — v1.1, auto-detect `PYOBS_LOG_BACKEND` from `pyobsd`'s own config, not a Work Plan item.** Requested after learning `pyobsd` (`pyobs-core`'s daemon manager, `pyobs-core/pyobs/cli/pyobsd.py` — read directly, this app has no dependency on it) has its own global config file with a `syslog` key it already uses to decide `--syslog` vs. not, when it starts modules itself. `modules/services.py`: `_pyobsd_config()` reads that same file — the exact candidate-path list and "first one found wins" order as `pyobs-core/pyobs/cli/_cli.py`'s `CLI._load_config` (`~/.config/pyobs.yaml`, `/etc/pyobs.yaml`, `/opt/pyobs/storage/pyobs.yaml`) — and returns just its `pyobsd` section, `{}` if no candidate exists or the file is malformed (never raises; this is a convenience auto-detection, not something that should ever break a page load). `_log_backend()` (the single existing choke point every journald-vs-file branch already called through) now checks `settings.PYOBS_LOG_BACKEND` first — if explicitly set (`"file"`/`"journald"`), that always wins, so any deployment that already configured this keeps working completely unchanged — and only falls through to `"journald" if _pyobsd_config().get("syslog") else "file"` when it's unset. `pyobs_web_admin/settings.py`'s default changed from `"file"` to `None` specifically so `_log_backend()` can tell "admin explicitly wants file" apart from "never configured, please auto-detect" — before this change every installation implicitly had an explicit `"file"` value (Django's settings loading always supplies the module-level default), so auto-detection could never have activated for anyone. Tests: `PyobsdAutoDetectTests` in `modules/tests.py` (10 tests — no-candidate-file, reads the `pyobsd` section, missing section, malformed YAML doesn't crash, first-existing-candidate-wins, auto-detects both `journald` and `file`, explicit setting overrides auto-detection in both directions), all patching `services._PYOBSD_CONFIG_CANDIDATES` to a controlled temp path rather than touching the real candidate locations, so results don't depend on whatever happens to exist on the machine running the tests. Verified live via `manage.py shell` against the real settings module (not just the test harness): confirmed a real temp `pyobs.yaml` with `syslog: true`/`false` correctly auto-detects `journald`/`file` when `PYOBS_LOG_BACKEND` is unset, and confirmed an explicit `PYOBS_LOG_BACKEND` setting overrides auto-detection even when the file disagrees. `python manage.py test modules` — 122/122 passing, no regressions (this repo's real `local_settings.py` already has `PYOBS_LOG_BACKEND = "journald"` set explicitly, confirmed to still take priority over auto-detection unchanged).
 - **Done — v1.3, resolves the last Open question with a real group-less negative case.**
-  `iagvtsrv`'s `pyobs` account (the dedicated, minimal-privilege system user that actually runs
+  `srv-b`'s `pyobs` account (the dedicated, minimal-privilege system user that actually runs
   pyobs modules there — not a repurposed admin/dev account like `husser` in the v1.2 test) ran
   `journalctl SYSLOG_IDENTIFIER=pyobs -n 50 --no-pager` directly and got journald's own hint —
   `"You are currently not seeing messages from other users and the system. Users in groups
@@ -511,7 +511,7 @@ Debian/Ubuntu-family systems is granted read access to `/var/log/journal` by a d
 `systemd-journal` afterward (`usermod -aG` + `sg systemd-journal -c ...`) also succeeded, as
 expected, but was redundant given `adm` already worked.
 
-**v1.3 closes the gap: a truly group-less account, observed for real.** `iagvtsrv`'s `pyobs`
+**v1.3 closes the gap: a truly group-less account, observed for real.** `srv-b`'s `pyobs`
 account is exactly the case `husser` couldn't test — a dedicated, minimal-privilege service
 account, in neither `adm` nor `systemd-journal`, created specifically to run pyobs modules (not
 a repurposed admin/dev account). It ran `journalctl SYSLOG_IDENTIFIER=pyobs -n 50 --no-pager`
@@ -553,7 +553,7 @@ None remaining as of v1.4.
 - [x] `get_log_stats()`: journald branch via `--since "-24h" -o json --no-pager`, counting
   directly from each entry's `PRIORITY` field.
 - [x] **v1.3, not in the original plan.** Tested the group-less-account negative case for real
-  (`iagvtsrv`'s `pyobs` account, genuinely minimal-privilege, not a repurposed admin/dev
+  (`srv-b`'s `pyobs` account, genuinely minimal-privilege, not a repurposed admin/dev
   account) — confirmed denial, confirmed the fix, and documented `systemd-journal` as the
   preferred grant over `adm` — see Progress log and the updated "Cross-user journal read
   permission" section.

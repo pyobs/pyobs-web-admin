@@ -404,7 +404,7 @@ different, separate layer from the ACL, and worth not conflating:
   connection is accepted — it inspects that request's source IP and only lets the command
   through if it matches `loopback`.
 
-Verified by curling `192.168.178.246:5281` (the box's own real LAN-facing IP, not
+Verified by curling `192.0.2.10:5281` (the box's own real LAN-facing IP, not
 `127.0.0.1`) instead of loopback: **every command tested returned `403 Forbidden`** —
 including `registered_users`/`stats` (in the explicit whitelist) *and* `status` (which,
 before the custom `api_permissions` block existed, had worked with zero configuration at
