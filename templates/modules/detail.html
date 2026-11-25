@@ -33,6 +33,10 @@
     <button id="stop-btn" class="btn btn-danger btn-sm" onclick="controlModule('stop')" disabled>
       <i class="bi bi-stop-fill me-1"></i>Stop
     </button>
+    <button id="kill-btn" class="btn btn-outline-danger btn-sm d-none" onclick="controlModule('kill')"
+            title="End the module right away, without waiting for its shutdown">
+      <i class="bi bi-x-octagon me-1"></i>Kill
+    </button>
     {% if module_name|slice:':1' == '_' %}
     <button class="btn btn-outline-success btn-sm" onclick="toggleActive('activate')">
       <i class="bi bi-eye me-1"></i>Activate
@@ -287,18 +291,31 @@ function fmtUptime(s) {
   return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
 }
 
+// "stopping (up to 37 min)", "running (restarting)"
+function statusText(data) {
+  let text = data.status;
+  if (data.status === 'stopping' && data.stop_deadline) {
+    const s = Math.max(0, Math.round(data.stop_deadline - Date.now() / 1000));
+    if (s > 0) text += ` (up to ${s < 120 ? `${s} s` : `${Math.round(s / 60)} min`})`;
+  }
+  if (data.restarting) text += ' (restarting)';
+  return text;
+}
+
 async function updateStatus() {
   const resp = await fetch(`/api/modules/${MODULE}/status/`);
   const data = await resp.json();
   const badge = document.getElementById('status-badge');
-  const colors = {running: 'success', stopped: 'danger', unknown: 'secondary'};
-  badge.textContent = data.status;
+  const colors = {running: 'success', stopping: 'warning', stopped: 'danger', unknown: 'secondary'};
+  badge.textContent = statusText(data);
   badge.className = `badge fs-6 bg-${colors[data.status] || 'secondary'}`;
   const running = data.status === 'running';
+  const stopping = data.status === 'stopping';
   const unknown = data.status === 'unknown';
-  document.getElementById('start-btn').disabled = running || unknown;
-  document.getElementById('restart-btn').disabled = !running;
+  document.getElementById('start-btn').disabled = running || stopping || unknown || data.restarting;
+  document.getElementById('restart-btn').disabled = !running || data.restarting;
   document.getElementById('stop-btn').disabled = !running;
+  document.getElementById('kill-btn').classList.toggle('d-none', !stopping);
   const memRow = document.getElementById('stat-memory-row');
   const cpuRow = document.getElementById('stat-cpu-row');
   const pidRow = document.getElementById('stat-pid-row');
@@ -559,11 +576,12 @@ async function toggleActive(action) {
 
 // ── Start / Stop ──────────────────────────────────────────────────────────────
 async function controlModule(action) {
+  if (action === 'kill' && !confirm(`Kill ${MODULE} right away? This cuts its shutdown short, e.g. a camera stays cold.`)) return;
   const btn = document.getElementById(`${action}-btn`);
   btn.disabled = true;
   const out = document.getElementById('action-output');
   out.className = 'alert alert-secondary mb-3';
-  out.textContent = `${{start: 'Starting', stop: 'Stopping', restart: 'Restarting'}[action] ?? action}…`;
+  out.textContent = `${{start: 'Starting', stop: 'Stopping', restart: 'Restarting', kill: 'Killing'}[action] ?? action}…`;
   out.classList.remove('d-none');
 
   try {
@@ -579,6 +597,7 @@ async function controlModule(action) {
     out.textContent = `Request failed: ${e}`;
   }
 
+  btn.disabled = false;
   await updateStatus();
 }
 

@@ -151,7 +151,7 @@ def dashboard(request):
 
 
 def _host_summary(name: str, modules: list[dict]) -> dict:
-    running = sum(1 for m in modules if m.get("status") == "running")
+    running = sum(1 for m in modules if m.get("status") in _ALIVE)
     stopped = len(modules) - running
     cpu = sum(m["stats"]["cpu_percent"] for m in modules if m.get("stats"))
     mem = sum(m["stats"]["memory_mb"] for m in modules if m.get("stats"))
@@ -179,7 +179,7 @@ def fleet_overview(request):
     local_modules = []
     for name in services.list_modules():
         status = services.get_module_status(name)
-        stats = services.get_module_stats(name) if status == "running" else None
+        stats = services.get_module_stats(name) if status in _ALIVE else None
         local_modules.append({"name": name, "status": status, "stats": stats})
     hosts = [_host_summary("localhost", local_modules)]
     per_host_packages = [("localhost", services.get_package_overview())]
@@ -448,6 +448,17 @@ def acl_matrix(request):
 
 # ── Status API ────────────────────────────────────────────────────────────────
 
+# statuses with a live process: "stopping" is still running, just shutting down
+_ALIVE = ("running", "stopping")
+
+
+def _stop_info(name: str, status: str) -> dict:
+    return {
+        "stop_deadline": services.get_stop_deadline(name) if status == "stopping" else None,
+        "restarting": services.restart_in_progress(name),
+    }
+
+
 def _installed_pyobs_versions() -> dict[str, str]:
     return {p["name"]: p["version"] for p in services.list_pyobs_packages()}
 
@@ -473,12 +484,12 @@ def api_all_statuses(request):
     result = []
     for m in modules:
         status = services.get_module_status(m)
-        stats = services.get_module_stats(m) if status == "running" else None
+        stats = services.get_module_stats(m) if status in _ALIVE else None
         versions, outdated = _versions_and_outdated(m, status, installed)
         config_stale = services.config_stale(m) if status == "running" else None
         result.append({
             "name": m, "status": status, "stats": stats, "comm_user": services.get_comm_user(m),
-            "versions": versions, "outdated": outdated, "config_stale": config_stale,
+            "versions": versions, "outdated": outdated, "config_stale": config_stale, **_stop_info(m, status),
         })
     return JsonResponse({"modules": result, "installed": installed})
 
@@ -490,13 +501,13 @@ def api_status(request, name: str):
         return _proxy(host, "GET", f"/api/modules/{name}/status/")
     _get_module_or_404(name)
     status = services.get_module_status(name)
-    stats = services.get_module_stats(name) if status == "running" else None
+    stats = services.get_module_stats(name) if status in _ALIVE else None
     installed = _installed_pyobs_versions()
     versions, outdated = _versions_and_outdated(name, status, installed)
     config_stale = services.config_stale(name) if status == "running" else None
     return JsonResponse({
         "status": status, "stats": stats, "versions": versions, "outdated": outdated,
-        "installed": installed, "config_stale": config_stale,
+        "installed": installed, "config_stale": config_stale, **_stop_info(name, status),
     })
 
 
@@ -519,6 +530,16 @@ def api_stop(request, name: str):
         return _proxy(host, "POST", f"/api/modules/{name}/stop/")
     _get_module_or_404(name)
     success, output = services.stop_module(name)
+    return JsonResponse({"success": success, "output": output})
+
+
+@require_POST
+def api_kill(request, name: str):
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "POST", f"/api/modules/{name}/kill/")
+    _get_module_or_404(name)
+    success, output = services.kill_module(name)
     return JsonResponse({"success": success, "output": output})
 
 
@@ -1385,7 +1406,7 @@ def api_module_ejabberd(request, name: str):
     if comm_user is None:
         return JsonResponse({"comm_user": None})
     shared_with = [n for n in services.find_modules_sharing_comm_user(comm_user) if n != name]
-    running = services.get_module_status(name) == "running"
+    running = services.get_module_status(name) in _ALIVE
     try:
         state = _ejabberd_user(comm_user)
     except Exception as e:

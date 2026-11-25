@@ -7,7 +7,7 @@ from modules import proxy, services
 
 
 def _sort_modules(modules_with_status: list[dict]) -> list[dict]:
-    return sorted(modules_with_status, key=lambda m: (0 if m["status"] == "running" else 1, m["name"]))
+    return sorted(modules_with_status, key=lambda m: (0 if m["status"] in ("running", "stopping") else 1, m["name"]))
 
 
 # Cached for the life of the process: this app isn't installed as a distribution (no
