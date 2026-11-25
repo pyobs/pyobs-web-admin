@@ -3,7 +3,11 @@ import hashlib
 import json
 import os
 import re
+import signal
+import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -4622,3 +4626,263 @@ class AdminSyncTests(DjangoTestCase):
     def test_sync_does_nothing_when_unconfigured(self):
         sync_admin_user(sender=None)
         self.assertFalse(User.objects.filter(username=_TEST_ADMIN_USERNAME).exists())
+
+
+# ── stopping state, stop, kill, restart job ─────────────────────────────────────
+
+# Stand-in for a daemonized pyobs module (pyobs-core >= 2.29): on SIGTERM it writes a deadline <extend> s from
+# now into its stop file and exits <delay> s later, removing the stop file just before. With mode "ignore" it
+# ignores SIGTERM, like a module whose shutdown hangs (or an older pyobs-core without a watchdog).
+_FAKE_MODULE = """
+import os, signal, sys, time
+pid_file, mode, extend, delay = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+exit_at = None
+def on_term(*_):
+    global exit_at
+    if exit_at is not None:
+        return
+    with open(pid_file + ".stopping", "w") as f:
+        f.write(str(time.time() + extend))
+    exit_at = time.time() + delay
+signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == "ignore" else on_term)
+with open(pid_file + ".tmp", "w") as f:
+    f.write(str(os.getpid()))
+os.rename(pid_file + ".tmp", pid_file)
+while exit_at is None or time.time() < exit_at:
+    time.sleep(0.02)
+os.remove(pid_file + ".stopping")
+"""
+
+
+class StoppingStateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.run_dir = self.tmp_path / "run"
+        self.run_dir.mkdir()
+        (self.tmp_path / "config").mkdir()
+        (self.tmp_path / "config" / "camera.yaml").write_text("class: x\n")
+        self._settings = override_settings(
+            PYOBS_RUN_DIR=str(self.run_dir), PYOBS_CONFIG_DIR=str(self.tmp_path / "config"),
+            PYOBS_CONFIG_GIT_ENABLED=False,
+        )
+        self._settings.enable()
+        self.procs = []
+
+    def tearDown(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        self._settings.disable()
+        self.tmp.cleanup()
+
+    def _fake(self, mode="exit", extend=0.0, delay=0.0):
+        pid_file = self.run_dir / "camera.pid"
+        proc = subprocess.Popen([sys.executable, "-c", _FAKE_MODULE, str(pid_file), mode, str(extend), str(delay)])
+        self.procs.append(proc)
+        # the test is the parent here, and an unreaped child would still look alive to os.kill(pid, 0)
+        threading.Thread(target=proc.wait, daemon=True).start()
+        for _ in range(100):
+            if pid_file.exists():
+                return proc
+            time.sleep(0.05)
+        raise RuntimeError("fake module did not write its PID file")
+
+    def _wait_dead(self, proc, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    def _wait_stopping(self):
+        for _ in range(100):
+            if services.get_module_status("camera") == "stopping":
+                return
+            time.sleep(0.02)
+        raise AssertionError("module never showed as stopping")
+
+    def test_stop_returns_right_away_and_shows_stopping(self):
+        proc = self._fake(extend=600.0, delay=1.0)
+        start = time.monotonic()
+        ok, msg = services.stop_module("camera")
+        self.assertTrue(ok)
+        self.assertLess(time.monotonic() - start, 0.5)
+        self._wait_stopping()
+        deadline = services.get_stop_deadline("camera")
+        self.assertIsNotNone(deadline)
+        self.assertGreater(deadline, time.time() + 500)
+        self._wait_dead(proc)
+        self.assertEqual(proc.returncode, 0)  # not killed after 5 s like before
+        self.assertEqual(services.get_module_status("camera"), "stopped")
+        self.assertFalse((self.run_dir / "camera.pid").exists())
+
+    def test_stop_does_not_signal_stopping_module_again(self):
+        self._fake(extend=600.0, delay=1.0)
+        services.stop_module("camera")
+        self._wait_stopping()
+        with patch("modules.services.os.kill") as kill:
+            ok, msg = services.stop_module("camera")
+        self.assertTrue(ok)
+        self.assertIn("already shutting down", msg)
+        self.assertNotIn(signal.SIGTERM, [c.args[1] for c in kill.call_args_list if len(c.args) > 1])
+
+    def test_start_refused_while_stopping(self):
+        self._fake(extend=600.0, delay=1.0)
+        services.stop_module("camera")
+        self._wait_stopping()
+        ok, msg = services.start_module("camera")
+        self.assertFalse(ok)
+        self.assertIn("still shutting down", msg)
+
+    def test_kill_stopping_module(self):
+        proc = self._fake(extend=600.0, delay=30.0)
+        services.stop_module("camera")
+        self._wait_stopping()
+        ok, msg = services.kill_module("camera")
+        self.assertTrue(ok, msg)
+        self._wait_dead(proc)
+        self.assertEqual(proc.returncode, -9)
+        self.assertFalse((self.run_dir / "camera.pid").exists())
+        self.assertFalse((self.run_dir / "camera.pid.stopping").exists())
+        self.assertEqual(services.get_module_status("camera"), "stopped")
+
+    def test_kill_not_running(self):
+        ok, msg = services.kill_module("camera")
+        self.assertFalse(ok)
+        self.assertIn("not running", msg)
+
+    @patch("modules.services._KILL_WAIT_SECONDS", 0.2)
+    @patch("modules.services._is_alive", return_value=True)
+    @patch("modules.services.os.kill")
+    def test_kill_keeps_pid_file_of_process_that_survives(self, _kill, _alive):
+        (self.run_dir / "camera.pid").write_text("4242")
+        ok, msg = services.kill_module("camera")
+        self.assertFalse(ok)
+        self.assertIn("still alive after SIGKILL", msg)
+        self.assertTrue((self.run_dir / "camera.pid").exists())
+
+    def test_stale_stop_file_is_removed_with_dead_module(self):
+        (self.run_dir / "camera.pid.stopping").write_text(str(time.time() + 100))
+        self.assertEqual(services.get_module_status("camera"), "stopped")
+        self.assertFalse((self.run_dir / "camera.pid.stopping").exists())
+
+    def test_run_restart_waits_for_shutdown_then_starts(self):
+        proc = self._fake(extend=600.0, delay=0.8)
+        with patch("modules.services.start_module", return_value=(True, "Started camera")) as start:
+            ok, msg = services.run_restart("camera")
+        self.assertTrue(ok)
+        self.assertEqual(proc.returncode, 0)  # exited after its shutdown, not killed
+        start.assert_called_once_with("camera", _restart_job=True)
+
+    @patch("modules.services._RESTART_STOP_TIMEOUT", 0.3)
+    def test_run_restart_kills_module_that_does_not_stop(self):
+        proc = self._fake(mode="ignore")
+        with patch("modules.services.start_module", return_value=(True, "Started camera")) as start:
+            ok, _ = services.run_restart("camera")
+        self.assertTrue(ok)
+        self._wait_dead(proc)
+        self.assertEqual(proc.returncode, -9)
+        start.assert_called_once()
+
+    def test_run_restart_removes_its_lock(self):
+        services._restart_lock_file("camera").write_text(json.dumps({"pid": os.getpid()}))
+        with patch("modules.services.start_module", return_value=(True, "Started camera")):
+            services.run_restart("camera")
+        self.assertFalse(services._restart_lock_file("camera").exists())
+
+    def test_restart_stopped_module_starts_directly(self):
+        with patch("modules.services.start_module", return_value=(True, "Started camera")) as start, \
+                patch("modules.services.subprocess.Popen") as popen:
+            ok, _ = services.restart_module("camera")
+        self.assertTrue(ok)
+        start.assert_called_once_with("camera")
+        popen.assert_not_called()
+
+    def test_restart_running_module_spawns_detached_job(self):
+        self._fake()
+        with patch("modules.services.subprocess.Popen") as popen:
+            popen.return_value.pid = os.getpid()
+            ok, msg = services.restart_module("camera")
+        self.assertTrue(ok)
+        args = popen.call_args.args[0]
+        self.assertEqual(args[-2:], ["restart_module", "camera"])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertTrue(services.restart_in_progress("camera"))  # our own PID stands in for the job
+        ok, msg = services.restart_module("camera")
+        self.assertFalse(ok)
+        self.assertIn("already being restarted", msg)
+
+    def test_restart_in_progress_ignores_dead_job(self):
+        services._restart_lock_file("camera").write_text(json.dumps({"pid": 999999999}))
+        self.assertFalse(services.restart_in_progress("camera"))
+        self.assertFalse(services._restart_lock_file("camera").exists())
+
+    def test_start_refused_during_restart(self):
+        services._restart_lock_file("camera").write_text(json.dumps({"pid": os.getpid()}))
+        ok, msg = services.start_module("camera")
+        self.assertFalse(ok)
+        self.assertIn("being restarted", msg)
+
+    def test_concurrent_restarts_spawn_one_job(self):
+        self._fake()
+        real_popen = subprocess.Popen
+        spawned = []
+
+        def popen(*args, **kwargs):
+            time.sleep(0.1)  # widen the window between the check and writing the lock
+            proc = real_popen(["sleep", "5"], stdin=subprocess.DEVNULL)
+            self.procs.append(proc)
+            spawned.append(proc)
+            return proc
+
+        barrier = threading.Barrier(2)
+        results = []
+
+        def restart():
+            barrier.wait()
+            results.append(services.restart_module("camera"))
+
+        with patch("modules.services.subprocess.Popen", side_effect=popen):
+            threads = [threading.Thread(target=restart) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(sorted(ok for ok, _ in results), [False, True])
+        self.assertIn("already being restarted", next(msg for ok, msg in results if not ok))
+
+    def test_start_reads_stdin_from_devnull(self):
+        with patch("modules.services.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+            services.start_module("camera")
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+
+class StatusApiStoppingTests(unittest.TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _get(self, view, *args):
+        request = self.factory.get("/")
+        request.session = {}
+        request.user = MagicMock(is_authenticated=True)
+        return json.loads(view(request, *args).content)
+
+    @patch("modules.views._installed_pyobs_versions", return_value={})
+    @patch("modules.views.services.restart_in_progress", return_value=False)
+    @patch("modules.views.services.get_stop_deadline", return_value=1234.5)
+    @patch("modules.views.services.get_module_stats", return_value={"pid": 1})
+    @patch("modules.views.services.get_module_status", return_value="stopping")
+    @patch("modules.views._get_module_or_404")
+    def test_status_reports_stopping_with_deadline_and_stats(self, *_):
+        data = self._get(views.api_status, "camera")
+        self.assertEqual(data["status"], "stopping")
+        self.assertEqual(data["stop_deadline"], 1234.5)
+        self.assertFalse(data["restarting"])
+        self.assertEqual(data["stats"], {"pid": 1})
+
+    def test_host_summary_counts_stopping_as_running(self):
+        summary = views._host_summary("h", [{"status": "running"}, {"status": "stopping"}, {"status": "stopped"}])
+        self.assertEqual(summary["running"], 2)
+        self.assertEqual(summary["stopped"], 1)

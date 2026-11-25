@@ -119,6 +119,8 @@ is fine, that's what the Design section of the eventual doc is for.
   clone/fetch/pull/push/reset. **Implemented**, off by default. Two known gaps left open (see
   that doc's Open questions): `git_pull()` doesn't auto-stage/commit first as originally
   planned, and the page ignores `PYOBS_CONFIG_GIT_ENABLED` when visited directly.
+- [module-shutdown.md](module-shutdown.md) — `stopping` state from pyobs-core's stop file, non-blocking stop,
+  kill button while stopping, restart as a detached job. **Implemented** for the PID-file mode.
 
 ## Ideas (not yet designed)
 
