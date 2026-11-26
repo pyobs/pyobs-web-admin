@@ -8,8 +8,8 @@ plan is not part of this.
 
 ## Motivation
 
-A module's shutdown can take long: a cooled camera warms up in `close()` (`CoolingRampMixin`), 37 min was seen on
-iag50cam. web-admin used to send SIGTERM, wait 5 s and then SIGKILL, which cut the warm-up. Restart called stop and
+A module's shutdown can take long: a cooled camera warms up in `close()` (`CoolingRampMixin`), 37 min was seen on a
+camera host. web-admin used to send SIGTERM, wait 5 s and then SIGKILL, which cut the warm-up. Restart called stop and
 then start right away, so with a long stop the start failed with "already running".
 
 ## Current state before this

@@ -43,6 +43,19 @@ same text shape the file backend already produces (timestamp, ``[LEVEL]``, modul
 ``file:line``, message) -- so the level/timestamp parsing, filtering, and templates
 downstream need no per-backend branching at all.
 
+In pyobsd's systemd mode (see :doc:`../configuration`), entries are queried by unit instead:
+``journalctl -u pyobs@<module>.service``. That also shows what only the unit has: output on
+stderr (e.g. a traceback before logging is set up), output of C libraries, and systemd's own
+lines about the unit ("Main process exited", "Scheduled restart job"). systemd's lines come with
+its own source file and level (e.g. "Failed to start" as ERROR, so every failed start counts as
+an error). Lines from stderr have no ``file:line`` and come in as INFO, so a traceback there
+isn't counted as an error. The
+lines a module logs under its comm name are included without a second query. **All Logs**
+queries one unit per module that pyobsd lists, not ``pyobs@*.service``: journalctl resolves a
+glob against every unit name in the journal, which took 79 s on a 4 GB journal. Log
+lines written before the host was switched to the systemd mode don't have the unit and don't
+show anymore.
+
 Deployment note: reading the journal cross-user requires the account running
 pyobs-web-admin to have journal read access -- typically satisfied by membership in the
 ``adm`` or ``systemd-journal`` group on Debian/Ubuntu-family systems. A dedicated,

@@ -25,7 +25,7 @@ from django.test import RequestFactory, override_settings
 from django.test import TestCase as DjangoTestCase
 from packaging.version import Version
 
-from modules import ejabberd, services, views
+from modules import ejabberd, services, systemd_mode, views
 from modules.middleware import HubTokenMiddleware
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
 from modules.views import _tag_host
@@ -4641,8 +4641,10 @@ def on_term(*_):
     global exit_at
     if exit_at is not None:
         return
-    with open(pid_file + ".stopping", "w") as f:
+    # atomic like pyobs-core, so a reader never sees an empty stop file
+    with open(pid_file + ".stopping.tmp", "w") as f:
         f.write(str(time.time() + extend))
+    os.replace(pid_file + ".stopping.tmp", pid_file + ".stopping")
     exit_at = time.time() + delay
 signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == "ignore" else on_term)
 with open(pid_file + ".tmp", "w") as f:
@@ -4886,3 +4888,255 @@ class StatusApiStoppingTests(unittest.TestCase):
         summary = views._host_summary("h", [{"status": "running"}, {"status": "stopping"}, {"status": "stopped"}])
         self.assertEqual(summary["running"], 2)
         self.assertEqual(summary["stopped"], 1)
+
+
+class SystemdModeTests(unittest.TestCase):
+    """Module control in pyobsd's systemd mode goes through pyobsd (modules/systemd_mode.py), with pyobsd faked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.config_dir = Path(self.tmp.name) / "config"
+        self.config_dir.mkdir()
+        for name in ("camera", "_dome", "roof"):
+            (self.config_dir / f"{name}.yaml").write_text("class: x\n")
+        self._settings = override_settings(
+            PYOBS_CONFIG_DIR=str(self.config_dir), PYOBSD_EXEC="pyobsd", PYOBS_CONFIG_GIT_ENABLED=False
+        )
+        self._settings.enable()
+        self._mode = patch.object(services, "_systemd_mode", return_value=True)
+        self._mode.start()
+        systemd_mode.invalidate()
+        systemd_mode._process_cache.clear()
+        services._module_versions_cache.clear()
+        self.calls = []
+        self.rc = {}
+        self.status = {
+            "camera": {"mode": "systemd", "enabled": True, "running": True, "state": "running", "stop_deadline": None,
+                       "pid": os.getpid(), "restarts": 2, "uptime": 100.0, "rss_mb": 50.04},
+            "_dome": {"mode": "systemd", "enabled": False, "running": False, "state": "failed", "stop_deadline": None,
+                      "restarts": 1, "restarting": True},
+            "roof": {"mode": "pid", "enabled": True, "running": True, "state": "running", "stop_deadline": None,
+                     "pid": os.getpid(), "uptime": 5.0, "rss_mb": 1.0},
+        }
+        self._run = patch.object(systemd_mode.subprocess, "run", side_effect=self._fake_run)
+        self._run.start()
+
+    def tearDown(self):
+        self._run.stop()
+        self._mode.stop()
+        self._settings.disable()
+        systemd_mode.invalidate()
+        self.tmp.cleanup()
+
+    def _fake_run(self, cmd, **kwargs):
+        self.calls.append(cmd[1:])
+        self.assertEqual(cmd[0], "pyobsd")
+        self.assertIs(kwargs.get("stdin"), subprocess.DEVNULL)
+        if cmd[1] == "status":
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(self.status), stderr="")
+        return subprocess.CompletedProcess(cmd, self.rc.get(cmd[1], 0), stdout=f"{cmd[1]} done\n", stderr="")
+
+    def _control_calls(self):
+        return [c for c in self.calls if c[0] != "status"]
+
+    def test_status_from_pyobsd(self):
+        self.assertEqual(services.get_module_status("camera"), "running")
+        self.assertEqual(services.get_module_status("_dome"), "failed")
+        self.assertEqual(services.get_module_status("roof"), "running")
+        # a module pyobsd doesn't list
+        self.assertEqual(services.get_module_status("focus"), "stopped")
+
+    def test_info_only_in_systemd_mode(self):
+        self.assertEqual(services.get_module_info("camera"), {"mode": "systemd", "restarts": 2, "auto_restart": False})
+        self.assertEqual(services.get_module_info("_dome"), {"mode": "systemd", "restarts": 1, "auto_restart": True})
+        self.assertEqual(services.get_module_info("roof")["mode"], "pid")
+        with patch.object(services, "_systemd_mode", return_value=False):
+            self.assertEqual(services.get_module_info("camera"), {})
+
+    def test_status_is_cached_for_one_poll(self):
+        for name in ("camera", "_dome", "roof"):
+            services.get_module_status(name)
+            services.get_module_stats(name)
+            services.get_stop_deadline(name)
+        self.assertEqual(self.calls, [["status", "--json"]])
+
+    def test_pyobsd_without_mode_field_is_too_old(self):
+        for entry in self.status.values():
+            del entry["mode"]
+        self.assertEqual(services.get_module_status("camera"), "unknown")
+        self.assertIn(systemd_mode.MIN_PYOBS_CORE, services.get_module_info("camera")["error"])
+        ok, msg = services.start_module("camera")
+        self.assertFalse(ok)
+        self.assertIn(systemd_mode.MIN_PYOBS_CORE, msg)
+        self.assertEqual(self._control_calls(), [])
+
+    def test_pyobsd_missing(self):
+        self._run.stop()
+        with patch.object(systemd_mode.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertEqual(services.get_module_status("camera"), "unknown")
+            ok, msg = services.stop_module("camera")
+        self._run.start()
+        self.assertFalse(ok)
+        self.assertIn("not found", msg)
+
+    def test_control_calls_pyobsd_without_waiting(self):
+        services.start_module("camera")
+        services.stop_module("camera")
+        services.kill_module("camera")
+        services.restart_module("camera")
+        self.assertEqual(self._control_calls(), [
+            ["start", "--no-wait", "camera"],
+            ["stop", "--no-wait", "camera"],
+            ["stop", "--kill", "camera"],
+            ["restart", "--no-wait", "camera"],
+        ])
+
+    def test_control_reports_pyobsd_result(self):
+        self.rc["start"] = 1
+        self.assertEqual(services.start_module("camera"), (False, "start done"))
+        self.assertEqual(services.stop_module("camera"), (True, "stop done"))
+
+    def test_control_invalidates_status(self):
+        services.get_module_status("camera")
+        services.stop_module("camera")
+        self.status["camera"]["state"] = "stopping"
+        self.assertEqual(services.get_module_status("camera"), "stopping")
+
+    def test_no_restart_job(self):
+        self.assertFalse(services.restart_in_progress("camera"))
+        with patch.object(services.subprocess, "Popen") as popen:
+            services.restart_module("camera")
+        popen.assert_not_called()
+
+    def test_stats_from_status_json(self):
+        stats = services.get_module_stats("camera")
+        self.assertEqual(stats["pid"], os.getpid())
+        self.assertEqual(stats["memory_mb"], 50.0)
+        self.assertEqual(stats["uptime_seconds"], 100)
+        self.assertIn("cpu_percent", stats)
+        self.assertIsNone(services.get_module_stats("_dome"))
+
+    def test_config_stale_by_mtime(self):
+        config = self.config_dir / "camera.yaml"
+        os.utime(config, (time.time() - 200, time.time() - 200))
+        self.assertFalse(services.config_stale("camera"))
+        os.utime(config, None)
+        self.assertTrue(services.config_stale("camera"))
+        self.assertIsNone(services.config_stale("_dome"))
+
+    def test_versions_by_pid_and_start_time(self):
+        with patch.object(services, "_log_backend", return_value="journald"), \
+                patch.object(services, "_get_module_versions_journald", return_value={"pyobs-core": "2.30.1"}) as get:
+            self.assertEqual(services.get_module_versions("camera"), {"pyobs-core": "2.30.1"})
+            self.assertEqual(services.get_module_versions("camera"), {"pyobs-core": "2.30.1"})
+            self.assertIsNone(services.get_module_versions("_dome"))
+        get.assert_called_once()
+        self.assertAlmostEqual(get.call_args.args[1], time.time() - 100, delta=5)
+
+    def test_deactivate_stops_a_starting_module(self):
+        self.status["camera"]["state"] = "starting"
+        ok, _ = services.deactivate_module("camera")
+        self.assertTrue(ok)
+        self.assertEqual(self._control_calls(), [["stop", "--no-wait", "camera"]])
+        self.assertTrue((self.config_dir / "_camera.yaml").exists())
+
+    def test_status_api_has_systemd_fields(self):
+        request = RequestFactory().get("/")
+        request.session = {}
+        request.user = MagicMock(is_authenticated=True)
+        with patch("modules.views._installed_pyobs_versions", return_value={}), \
+                patch("modules.views._get_module_or_404"), \
+                patch.object(services, "get_module_versions", return_value=None):
+            data = json.loads(views.api_status(request, "_dome").content)
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["restarts"], 1)
+        self.assertTrue(data["auto_restart"])
+        self.assertFalse(data["restarting"])
+
+
+class SystemdModeLogsTests(unittest.TestCase):
+    """In systemd mode, the journald backend matches by unit (-u pyobs@<module>.service), see _journal_match."""
+
+    def setUp(self):
+        self._settings = override_settings(PYOBS_LOG_BACKEND="journald")
+        self._settings.enable()
+        self.addCleanup(self._settings.disable)
+        self._mode = patch.object(services, "_systemd_mode", return_value=True)
+        self._mode.start()
+        self._comm = patch.object(services, "get_comm_user", return_value="camera_user")
+        self._comm.start()
+        # the PYOBS_MODULE tag looks up pyobs-core's version with pip
+        self._version = patch.object(services, "pyobs_core_version", return_value=None)
+        self._version.start()
+        self.addCleanup(self._version.stop)
+        self.run = patch.object(services.subprocess, "run", return_value=MagicMock(returncode=0, stdout="", stderr=""))
+        self.mock_run = self.run.start()
+
+    def tearDown(self):
+        self.run.stop()
+        self._comm.stop()
+        self._mode.stop()
+
+    def _journalctl_args(self):
+        return [c.args[0][1:] for c in self.mock_run.call_args_list]
+
+    def test_module_log_by_unit_in_one_call(self):
+        """The unit also has the lines filed under the comm name, so no second query for it."""
+        services.get_logs("camera", lines=50, filter_str="err")
+        self.assertEqual(self._journalctl_args(), [[
+            "-u", "pyobs@camera.service", "--grep", "err", "--case-sensitive=false", "-n", "50",
+            "-o", "json", "--no-pager",
+        ]])
+
+    def test_disabled_module_uses_active_unit_name(self):
+        services.get_logs("_dome")
+        self.assertEqual(self._journalctl_args()[0][:2], ["-u", "pyobs@dome.service"])
+
+    def test_log_stats_by_unit(self):
+        services.get_log_stats("camera")
+        self.assertEqual(self._journalctl_args(), [["-u", "pyobs@camera.service", "--since", "-24h", "-o", "json",
+                                                    "--no-pager"]])
+
+    def test_all_logs_selected_modules(self):
+        services.get_all_logs(["camera", "_dome"], lines=10)
+        self.assertEqual(self._journalctl_args()[0][:4], ["-u", "pyobs@camera.service", "-u", "pyobs@dome.service"])
+
+    def test_all_logs_units_from_pyobsd_not_glob(self):
+        with patch.object(systemd_mode, "status_all", return_value={"camera": {}, "_dome": {}, "roof": {}}):
+            services.get_all_logs(None, lines=10)
+        args = self._journalctl_args()[0]
+        self.assertEqual(args[:6], ["-u", "pyobs@camera.service", "-u", "pyobs@dome.service", "-u", "pyobs@roof.service"])
+        self.assertFalse(any("*" in a for a in args))
+
+    def test_all_logs_without_modules_queries_nothing(self):
+        """No -u at all would match the whole journal."""
+        with patch.object(systemd_mode, "status_all", return_value={}):
+            self.assertEqual(services.get_all_logs(None), [])
+        self.mock_run.assert_not_called()
+
+    def test_all_logs_falls_back_to_configs_if_pyobsd_fails(self):
+        with patch.object(systemd_mode, "status_all", side_effect=systemd_mode.PyobsdError("x")), \
+                patch.object(services, "list_modules", return_value=["camera"]):
+            services.get_all_logs(None)
+        self.assertEqual(self._journalctl_args()[0][:2], ["-u", "pyobs@camera.service"])
+
+    def test_pid_mode_unchanged(self):
+        with patch.object(services, "_systemd_mode", return_value=False):
+            services.get_all_logs(None)
+            services.get_logs("camera")
+        self.assertEqual(self._journalctl_args()[0][0], "SYSLOG_IDENTIFIER=pyobs")
+        self.assertEqual(self._journalctl_args()[1][:2], ["SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera"])
+        # comm name queried separately, as before
+        self.assertEqual(self._journalctl_args()[2][:2], ["SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_user"])
+
+    def test_lines_without_pyobs_fields(self):
+        ts = 1788786292460508
+        tstr = f"{datetime.fromtimestamp(ts / 1_000_000):%Y-%m-%d %H:%M:%S}"
+        systemd_line = {"__REALTIME_TIMESTAMP": str(ts), "PRIORITY": "4", "UNIT": "pyobs@camera.service",
+                        "_SYSTEMD_UNIT": "init.scope", "MESSAGE": "pyobs@camera.service: Failed with result 'exit-code'."}
+        stderr_line = {"__REALTIME_TIMESTAMP": str(ts), "PRIORITY": "6", "_SYSTEMD_UNIT": "pyobs@camera.service",
+                       "MESSAGE": "Traceback (most recent call last):"}
+        self.assertEqual(services._journal_entry_to_line(systemd_line),
+                         f"{tstr} [WARNING] (camera) pyobs@camera.service: Failed with result 'exit-code'.")
+        self.assertEqual(services._journal_entry_to_line(stderr_line),
+                         f"{tstr} [INFO] (camera) Traceback (most recent call last):")

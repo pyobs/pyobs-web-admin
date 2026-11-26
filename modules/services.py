@@ -22,6 +22,7 @@ from django.conf import settings
 from packaging.version import InvalidVersion, Version
 from ruamel.yaml import YAML as _RuamelYAML
 
+from modules import systemd_mode
 from modules.pyobs_config import pre_process_yaml
 
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
@@ -265,6 +266,12 @@ def _pyobsd_config() -> dict:
                 return {}
             return (cfg or {}).get("pyobsd") or {}
     return {}
+
+
+def _systemd_mode() -> bool:
+    """Whether this host runs its modules in pyobsd's systemd mode, from the same config file pyobsd reads. Then
+    web-admin calls pyobsd for everything instead of managing PID files, see modules/systemd_mode.py."""
+    return _pyobsd_config().get("mode") == "systemd"
 
 
 def _log_backend() -> str:
@@ -1062,7 +1069,10 @@ def config_stale(name: str) -> bool | None:
 
     None means unknown, not "fresh" -- either the module was never snapshotted (started before
     this feature shipped, or its run dir was cleared) or its config file is currently missing.
+    In systemd mode, by the config file's mtime instead (see systemd_mode.config_stale).
     """
+    if _systemd_mode():
+        return systemd_mode.config_stale(name, _config_dir() / f"{name}.yaml")
     snap_file = _config_hash_file(name)
     if not snap_file.exists():
         return None
@@ -1079,8 +1089,11 @@ def config_stale(name: str) -> bool | None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_module_status(name: str) -> str:
-    """Returns 'running', 'stopping' (got SIGTERM and is still shutting down, see _stop_file), or 'stopped'."""
+    """Returns 'running', 'stopping' (got SIGTERM and is still shutting down, see _stop_file), or 'stopped'. In
+    systemd mode also 'starting', 'failed' and 'unknown' (pyobsd failed), see systemd_mode.get_module_status."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.get_module_status(name)
     pid = _read_pid(name)
     if pid is not None and _is_alive(pid):
         return "stopping" if _stop_file(name).exists() else "running"
@@ -1091,11 +1104,22 @@ def get_module_status(name: str) -> str:
 
 def get_stop_deadline(name: str) -> float | None:
     """Epoch seconds until which a stopping module may still take to shut down, or None if unknown."""
+    if _systemd_mode():
+        return systemd_mode.get_stop_deadline(name)
     return _read_stop_deadline(name)
+
+
+def get_module_info(name: str) -> dict[str, Any]:
+    """Fields only the systemd mode has (mode, restarts, auto_restart, error), {} in PID-file mode."""
+    if _systemd_mode():
+        return systemd_mode.get_module_info(name)
+    return {}
 
 
 def start_module(name: str, _restart_job: bool = False) -> tuple[bool, str]:
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.start_module(name)
 
     status = get_module_status(name)
     if status == "running":
@@ -1154,6 +1178,8 @@ def stop_module(name: str) -> tuple[bool, str]:
     cooled camera warming up), and shows as "stopping" until it is gone. Since pyobs-core 2.29, a module whose
     shutdown hangs ends itself after its deadline. kill_module() is for when that can't wait."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.stop_module(name)
 
     pid = _read_pid(name)
     if pid is None or not _is_alive(pid):
@@ -1178,6 +1204,8 @@ _KILL_WAIT_SECONDS = 5.0
 def kill_module(name: str) -> tuple[bool, str]:
     """Sends SIGKILL right away, also to a module that is shutting down. Cuts a camera's warm-up."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.kill_module(name)
 
     pid = _read_pid(name)
     if pid is None or not _is_alive(pid):
@@ -1209,6 +1237,8 @@ _process_cache: dict[str, psutil.Process] = {}
 
 
 def get_module_stats(name: str) -> dict | None:
+    if _systemd_mode():
+        return systemd_mode.get_module_stats(name)
     pid = _read_pid(name)
     if pid is None or not _is_alive(pid):
         _process_cache.pop(name, None)
@@ -1298,19 +1328,27 @@ def get_module_versions(name: str) -> dict[str, str] | None:
     process, so a status poll must not re-shell-out to tac/journalctl every time. A cached
     entry is reused only while the PID still matches; a stopped module clears it.
     """
-    pid = _read_pid(name)
-    if pid is None or not _is_alive(pid):
+    create_time: float | None = None
+    if _systemd_mode():
+        running = systemd_mode.running_pid_and_start(name)
+        pid, create_time = running if running else (None, None)
+    else:
+        pid = _read_pid(name)
+        if pid is not None and not _is_alive(pid):
+            pid = None
+    if pid is None:
         _module_versions_cache.pop(name, None)
         return None
     cached = _module_versions_cache.get(name)
     if cached is not None and cached[0] == pid:
         return cached[1]
     if _log_backend() == "journald":
-        try:
-            create_time = psutil.Process(pid).create_time()
-        except psutil.NoSuchProcess:
-            _module_versions_cache.pop(name, None)
-            return None
+        if create_time is None:
+            try:
+                create_time = psutil.Process(pid).create_time()
+            except psutil.NoSuchProcess:
+                _module_versions_cache.pop(name, None)
+                return None
         versions = _get_module_versions_journald(name, create_time)
     else:
         versions = _get_module_versions_file(name)
@@ -1327,7 +1365,8 @@ def deactivate_module(name: str) -> tuple[bool, str]:
     config = _config_dir() / f"{name}.yaml"
     if not config.exists():
         return False, f"Config not found: {config}"
-    if get_module_status(name) == "running":
+    # in systemd mode, also one that is starting or waiting for an automatic restart
+    if get_module_status(name) in ("running", "starting", "failed"):
         stop_module(name)
     config.rename(_config_dir() / f"_{name}.yaml")
     return True, f"Deactivated {name}"
@@ -1351,8 +1390,11 @@ def activate_module(name: str) -> tuple[bool, str]:
 def restart_module(name: str) -> tuple[bool, str]:
     """Restarts a module. A stopped one is just started. For a running one, the stop can take long (e.g. a camera
     warming up), so a detached job does it (manage.py restart_module, see run_restart()), and this returns right
-    away. The module shows as "stopping" and then "running"."""
+    away. The module shows as "stopping" and then "running". In systemd mode, systemd does all that, see
+    systemd_mode.restart_module()."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.restart_module(name)
     _run_dir().mkdir(parents=True, exist_ok=True)
     # the check for a running job and writing the lock must happen in one step, else two requests at the same time
     # both start a job
@@ -1395,7 +1437,9 @@ def _restart_module_locked(name: str) -> tuple[bool, str]:
 
 
 def restart_in_progress(name: str) -> bool:
-    """Whether a restart job for name is still running."""
+    """Whether a restart job for name is still running. There is none in systemd mode."""
+    if _systemd_mode():
+        return False
     try:
         lock = json.loads(_restart_lock_file(name).read_text())
     except (OSError, ValueError):
@@ -1536,7 +1580,10 @@ def _journal_entry_to_line(entry: dict) -> str:
     # assumes exactly that when it parses these lines back out.
     ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC)
     level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
-    module = entry.get("PYOBS_MODULE", "")
+    # systemd mode: what the unit has besides pyobs's own lines has no PYOBS_MODULE -- systemd's lines about it
+    # (UNIT, e.g. "Main process exited", with systemd's own CODE_FILE) and stderr (_SYSTEMD_UNIT, e.g. a traceback
+    # before logging is set up, without CODE_FILE)
+    module = entry.get("PYOBS_MODULE") or _module_of_unit(entry.get("UNIT") or entry.get("_SYSTEMD_UNIT") or "")
     # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal
     # formatter builds MESSAGE's "<module> <file>:<line> " prefix from %(filename)s (just the
     # basename) -- basename() here so the two actually match. Caught live: without this, a
@@ -1562,16 +1609,40 @@ def _journal_entry_to_line(entry: dict) -> str:
                 message = raw % tuple(args) if args else raw
             except Exception:
                 message = raw
+    if "CODE_FILE" not in entry and "PYOBS_MODULE" not in entry:
+        return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {message}"
     prefix = f"{module} {code_file}:{code_line} "
     if message.startswith(prefix):
         message = message[len(prefix):]
     return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
 
 
+def _module_of_unit(unit: str) -> str:
+    """"camera" for "pyobs@camera.service", "" for anything else."""
+    if unit.startswith("pyobs@") and unit.endswith(".service"):
+        return unit[len("pyobs@"):-len(".service")]
+    return ""
+
+
+def _journal_match(names: list[str]) -> list[str]:
+    """journalctl matches for the log lines of these modules. In systemd mode by unit (`-u pyobs@<name>.service`,
+    one per module, never a glob: journalctl resolves a glob against every unit name in the journal, which took
+    79 s on a 4 GB journal), which also has stderr, systemd's own lines about the unit and the lines filed
+    under the comm name. Otherwise by pyobs's own fields."""
+    if _systemd_mode():
+        units: list[str] = []
+        for name in names:
+            unit = f"pyobs@{_active_name(name)}.service"
+            if unit not in units:
+                units.append(unit)
+        return [arg for unit in units for arg in ("-u", unit)]
+    return ["SYSLOG_IDENTIFIER=pyobs", *[f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]]
+
+
 def _get_logs_journald(
     name: str, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None, filter_str: str = ""
 ) -> list[str]:
-    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}"]
+    args = _journal_match([name])
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     upper = _until_bound(before, until)
@@ -1599,7 +1670,7 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
         since_arg = f"{cutoff:%Y-%m-%d %H:%M:%S} UTC"
     else:
         since_arg = "-24h"
-    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}", "--since", since_arg])
+    entries = _journalctl_json([*_journal_match([name]), "--since", since_arg])
     for entry in entries:
         level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
         if level:
@@ -1622,7 +1693,11 @@ def _log_identities(name: str) -> list[str]:
     primary identity, or isn't a plain module name (unqueryable via journalctl's
     PYOBS_MODULE match).
     """
-    primary = _journald_module_tag(name) if _log_backend() == "journald" else _active_name(name)
+    journald = _log_backend() == "journald"
+    primary = _journald_module_tag(name) if journald else _active_name(name)
+    # matching by unit (systemd mode, see _journal_match) already has the lines filed under the comm name
+    if journald and _systemd_mode():
+        return [primary]
     comm_user = get_comm_user(name)
     if comm_user is None or comm_user == primary or not _is_valid_module_name(comm_user):
         return [primary]
@@ -1810,11 +1885,21 @@ def _get_all_logs_journald(
     # deselected every module, which must yield nothing, not fall back to unrestricted.
     if names is not None and not names:
         return []
-    args = ["SYSLOG_IDENTIFIER=pyobs"]
-    if names:
+    if _systemd_mode():
+        if names is None:
+            # "all" by unit needs the units: every module pyobsd lists (configs and running units). Not the
+            # glob, see _journal_match. A unit whose config is gone and that doesn't run isn't in it then.
+            try:
+                names = list(systemd_mode.status_all())
+            except systemd_mode.PyobsdError:
+                names = list_modules()
+            if not names:
+                return []
+        args = _journal_match(names)
+    else:
         # Repeating a field name is journalctl's own OR syntax -- combined with the
         # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
-        args += [f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]
+        args = _journal_match(names) if names else ["SYSLOG_IDENTIFIER=pyobs"]
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     upper = _until_bound(before, until)
