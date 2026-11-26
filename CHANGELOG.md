@@ -9,6 +9,14 @@ Entries for releases before this file existed were generated from commit subject
 
 ## [Unreleased]
 
+### Added
+
+- Hosts in pyobsd's systemd mode (`pyobsd.mode: systemd` in pyobsd's config file): web-admin calls pyobsd
+  (new setting `PYOBSD_EXEC`) to start, stop, kill and restart modules, and reads their status from
+  `pyobsd status --json`. New states `starting` and `failed` (with "restarting" and the number of restarts), and
+  "running (pid mode)" for a module not yet switched. Config drift is detected by the config file's mtime there.
+  Needs pyobs-core >= 2.30.1 on the host. Logs are unchanged for now.
+
 ## [2.4.0] - 2026-11-25
 
 - Show modules that are shutting down as `stopping`, with how long they may still take (pyobs-core >= 2.29).

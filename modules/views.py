@@ -448,14 +448,17 @@ def acl_matrix(request):
 
 # ── Status API ────────────────────────────────────────────────────────────────
 
-# statuses with a live process: "stopping" is still running, just shutting down
-_ALIVE = ("running", "stopping")
+# statuses with a live process: "stopping" is still running, just shutting down; "starting" (systemd mode) is not
+# open yet
+_ALIVE = ("running", "starting", "stopping")
 
 
 def _stop_info(name: str, status: str) -> dict:
+    # in systemd mode also mode, restarts, auto_restart and error, see services.get_module_info
     return {
         "stop_deadline": services.get_stop_deadline(name) if status == "stopping" else None,
         "restarting": services.restart_in_progress(name),
+        **services.get_module_info(name),
     }
 
 

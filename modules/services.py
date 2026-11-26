@@ -22,6 +22,7 @@ from django.conf import settings
 from packaging.version import InvalidVersion, Version
 from ruamel.yaml import YAML as _RuamelYAML
 
+from modules import systemd_mode
 from modules.pyobs_config import pre_process_yaml
 
 _LOG_LEVEL_RE = re.compile(r'\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]')
@@ -265,6 +266,12 @@ def _pyobsd_config() -> dict:
                 return {}
             return (cfg or {}).get("pyobsd") or {}
     return {}
+
+
+def _systemd_mode() -> bool:
+    """Whether this host runs its modules in pyobsd's systemd mode, from the same config file pyobsd reads. Then
+    web-admin calls pyobsd for everything instead of managing PID files, see modules/systemd_mode.py."""
+    return _pyobsd_config().get("mode") == "systemd"
 
 
 def _log_backend() -> str:
@@ -1062,7 +1069,10 @@ def config_stale(name: str) -> bool | None:
 
     None means unknown, not "fresh" -- either the module was never snapshotted (started before
     this feature shipped, or its run dir was cleared) or its config file is currently missing.
+    In systemd mode, by the config file's mtime instead (see systemd_mode.config_stale).
     """
+    if _systemd_mode():
+        return systemd_mode.config_stale(name, _config_dir() / f"{name}.yaml")
     snap_file = _config_hash_file(name)
     if not snap_file.exists():
         return None
@@ -1079,8 +1089,11 @@ def config_stale(name: str) -> bool | None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_module_status(name: str) -> str:
-    """Returns 'running', 'stopping' (got SIGTERM and is still shutting down, see _stop_file), or 'stopped'."""
+    """Returns 'running', 'stopping' (got SIGTERM and is still shutting down, see _stop_file), or 'stopped'. In
+    systemd mode also 'starting', 'failed' and 'unknown' (pyobsd failed), see systemd_mode.get_module_status."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.get_module_status(name)
     pid = _read_pid(name)
     if pid is not None and _is_alive(pid):
         return "stopping" if _stop_file(name).exists() else "running"
@@ -1091,11 +1104,22 @@ def get_module_status(name: str) -> str:
 
 def get_stop_deadline(name: str) -> float | None:
     """Epoch seconds until which a stopping module may still take to shut down, or None if unknown."""
+    if _systemd_mode():
+        return systemd_mode.get_stop_deadline(name)
     return _read_stop_deadline(name)
+
+
+def get_module_info(name: str) -> dict[str, Any]:
+    """Fields only the systemd mode has (mode, restarts, auto_restart, error), {} in PID-file mode."""
+    if _systemd_mode():
+        return systemd_mode.get_module_info(name)
+    return {}
 
 
 def start_module(name: str, _restart_job: bool = False) -> tuple[bool, str]:
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.start_module(name)
 
     status = get_module_status(name)
     if status == "running":
@@ -1154,6 +1178,8 @@ def stop_module(name: str) -> tuple[bool, str]:
     cooled camera warming up), and shows as "stopping" until it is gone. Since pyobs-core 2.29, a module whose
     shutdown hangs ends itself after its deadline. kill_module() is for when that can't wait."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.stop_module(name)
 
     pid = _read_pid(name)
     if pid is None or not _is_alive(pid):
@@ -1178,6 +1204,8 @@ _KILL_WAIT_SECONDS = 5.0
 def kill_module(name: str) -> tuple[bool, str]:
     """Sends SIGKILL right away, also to a module that is shutting down. Cuts a camera's warm-up."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.kill_module(name)
 
     pid = _read_pid(name)
     if pid is None or not _is_alive(pid):
@@ -1209,6 +1237,8 @@ _process_cache: dict[str, psutil.Process] = {}
 
 
 def get_module_stats(name: str) -> dict | None:
+    if _systemd_mode():
+        return systemd_mode.get_module_stats(name)
     pid = _read_pid(name)
     if pid is None or not _is_alive(pid):
         _process_cache.pop(name, None)
@@ -1298,19 +1328,27 @@ def get_module_versions(name: str) -> dict[str, str] | None:
     process, so a status poll must not re-shell-out to tac/journalctl every time. A cached
     entry is reused only while the PID still matches; a stopped module clears it.
     """
-    pid = _read_pid(name)
-    if pid is None or not _is_alive(pid):
+    create_time: float | None = None
+    if _systemd_mode():
+        running = systemd_mode.running_pid_and_start(name)
+        pid, create_time = running if running else (None, None)
+    else:
+        pid = _read_pid(name)
+        if pid is not None and not _is_alive(pid):
+            pid = None
+    if pid is None:
         _module_versions_cache.pop(name, None)
         return None
     cached = _module_versions_cache.get(name)
     if cached is not None and cached[0] == pid:
         return cached[1]
     if _log_backend() == "journald":
-        try:
-            create_time = psutil.Process(pid).create_time()
-        except psutil.NoSuchProcess:
-            _module_versions_cache.pop(name, None)
-            return None
+        if create_time is None:
+            try:
+                create_time = psutil.Process(pid).create_time()
+            except psutil.NoSuchProcess:
+                _module_versions_cache.pop(name, None)
+                return None
         versions = _get_module_versions_journald(name, create_time)
     else:
         versions = _get_module_versions_file(name)
@@ -1327,7 +1365,8 @@ def deactivate_module(name: str) -> tuple[bool, str]:
     config = _config_dir() / f"{name}.yaml"
     if not config.exists():
         return False, f"Config not found: {config}"
-    if get_module_status(name) == "running":
+    # in systemd mode, also one that is starting or waiting for an automatic restart
+    if get_module_status(name) in ("running", "starting", "failed"):
         stop_module(name)
     config.rename(_config_dir() / f"_{name}.yaml")
     return True, f"Deactivated {name}"
@@ -1351,8 +1390,11 @@ def activate_module(name: str) -> tuple[bool, str]:
 def restart_module(name: str) -> tuple[bool, str]:
     """Restarts a module. A stopped one is just started. For a running one, the stop can take long (e.g. a camera
     warming up), so a detached job does it (manage.py restart_module, see run_restart()), and this returns right
-    away. The module shows as "stopping" and then "running"."""
+    away. The module shows as "stopping" and then "running". In systemd mode, systemd does all that, see
+    systemd_mode.restart_module()."""
     validate_name(name)
+    if _systemd_mode():
+        return systemd_mode.restart_module(name)
     _run_dir().mkdir(parents=True, exist_ok=True)
     # the check for a running job and writing the lock must happen in one step, else two requests at the same time
     # both start a job
@@ -1395,7 +1437,9 @@ def _restart_module_locked(name: str) -> tuple[bool, str]:
 
 
 def restart_in_progress(name: str) -> bool:
-    """Whether a restart job for name is still running."""
+    """Whether a restart job for name is still running. There is none in systemd mode."""
+    if _systemd_mode():
+        return False
     try:
         lock = json.loads(_restart_lock_file(name).read_text())
     except (OSError, ValueError):

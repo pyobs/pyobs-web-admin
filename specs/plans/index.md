@@ -33,5 +33,5 @@ Implementation plans, checklist-style. A plan moves/folds into `design/` once it
   no start date is set. **implemented, live-verified (HTTP/service layer + real browser
   click-through on detail.html)** (#95)
 - [2026-11-26-pyobsd-systemd-mode.md](2026-11-26-pyobsd-systemd-mode.md) — control modules through `pyobsd`
-  on hosts in pyobsd's systemd mode, logs matched by unit. Needs pyobs-core 2.30.1. **proposed**
+  on hosts in pyobsd's systemd mode, logs matched by unit. Needs pyobs-core 2.30.1. **in progress**
   (Repos: pyobs-web-admin, pyobs-core)
