@@ -140,6 +140,9 @@ HUB_CLIENTS = []
 
 # pyobs paths
 PYOBS_EXEC = "pyobs"
+# only used in pyobsd's systemd mode (pyobsd.mode: systemd in pyobsd's config file), where web-admin calls pyobsd
+# for everything instead of starting pyobs itself
+PYOBSD_EXEC = "pyobsd"
 PYOBS_CONFIG_DIR = "/opt/pyobs/config"
 PYOBS_LOG_DIR = "/opt/pyobs/log"
 PYOBS_RUN_DIR = "/opt/pyobs/run"

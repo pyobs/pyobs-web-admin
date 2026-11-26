@@ -1,6 +1,7 @@
 # Plan: web-admin on hosts in pyobsd's systemd mode
 
-Status: proposed. Needs pyobs-core 2.30.1 (`pyobsd start/restart --no-wait`, see Prerequisite).
+Status: in progress. pyobs-core 2.30.1 with `pyobsd start/restart --no-wait` is released (see Prerequisite).
+Control and status are implemented, logs by unit are next.
 Repos: pyobs-web-admin, pyobs-core
 
 Part of `../../../pyobs-core/specs/plans/2026-11-25-pyobsd-systemd-mode.md` (systemd mode of pyobsd, released
@@ -92,8 +93,11 @@ call, which would slow down every poll.
 
 Today the journald backend matches `SYSLOG_IDENTIFIER=pyobs` and `PYOBS_MODULE=<name>`, plus the comm name
 (#59). In systemd mode, the module and All Logs views match by unit instead: `journalctl -u
-pyobs@<name>.service`, one `-u` per selected module, `-u 'pyobs@*.service'` for "all". `--since`, `--until`,
-`--grep` and `-n` stay as they are.
+pyobs@<name>.service`, one `-u` per selected module. "All" is one `-u` per module from the status JSON (every
+config plus every running unit), not the glob `-u 'pyobs@*.service'`: journalctl resolves a glob against every
+unit name in the journal, which took 79 s on a desktop with a 4 GB journal, while three explicit `-u` took 63 ms
+(also 30 ms with `--grep` and `--since`). A unit whose config is gone and that doesn't run anymore isn't in
+"all" then. `--since`, `--until`, `--grep` and `-n` stay as they are.
 
 That also shows what only the unit has: tracebacks and other output on stderr (e.g. a crash before logging is
 set up), output of C libraries, and systemd's own lines ("Main process exited, status=1", "Scheduled restart
@@ -114,20 +118,21 @@ the unit.
 
 pyobs-core:
 
-- [ ] `pyobsd start --no-wait`, `pyobsd restart --no-wait` (systemd: `systemctl --no-block`), tests, docs,
+- [x] `pyobsd start --no-wait`, `pyobsd restart --no-wait` (systemd: `systemctl --no-block`), tests, docs,
       CHANGELOG.
-- [ ] Release pyobs-core 2.30.1.
+- [x] Release pyobs-core 2.30.1 (pyobs-core#1120).
 
 pyobs-web-admin:
 
-- [ ] Check on a host (to settle before writing the log code): lines sent by pyobs's journald handler carry
-      `_SYSTEMD_UNIT=pyobs@<name>.service`, and `journalctl -u 'pyobs@*.service'` matches all units with
-      `--grep` and `-n`.
-- [ ] `PYOBSD_EXEC` setting, mode check, cached `pyobsd status --json`, error for a pyobsd without `mode`.
-- [ ] Status, stats, stop deadline from the JSON. States **starting**, **failed** (restarts), **running (pid
+- [x] Check the log assumptions (on a desktop, systemd 259, 4 GB journal): all 300 natively sent lines of the
+      last day carry `_SYSTEMD_UNIT`. `-u` with a glob works but takes 79 s, so "all" uses explicit units (see
+      "Logs: match by unit"). The same glob in `pyobsd logs` without a module: pyobs-core#1122. Still to
+      check on a host with a pyobs module.
+- [x] `PYOBSD_EXEC` setting, mode check, cached `pyobsd status --json`, error for a pyobsd without `mode`.
+- [x] Status, stats, stop deadline from the JSON. States **starting**, **failed** (restarts), **running (pid
       mode)** in the module list, detail page and hub.
-- [ ] Start, stop, kill, restart through pyobsd. No restart job in this mode.
-- [ ] `config_stale` by mtime and start time, `get_module_versions` by `pid` and start time.
+- [x] Start, stop, kill, restart through pyobsd. No restart job in this mode.
+- [x] `config_stale` by mtime and start time, `get_module_versions` by `pid` and start time.
 - [ ] Logs by unit for the module view, All Logs and log stats. Lines without `PYOBS_MODULE`.
 - [ ] Tests: each service function in both modes, with `subprocess.run` mocked (pyobsd's JSON and exit codes).
 - [ ] Docs (`docs/source/installation.rst`): systemd mode, `PYOBSD_EXEC`, minimum pyobs-core 2.30.1. CHANGELOG.

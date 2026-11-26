@@ -298,7 +298,12 @@ function statusText(data) {
     const s = Math.max(0, Math.round(data.stop_deadline - Date.now() / 1000));
     if (s > 0) text += ` (up to ${s < 120 ? `${s} s` : `${Math.round(s / 60)} min`})`;
   }
-  if (data.restarting) text += ' (restarting)';
+  // systemd mode: auto_restart while systemd waits to start a failed module again, restarts since boot, a
+  // module still running in PID-file mode, and why pyobsd's status is unknown
+  if (data.restarting || data.auto_restart) text += ' (restarting)';
+  if (data.restarts > 0) text += ` (${data.restarts} restarts)`;
+  if (data.mode === 'pid') text += ' (pid mode)';
+  if (data.error) text += ` (${data.error})`;
   return text;
 }
 
@@ -306,16 +311,20 @@ async function updateStatus() {
   const resp = await fetch(`/api/modules/${MODULE}/status/`);
   const data = await resp.json();
   const badge = document.getElementById('status-badge');
-  const colors = {running: 'success', stopping: 'warning', stopped: 'danger', unknown: 'secondary'};
+  const colors = {running: 'success', starting: 'info', stopping: 'warning', failed: 'danger', stopped: 'danger', unknown: 'secondary'};
   badge.textContent = statusText(data);
   badge.className = `badge fs-6 bg-${colors[data.status] || 'secondary'}`;
   const running = data.status === 'running';
   const stopping = data.status === 'stopping';
+  const starting = data.status === 'starting';
   const unknown = data.status === 'unknown';
-  document.getElementById('start-btn').disabled = running || stopping || unknown || data.restarting;
-  document.getElementById('restart-btn').disabled = !running || data.restarting;
-  document.getElementById('stop-btn').disabled = !running;
-  document.getElementById('kill-btn').classList.toggle('d-none', !stopping);
+  // systemd mode: pyobsd refuses a module still running in PID-file mode, it has to be stopped that way
+  const pidMode = data.mode === 'pid';
+  document.getElementById('start-btn').disabled = running || stopping || starting || unknown || data.restarting;
+  document.getElementById('restart-btn').disabled = !running || data.restarting || pidMode;
+  // a starting module or one waiting for an automatic restart can be stopped, too
+  document.getElementById('stop-btn').disabled = !(running || starting || data.auto_restart) || pidMode;
+  document.getElementById('kill-btn').classList.toggle('d-none', !(stopping || starting) || pidMode);
   const memRow = document.getElementById('stat-memory-row');
   const cpuRow = document.getElementById('stat-cpu-row');
   const pidRow = document.getElementById('stat-pid-row');
