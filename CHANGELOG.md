@@ -9,6 +9,8 @@ Entries for releases before this file existed were generated from commit subject
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-26
+
 ### Added
 
 - Hosts in pyobsd's systemd mode (`pyobsd.mode: systemd` in pyobsd's config file): web-admin calls pyobsd
