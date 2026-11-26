@@ -1580,9 +1580,9 @@ def _journal_entry_to_line(entry: dict) -> str:
     # assumes exactly that when it parses these lines back out.
     ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC)
     level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
-    # systemd mode: what the unit has besides pyobs's own lines -- systemd's lines about it (UNIT, e.g. "Main
-    # process exited") and stderr (_SYSTEMD_UNIT, e.g. a traceback before logging is set up) -- has no
-    # PYOBS_MODULE and no file:line
+    # systemd mode: what the unit has besides pyobs's own lines has no PYOBS_MODULE -- systemd's lines about it
+    # (UNIT, e.g. "Main process exited", with systemd's own CODE_FILE) and stderr (_SYSTEMD_UNIT, e.g. a traceback
+    # before logging is set up, without CODE_FILE)
     module = entry.get("PYOBS_MODULE") or _module_of_unit(entry.get("UNIT") or entry.get("_SYSTEMD_UNIT") or "")
     # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal
     # formatter builds MESSAGE's "<module> <file>:<line> " prefix from %(filename)s (just the

@@ -1,7 +1,7 @@
 # Plan: web-admin on hosts in pyobsd's systemd mode
 
 Status: in progress. pyobs-core 2.30.1 with `pyobsd start/restart --no-wait` is released (see Prerequisite).
-Control and status (#126) and logs by unit are implemented, the check on a host is next.
+Control and status (#126) and logs by unit (#127) are implemented and checked on a host, the release is next.
 Repos: pyobs-web-admin, pyobs-core
 
 Part of `../../../pyobs-core/specs/plans/2026-11-25-pyobsd-systemd-mode.md` (systemd mode of pyobsd, released
@@ -136,6 +136,20 @@ pyobs-web-admin:
 - [x] Logs by unit for the module view, All Logs and log stats. Lines without `PYOBS_MODULE`.
 - [ ] Tests: each service function in both modes, with `subprocess.run` mocked (pyobsd's JSON and exit codes).
 - [ ] Docs (`docs/source/installation.rst`): systemd mode, `PYOBSD_EXEC`, minimum pyobs-core 2.30.1. CHANGELOG.
-- [ ] Check on a host in systemd mode: start, stop, kill, restart, a failing module (state, restarts, its
-      traceback in the log), a module with a long close, All Logs, a hub with one host in each mode.
+- [x] Check on a host in systemd mode (Debian 13, systemd 257, 921 MB journal; pyobs-core 2.30.1 in a test
+      venv, web-admin develop at #127 run by `runserver` as the pyobs user, dummy modules; the host's own
+      modules stayed in PID-file mode, all removed afterwards except polkitd):
+      - Start (4 modules), stop, restart and kill return in 140-410 ms. States: running, starting (a module
+        that needs 60 s to open, with Kill), stopping with its deadline ("stopping (up to 84 s)"), "failed
+        (restarting)" with the restart count, stopped after kill without an automatic restart.
+      - A module crashing in `open()`: restarts until the start limit (5), then Start from web-admin resets
+        it (polkit, as pyobs) and starts it again. Stop works while it waits for a restart, and on a
+        starting module.
+      - Logs by unit: pyobs's lines, the stderr line (INFO, no file:line), the traceback and systemd's lines
+        ("Main process exited", "Failed with result" as WARNING, "Failed to start" as ERROR, which the log
+        stats count). systemd's lines carry their own CODE_FILE (e.g. `job.c:818`).
+      - Config drift after a touch, versions from the journal, deactivate stops and renames.
+      - All Logs over 4 units: 83 ms, with a search 62 ms. For comparison, `journalctl -u 'pyobs@*.service'`
+        took 1.3 s there and 7 ms with explicit units.
+      - Not checked: a hub with one host in each mode.
 - [ ] Release pyobs-web-admin.
