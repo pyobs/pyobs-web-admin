@@ -5052,3 +5052,91 @@ class SystemdModeTests(unittest.TestCase):
         self.assertEqual(data["restarts"], 1)
         self.assertTrue(data["auto_restart"])
         self.assertFalse(data["restarting"])
+
+
+class SystemdModeLogsTests(unittest.TestCase):
+    """In systemd mode, the journald backend matches by unit (-u pyobs@<module>.service), see _journal_match."""
+
+    def setUp(self):
+        self._settings = override_settings(PYOBS_LOG_BACKEND="journald")
+        self._settings.enable()
+        self.addCleanup(self._settings.disable)
+        self._mode = patch.object(services, "_systemd_mode", return_value=True)
+        self._mode.start()
+        self._comm = patch.object(services, "get_comm_user", return_value="camera_user")
+        self._comm.start()
+        # the PYOBS_MODULE tag looks up pyobs-core's version with pip
+        self._version = patch.object(services, "pyobs_core_version", return_value=None)
+        self._version.start()
+        self.addCleanup(self._version.stop)
+        self.run = patch.object(services.subprocess, "run", return_value=MagicMock(returncode=0, stdout="", stderr=""))
+        self.mock_run = self.run.start()
+
+    def tearDown(self):
+        self.run.stop()
+        self._comm.stop()
+        self._mode.stop()
+
+    def _journalctl_args(self):
+        return [c.args[0][1:] for c in self.mock_run.call_args_list]
+
+    def test_module_log_by_unit_in_one_call(self):
+        """The unit also has the lines filed under the comm name, so no second query for it."""
+        services.get_logs("camera", lines=50, filter_str="err")
+        self.assertEqual(self._journalctl_args(), [[
+            "-u", "pyobs@camera.service", "--grep", "err", "--case-sensitive=false", "-n", "50",
+            "-o", "json", "--no-pager",
+        ]])
+
+    def test_disabled_module_uses_active_unit_name(self):
+        services.get_logs("_dome")
+        self.assertEqual(self._journalctl_args()[0][:2], ["-u", "pyobs@dome.service"])
+
+    def test_log_stats_by_unit(self):
+        services.get_log_stats("camera")
+        self.assertEqual(self._journalctl_args(), [["-u", "pyobs@camera.service", "--since", "-24h", "-o", "json",
+                                                    "--no-pager"]])
+
+    def test_all_logs_selected_modules(self):
+        services.get_all_logs(["camera", "_dome"], lines=10)
+        self.assertEqual(self._journalctl_args()[0][:4], ["-u", "pyobs@camera.service", "-u", "pyobs@dome.service"])
+
+    def test_all_logs_units_from_pyobsd_not_glob(self):
+        with patch.object(systemd_mode, "status_all", return_value={"camera": {}, "_dome": {}, "roof": {}}):
+            services.get_all_logs(None, lines=10)
+        args = self._journalctl_args()[0]
+        self.assertEqual(args[:6], ["-u", "pyobs@camera.service", "-u", "pyobs@dome.service", "-u", "pyobs@roof.service"])
+        self.assertFalse(any("*" in a for a in args))
+
+    def test_all_logs_without_modules_queries_nothing(self):
+        """No -u at all would match the whole journal."""
+        with patch.object(systemd_mode, "status_all", return_value={}):
+            self.assertEqual(services.get_all_logs(None), [])
+        self.mock_run.assert_not_called()
+
+    def test_all_logs_falls_back_to_configs_if_pyobsd_fails(self):
+        with patch.object(systemd_mode, "status_all", side_effect=systemd_mode.PyobsdError("x")), \
+                patch.object(services, "list_modules", return_value=["camera"]):
+            services.get_all_logs(None)
+        self.assertEqual(self._journalctl_args()[0][:2], ["-u", "pyobs@camera.service"])
+
+    def test_pid_mode_unchanged(self):
+        with patch.object(services, "_systemd_mode", return_value=False):
+            services.get_all_logs(None)
+            services.get_logs("camera")
+        self.assertEqual(self._journalctl_args()[0][0], "SYSLOG_IDENTIFIER=pyobs")
+        self.assertEqual(self._journalctl_args()[1][:2], ["SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera"])
+        # comm name queried separately, as before
+        self.assertEqual(self._journalctl_args()[2][:2], ["SYSLOG_IDENTIFIER=pyobs", "PYOBS_MODULE=camera_user"])
+
+    def test_lines_without_pyobs_fields(self):
+        ts = 1788786292460508
+        tstr = f"{datetime.fromtimestamp(ts / 1_000_000):%Y-%m-%d %H:%M:%S}"
+        systemd_line = {"__REALTIME_TIMESTAMP": str(ts), "PRIORITY": "4", "UNIT": "pyobs@camera.service",
+                        "_SYSTEMD_UNIT": "init.scope", "MESSAGE": "pyobs@camera.service: Failed with result 'exit-code'."}
+        stderr_line = {"__REALTIME_TIMESTAMP": str(ts), "PRIORITY": "6", "_SYSTEMD_UNIT": "pyobs@camera.service",
+                       "MESSAGE": "Traceback (most recent call last):"}
+        self.assertEqual(services._journal_entry_to_line(systemd_line),
+                         f"{tstr} [WARNING] (camera) pyobs@camera.service: Failed with result 'exit-code'.")
+        self.assertEqual(services._journal_entry_to_line(stderr_line),
+                         f"{tstr} [INFO] (camera) Traceback (most recent call last):")

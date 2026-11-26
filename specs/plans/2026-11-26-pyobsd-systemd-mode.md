@@ -1,7 +1,7 @@
 # Plan: web-admin on hosts in pyobsd's systemd mode
 
 Status: in progress. pyobs-core 2.30.1 with `pyobsd start/restart --no-wait` is released (see Prerequisite).
-Control and status are implemented, logs by unit are next.
+Control and status (#126) and logs by unit are implemented, the check on a host is next.
 Repos: pyobs-web-admin, pyobs-core
 
 Part of `../../../pyobs-core/specs/plans/2026-11-25-pyobsd-systemd-mode.md` (systemd mode of pyobsd, released
@@ -133,7 +133,7 @@ pyobs-web-admin:
       mode)** in the module list, detail page and hub.
 - [x] Start, stop, kill, restart through pyobsd. No restart job in this mode.
 - [x] `config_stale` by mtime and start time, `get_module_versions` by `pid` and start time.
-- [ ] Logs by unit for the module view, All Logs and log stats. Lines without `PYOBS_MODULE`.
+- [x] Logs by unit for the module view, All Logs and log stats. Lines without `PYOBS_MODULE`.
 - [ ] Tests: each service function in both modes, with `subprocess.run` mocked (pyobsd's JSON and exit codes).
 - [ ] Docs (`docs/source/installation.rst`): systemd mode, `PYOBSD_EXEC`, minimum pyobs-core 2.30.1. CHANGELOG.
 - [ ] Check on a host in systemd mode: start, stop, kill, restart, a failing module (state, restarts, its

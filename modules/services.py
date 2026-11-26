@@ -1580,7 +1580,10 @@ def _journal_entry_to_line(entry: dict) -> str:
     # assumes exactly that when it parses these lines back out.
     ts = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC)
     level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", 6)), "INFO")
-    module = entry.get("PYOBS_MODULE", "")
+    # systemd mode: what the unit has besides pyobs's own lines -- systemd's lines about it (UNIT, e.g. "Main
+    # process exited") and stderr (_SYSTEMD_UNIT, e.g. a traceback before logging is set up) -- has no
+    # PYOBS_MODULE and no file:line
+    module = entry.get("PYOBS_MODULE") or _module_of_unit(entry.get("UNIT") or entry.get("_SYSTEMD_UNIT") or "")
     # CODE_FILE is logging_journald's record.pathname (a full path), but pyobs's own journal
     # formatter builds MESSAGE's "<module> <file>:<line> " prefix from %(filename)s (just the
     # basename) -- basename() here so the two actually match. Caught live: without this, a
@@ -1606,16 +1609,40 @@ def _journal_entry_to_line(entry: dict) -> str:
                 message = raw % tuple(args) if args else raw
             except Exception:
                 message = raw
+    if "CODE_FILE" not in entry and "PYOBS_MODULE" not in entry:
+        return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {message}"
     prefix = f"{module} {code_file}:{code_line} "
     if message.startswith(prefix):
         message = message[len(prefix):]
     return f"{ts:%Y-%m-%d %H:%M:%S} [{level}] ({module}) {code_file}:{code_line} {message}"
 
 
+def _module_of_unit(unit: str) -> str:
+    """"camera" for "pyobs@camera.service", "" for anything else."""
+    if unit.startswith("pyobs@") and unit.endswith(".service"):
+        return unit[len("pyobs@"):-len(".service")]
+    return ""
+
+
+def _journal_match(names: list[str]) -> list[str]:
+    """journalctl matches for the log lines of these modules. In systemd mode by unit (`-u pyobs@<name>.service`,
+    one per module, never a glob: journalctl resolves a glob against every unit name in the journal, which took
+    79 s on a 4 GB journal), which also has stderr, systemd's own lines about the unit and the lines filed
+    under the comm name. Otherwise by pyobs's own fields."""
+    if _systemd_mode():
+        units: list[str] = []
+        for name in names:
+            unit = f"pyobs@{_active_name(name)}.service"
+            if unit not in units:
+                units.append(unit)
+        return [arg for unit in units for arg in ("-u", unit)]
+    return ["SYSLOG_IDENTIFIER=pyobs", *[f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]]
+
+
 def _get_logs_journald(
     name: str, lines: int, before: datetime | None = None, since: datetime | None = None, until: datetime | None = None, filter_str: str = ""
 ) -> list[str]:
-    args = ["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}"]
+    args = _journal_match([name])
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     upper = _until_bound(before, until)
@@ -1643,7 +1670,7 @@ def _get_log_stats_journald(name: str, since: datetime | None = None) -> dict:
         since_arg = f"{cutoff:%Y-%m-%d %H:%M:%S} UTC"
     else:
         since_arg = "-24h"
-    entries = _journalctl_json(["SYSLOG_IDENTIFIER=pyobs", f"PYOBS_MODULE={_journald_module_tag(name)}", "--since", since_arg])
+    entries = _journalctl_json([*_journal_match([name]), "--since", since_arg])
     for entry in entries:
         level = _JOURNALD_PRIORITY_TO_LEVEL.get(int(entry.get("PRIORITY", -1)))
         if level:
@@ -1666,7 +1693,11 @@ def _log_identities(name: str) -> list[str]:
     primary identity, or isn't a plain module name (unqueryable via journalctl's
     PYOBS_MODULE match).
     """
-    primary = _journald_module_tag(name) if _log_backend() == "journald" else _active_name(name)
+    journald = _log_backend() == "journald"
+    primary = _journald_module_tag(name) if journald else _active_name(name)
+    # matching by unit (systemd mode, see _journal_match) already has the lines filed under the comm name
+    if journald and _systemd_mode():
+        return [primary]
     comm_user = get_comm_user(name)
     if comm_user is None or comm_user == primary or not _is_valid_module_name(comm_user):
         return [primary]
@@ -1854,11 +1885,21 @@ def _get_all_logs_journald(
     # deselected every module, which must yield nothing, not fall back to unrestricted.
     if names is not None and not names:
         return []
-    args = ["SYSLOG_IDENTIFIER=pyobs"]
-    if names:
+    if _systemd_mode():
+        if names is None:
+            # "all" by unit needs the units: every module pyobsd lists (configs and running units). Not the
+            # glob, see _journal_match. A unit whose config is gone and that doesn't run isn't in it then.
+            try:
+                names = list(systemd_mode.status_all())
+            except systemd_mode.PyobsdError:
+                names = list_modules()
+            if not names:
+                return []
+        args = _journal_match(names)
+    else:
         # Repeating a field name is journalctl's own OR syntax -- combined with the
         # SYSLOG_IDENTIFIER term via implicit AND, this matches any of the given modules.
-        args += [f"PYOBS_MODULE={_journald_module_tag(n)}" for n in names]
+        args = _journal_match(names) if names else ["SYSLOG_IDENTIFIER=pyobs"]
     if since is not None:
         args += ["--since", f"{since:%Y-%m-%d %H:%M:%S} UTC"]
     upper = _until_bound(before, until)

@@ -66,6 +66,8 @@ files:
   is shown as "running (pid mode)" and can only be stopped with ``pyobsd --mode pid stop``.
 - A config file counts as changed if it was modified after the module started, since modules also start at
   boot, after an error and from a shell.
+- With the journald backend, the logs are read by unit (``journalctl -u pyobs@<module>.service``), so they also
+  show stderr and systemd's own lines about the module, see :doc:`features/logging`.
 
 It needs pyobs-core 2.30.1 or later on the host. With an older pyobsd, the status shows that as an error and the
 buttons don't work. web-admin runs as the pyobs user, which the polkit rule from ``pyobsd setup`` allows to control
