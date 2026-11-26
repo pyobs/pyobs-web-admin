@@ -1,7 +1,8 @@
 # Plan: web-admin on hosts in pyobsd's systemd mode
 
-Status: in progress. pyobs-core 2.30.1 with `pyobsd start/restart --no-wait` is released (see Prerequisite).
-Control and status (#126) and logs by unit (#127) are implemented and checked on a host, the release is next.
+Status: implemented. Released in pyobs-web-admin 2.5.0, needs pyobs-core 2.30.1 (`pyobsd start/restart
+--no-wait`, see Prerequisite). Control and status (#126) and logs by unit (#127), checked on a host (#128). Open:
+a hub with one host in each mode, not checked yet.
 Repos: pyobs-web-admin, pyobs-core
 
 Part of `../../../pyobs-core/specs/plans/2026-11-25-pyobsd-systemd-mode.md` (systemd mode of pyobsd, released
@@ -152,4 +153,4 @@ pyobs-web-admin:
       - All Logs over 4 units: 83 ms, with a search 62 ms. For comparison, `journalctl -u 'pyobs@*.service'`
         took 1.3 s there and 7 ms with explicit units.
       - Not checked: a hub with one host in each mode.
-- [ ] Release pyobs-web-admin.
+- [x] Release pyobs-web-admin (2.5.0).

@@ -13,4 +13,5 @@ happen to touch this repo (tagged with a `Repos:` line there) — e.g.
 `../../pyobs-core/specs/design/shared-authz-keycloak.md` (proposed: centralized authorization via
 Keycloak groups; replaces this repo's Django-admin activation for Keycloak-linked users), and
 `../../pyobs-core/specs/plans/2026-11-25-pyobsd-systemd-mode.md` (systemd mode for pyobsd,
-pyobs-core part released in 2.30.0; this repo's part is `plans/2026-11-26-pyobsd-systemd-mode.md`).
+pyobs-core part released in 2.30.0/2.30.1; this repo's part is `plans/2026-11-26-pyobsd-systemd-mode.md`,
+released in 2.5.0).
