@@ -136,16 +136,14 @@ def _get_shared_or_404(name: str) -> str:
 
 def dashboard(request):
     host = _active_host(request)
-    if host:
-        try:
-            data = proxy.call(host, "GET", "/api/statuses/")
-            modules = [m["name"] for m in data.get("modules", [])]
-        except Exception:
-            modules = []
-    else:
-        modules = [n for n in services.list_modules() if services._is_valid_module_name(n)]
+    # On a remote host the rows are built in the browser from the first api_all_statuses
+    # response: asking the host for the names here would block the page on the same full status
+    # call the browser makes right after.
+    defer_rows = host is not None
+    modules = [] if defer_rows else [n for n in services.list_modules() if services._is_valid_module_name(n)]
     return render(request, "modules/dashboard.html", {
         "modules": modules,
+        "defer_rows": defer_rows,
         "ejabberd_enabled": getattr(settings, "EJABBERD_ENABLED", False),
     })
 
@@ -463,7 +461,7 @@ def _stop_info(name: str, status: str) -> dict:
 
 
 def _installed_pyobs_versions() -> dict[str, str]:
-    return {p["name"]: p["version"] for p in services.list_pyobs_packages()}
+    return {p["name"]: p["version"] for p in services.list_pyobs_packages_cached()}
 
 
 def _versions_and_outdated(name: str, status: str, installed: dict[str, str]) -> tuple[dict[str, str] | None, list[str] | None]:
@@ -481,8 +479,8 @@ def api_all_statuses(request):
     if host:
         return _proxy(host, "GET", "/api/statuses/")
     modules = services.list_modules()
-    # Fetched once per request, not per module -- get_module_versions is PID-cached so the
-    # only recurring cost of this poll is one `pip list` here, not one per running module.
+    # Fetched once per request, not per module -- get_module_versions is PID-cached and the
+    # `pip list` behind `installed` is TTL-cached (list_pyobs_packages_cached).
     installed = _installed_pyobs_versions()
     result = []
     for m in modules:
@@ -810,10 +808,13 @@ def api_create_module(request):
 
 @require_GET
 def api_shared_configs(request):
-    """Hub-facing, always-local (like api_all_statuses) -- queried directly via proxy.call
-    by another instance's sidebar_modules context processor to list a remote host's shared
-    config names, since sidebar_modules already resolves local-vs-hub itself rather than
-    going through the session-active-host dance api_shared_config/shared_detail use."""
+    """Shared config names of the active host: proxied when a remote host is active (the
+    browser builds a remote host's sidebar from this), local otherwise -- like
+    api_all_statuses. A hub calling this on another instance sends no session cookie, so the
+    remote side always answers from its own configs."""
+    host = _active_host(request)
+    if host:
+        return _proxy(host, "GET", "/api/shared/")
     return JsonResponse({"shared": services.list_shared_configs()})
 
 

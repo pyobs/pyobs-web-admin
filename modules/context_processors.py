@@ -32,20 +32,13 @@ def sidebar_modules(request):
     active_host = request.session.get("active_host", "localhost")
     host_config = proxy.get_host_config(active_host)
 
+    # A remote host's module and shared-config lists are not fetched here: that would block
+    # every page render on a full status call to the host. base.html builds them in the browser
+    # from the status poll it runs anyway (see sidebar_deferred there).
+    sidebar_deferred = host_config is not None
     if host_config:
-        try:
-            data = proxy.call(host_config, "GET", "/api/statuses/")
-            modules = _sort_modules([
-                {"name": m["name"], "status": m.get("status", "unknown")}
-                for m in data.get("modules", [])
-            ])
-        except Exception:
-            modules = []
-        try:
-            shared_data = proxy.call(host_config, "GET", "/api/shared/")
-            shared = shared_data.get("shared", [])
-        except Exception:
-            shared = []
+        modules = []
+        shared = []
     else:
         raw_names = services.list_modules()
         modules = _sort_modules([
@@ -58,6 +51,7 @@ def sidebar_modules(request):
     return {
         "sidebar_modules": modules,
         "sidebar_shared_configs": shared,
+        "sidebar_deferred": sidebar_deferred,
         "hub_hosts": proxy.all_hosts(),
         "active_host": active_host,
         # Global so the sidebar's Users link (like the Hosts section already does for

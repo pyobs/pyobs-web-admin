@@ -6,13 +6,13 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h4 class="mb-0">Dashboard</h4>
   <div class="d-flex gap-2">
-    <button class="btn btn-sm btn-outline-success" id="btn-start-all" onclick="controlAll('start')">
+    <button class="btn btn-sm btn-outline-success" id="btn-start-all" disabled onclick="controlAll('start')">
       <i class="bi bi-play-fill"></i><span class="d-none d-md-inline"> Start All</span>
     </button>
-    <button class="btn btn-sm btn-outline-warning" id="btn-restart-all" onclick="controlAll('restart')">
+    <button class="btn btn-sm btn-outline-warning" id="btn-restart-all" disabled onclick="controlAll('restart')">
       <i class="bi bi-arrow-repeat"></i><span class="d-none d-md-inline"> Restart All</span>
     </button>
-    <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" onclick="controlAll('stop')">
+    <button class="btn btn-sm btn-outline-danger" id="btn-stop-all" disabled onclick="controlAll('stop')">
       <i class="bi bi-stop-fill"></i><span class="d-none d-md-inline"> Stop All</span>
     </button>
     <button class="btn btn-sm btn-outline-warning" id="btn-restart-outdated" onclick="controlOutdated()" disabled
@@ -26,13 +26,13 @@
     <button class="btn btn-sm btn-outline-secondary" onclick="acknowledgeAllLogs()" title="Mark every module's current warnings/errors as seen">
       <i class="bi bi-check2-all"></i><span class="d-none d-md-inline"> Acknowledge All</span>
     </button>
-    <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses()">
+    <button class="btn btn-sm btn-outline-secondary" onclick="refreshAllStatuses(0)">
       <i class="bi bi-arrow-clockwise"></i><span class="d-none d-md-inline"> Refresh</span>
     </button>
   </div>
 </div>
 
-{% if not modules %}
+{% if not modules and not defer_rows %}
 <div class="alert alert-warning">
   No modules found. Make sure <code>PYOBS_CONFIG_DIR</code> points to your config directory
   and contains <code>.yaml</code> files.
@@ -80,6 +80,8 @@
 </div>
 {% endif %}
 
+<div id="status-error" class="alert alert-danger d-none"></div>
+<div class="position-relative" id="module-grid-wrap">
 <table class="table table-hover align-middle mb-0" id="module-grid">
   <colgroup>
     <col style="width:1%">       <!-- status -->
@@ -103,50 +105,16 @@
   </thead>
   <tbody>
   {% for mod in modules %}
-  <tr data-module-row="{{ mod }}">
-    <td class="text-nowrap" style="width:1%">
-      <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
-      <i class="bi bi-arrow-up-circle-fill outdated-indicator d-none ms-1 text-warning" data-module="{{ mod }}" title=""></i>
-      <i class="bi bi-file-earmark-diff-fill config-stale-indicator d-none ms-1 text-warning" data-module="{{ mod }}" title=""></i>
-      {% if ejabberd_enabled %}
-      <i class="bi xmpp-indicator d-none ms-1" data-module="{{ mod }}"></i>
-      {% endif %}
-    </td>
-    <td class="fw-semibold"><a href="{% url 'module_detail' mod %}" class="text-decoration-none text-reset">{{ mod }}</a></td>
-    <td class="text-secondary small text-nowrap module-ram d-none d-md-table-cell" data-module="{{ mod }}"></td>
-    <td class="text-secondary small text-nowrap module-cpu d-none d-md-table-cell" data-module="{{ mod }}"></td>
-    <td class="text-secondary small text-nowrap module-uptime d-none d-md-table-cell" data-module="{{ mod }}"></td>
-    <td><div class="module-log-stats d-flex gap-1 flex-wrap" data-module="{{ mod }}"></div></td>
-    <td class="text-end text-nowrap">
-      <a href="{% url 'module_detail' mod %}#tab-logs" class="btn btn-sm btn-outline-primary me-1">
-        <i class="bi bi-journal-text"></i> Logs
-      </a>
-      <button class="btn btn-sm btn-outline-success" title="Start" data-action="start" onclick="quickControl('{{ mod }}', 'start', this)">
-        <i class="bi bi-play-fill"></i>
-      </button>
-      <button class="btn btn-sm btn-outline-warning" title="Restart" data-action="restart" onclick="quickControl('{{ mod }}', 'restart', this)">
-        <i class="bi bi-arrow-repeat"></i>
-      </button>
-      <button class="btn btn-sm btn-outline-danger" title="Stop" data-action="stop" onclick="quickControl('{{ mod }}', 'stop', this)">
-        <i class="bi bi-stop-fill"></i>
-      </button>
-      <button class="btn btn-sm btn-danger d-none" title="Kill right away, without waiting for the shutdown" data-action="kill" onclick="quickControl('{{ mod }}', 'kill', this)">
-        <i class="bi bi-x-octagon"></i>
-      </button>
-      {% if mod|slice:':1' == '_' %}
-      <button class="btn btn-sm btn-outline-success ms-1" title="Activate" onclick="toggleActive('{{ mod }}', 'activate', this)">
-        <i class="bi bi-eye"></i>
-      </button>
-      {% else %}
-      <button class="btn btn-sm btn-outline-secondary ms-1" title="Deactivate" onclick="toggleActive('{{ mod }}', 'deactivate', this)">
-        <i class="bi bi-eye-slash"></i>
-      </button>
-      {% endif %}
-    </td>
-  </tr>
+  {% include 'modules/_dashboard_row.html' %}
   {% endfor %}
   </tbody>
 </table>
+  <div id="status-overlay" class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center pt-5"
+       style="background: rgba(var(--bs-body-bg-rgb), .7); z-index: 5; cursor: wait;">
+    <div class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Loading module status…</div>
+  </div>
+</div>
+<template id="module-row-template">{% include 'modules/_dashboard_row.html' with mod='__MODULE__' placeholder=True %}</template>
 
 {% endblock %}
 
@@ -256,10 +224,48 @@ function sortAndRender() {
   }
 }
 
-async function refreshAllStatuses() {
+// On a remote host the server renders no rows (it would have to wait for the host just to get the
+// names); they are built here from the first status response.
+const DEFER_ROWS = {{ defer_rows|yesno:"true,false" }};
+let statusLoaded = false;
+
+function ensureRows(names) {
+  if (!DEFER_ROWS) return;
+  const tbody = document.querySelector('#module-grid tbody');
+  const tpl = document.getElementById('module-row-template').innerHTML;
+  const existing = new Set([...tbody.querySelectorAll('tr[data-module-row]')].map(r => r.dataset.moduleRow));
+  names.filter(n => /^[A-Za-z0-9_.-]+$/.test(n) && !existing.has(n)).forEach(n => {
+    const holder = document.createElement('tbody');
+    holder.innerHTML = tpl.replaceAll('__MODULE__', n);
+    const row = holder.firstElementChild;
+    row.querySelector(n.startsWith('_') ? '[data-toggle="deactivate"]' : '[data-toggle="activate"]')?.remove();
+    tbody.appendChild(row);
+  });
+  const total = document.getElementById('stat-total');
+  if (total) total.textContent = tbody.querySelectorAll('tr[data-module-row]').length;
+}
+
+// Called once, when the first status response (or its failure) is in: the table is usable (or
+// at least not hidden behind the overlay) from here on, later polls never bring the overlay back.
+function finishInitialLoad(error) {
+  document.getElementById('status-overlay')?.remove();
+  const box = document.getElementById('status-error');
+  if (error) {
+    box.textContent = `Could not load module status: ${error}. Retrying every 10 s.`;
+    box.classList.remove('d-none');
+  } else {
+    box.classList.add('d-none');
+    ['start', 'restart', 'stop'].forEach(a => { document.getElementById(`btn-${a}-all`).disabled = false; });
+    statusLoaded = true;
+  }
+}
+
+// maxAgeMs: reuse a status response younger than that, e.g. the one the sidebar poll just
+// fetched (see getStatuses in base.html); 0 forces a fresh request.
+async function refreshAllStatuses(maxAgeMs = 0) {
   try {
-    const resp = await fetch("{% url 'api_all_statuses' %}");
-    const data = await resp.json();
+    const data = await getStatuses(maxAgeMs);
+    ensureRows(data.modules.map(m => m.name));
     let running = 0, stopped = 0, totalRamMb = 0, totalCpu = 0;
     const statusMap = {};
     let outdatedCount = 0;
@@ -332,7 +338,10 @@ async function refreshAllStatuses() {
     document.getElementById('btn-restart-stale-config').disabled = configStaleCount === 0;
 
     sortAndRender();
-  } catch (_) {}
+    if (!statusLoaded) finishInitialLoad();
+  } catch (e) {
+    if (!statusLoaded) finishInitialLoad(e.message);
+  }
 }
 
 async function quickControl(name, action, btn) {
@@ -545,14 +554,14 @@ async function refreshEjabberd() {
 // refreshEjabberd cross-references each row's data-comm-user, which refreshAllStatuses
 // sets -- sequenced, not both fired independently, so there's no race where the ejabberd
 // fetch resolves first and finds every row's comm_user still unset.
-async function refreshStatusesThenEjabberd() {
-  await refreshAllStatuses();
+async function refreshStatusesThenEjabberd(maxAgeMs = 0) {
+  await refreshAllStatuses(maxAgeMs);
   await refreshEjabberd();
 }
 
 updateSortHeaders();
 refreshStatusesThenEjabberd();
-setInterval(refreshStatusesThenEjabberd, 10000);
+setInterval(() => refreshStatusesThenEjabberd(6000), 10000);
 refreshLogStats();
 setInterval(refreshLogStats, 60000);
 </script>

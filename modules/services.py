@@ -595,6 +595,27 @@ def stale_packages(running: dict[str, str], installed: dict[str, str]) -> list[s
     return sorted(n for n in running if running[n] != installed.get(n))
 
 
+_PYOBS_PACKAGES_CACHE_TTL = 15  # seconds
+_pyobs_packages_cache: tuple[float, list[dict]] | None = None
+
+
+def list_pyobs_packages_cached() -> list[dict]:
+    """list_pyobs_packages() for the status poll: `pip list` costs 0.2 s warm and about 1 s
+    with a cold file cache, which a 10 s poll per open tab should not pay on every request.
+    Cached per worker process for _PYOBS_PACKAGES_CACHE_TTL, so after an upgrade the
+    "outdated" flags can lag by that long (workers don't share the cache). A failed lookup
+    (empty list) is not cached. Tests that need a fresh read reset `_pyobs_packages_cache`.
+    """
+    global _pyobs_packages_cache
+    now = time.time()
+    if _pyobs_packages_cache is not None and now - _pyobs_packages_cache[0] < _PYOBS_PACKAGES_CACHE_TTL:
+        return _pyobs_packages_cache[1]
+    packages = list_pyobs_packages()
+    if packages:
+        _pyobs_packages_cache = (now, packages)
+    return packages
+
+
 _PYOBS_CORE_VERSION_CACHE_TTL = 60  # seconds
 _pyobs_core_version_cache: tuple[float, Version | None] | None = None
 
