@@ -25,7 +25,7 @@ from django.test import RequestFactory, override_settings
 from django.test import TestCase as DjangoTestCase
 from packaging.version import Version
 
-from modules import ejabberd, services, systemd_mode, views
+from modules import context_processors, ejabberd, services, systemd_mode, views
 from modules.middleware import HubTokenMiddleware
 from modules.pyobs_config import include_parts, pre_process_yaml, reload_anchors
 from modules.views import _tag_host
@@ -3664,6 +3664,8 @@ class ApiStatusVersionsTests(unittest.TestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
+        services._pyobs_packages_cache = None
+        self.addCleanup(setattr, services, "_pyobs_packages_cache", None)
 
     @patch("modules.services.config_stale")
     @patch("modules.services.list_pyobs_packages")
@@ -3762,6 +3764,103 @@ class ApiStatusVersionsTests(unittest.TestCase):
             self.assertFalse(m["config_stale"])
         self.assertEqual(data["installed"], {"pyobs-core": "2.0.0.dev76"})
         mock_pkgs.assert_called_once()
+
+
+class ListPyobsPackagesCachedTests(unittest.TestCase):
+    def setUp(self):
+        services._pyobs_packages_cache = None
+        self.addCleanup(setattr, services, "_pyobs_packages_cache", None)
+
+    @patch("modules.services.list_pyobs_packages")
+    def test_second_call_within_ttl_does_not_shell_out(self, mock_list):
+        mock_list.return_value = [{"name": "pyobs-core", "version": "1.0"}]
+        self.assertEqual(services.list_pyobs_packages_cached(), mock_list.return_value)
+        services.list_pyobs_packages_cached()
+        mock_list.assert_called_once()
+
+    @patch("modules.services.list_pyobs_packages")
+    def test_refreshes_after_ttl(self, mock_list):
+        mock_list.return_value = [{"name": "pyobs-core", "version": "1.0"}]
+        services.list_pyobs_packages_cached()
+        services._pyobs_packages_cache = (time.time() - services._PYOBS_PACKAGES_CACHE_TTL - 1, [])
+        services.list_pyobs_packages_cached()
+        self.assertEqual(mock_list.call_count, 2)
+
+    @patch("modules.services.list_pyobs_packages", return_value=[])
+    def test_failed_lookup_is_not_cached(self, mock_list):
+        services.list_pyobs_packages_cached()
+        services.list_pyobs_packages_cached()
+        self.assertEqual(mock_list.call_count, 2)
+
+
+class DashboardDeferredRowsTests(unittest.TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("modules.views.proxy.call")
+    @patch("modules.views.proxy.get_host_config", return_value={"name": "ms", "url": "http://x", "token": "t"})
+    def test_remote_host_renders_no_rows_and_does_not_call_the_host(self, _cfg, mock_call):
+        request = self.factory.get("/")
+        request.session = {"active_host": "ms"}
+        request.user = AnonymousUser()
+        response = views.dashboard(request)
+        # neither the view nor the sidebar context processor may block the page on the host
+        mock_call.assert_not_called()
+        html = response.content.decode()
+        self.assertNotIn("No modules found. Make sure", html)
+        self.assertIn('id="module-row-template"', html)
+        self.assertIn("const DEFER_ROWS = true;", html)
+        self.assertEqual(html.count("data-module-row=\"camera\""), 0)
+
+    @patch("modules.views.services.list_modules", return_value=["camera", "_old"])
+    @patch("modules.views.proxy.get_host_config", return_value=None)
+    def test_local_host_renders_rows_server_side(self, _cfg, _list):
+        request = self.factory.get("/")
+        request.session = {}
+        request.user = AnonymousUser()
+        html = views.dashboard(request).content.decode()
+        self.assertIn("const DEFER_ROWS = false;", html)
+        self.assertIn('data-module-row="camera"', html)
+        self.assertIn('id="status-overlay"', html)
+        # exactly one of activate/deactivate per real row
+        self.assertEqual(html.count('data-toggle="deactivate" onclick'), 2)  # camera + template placeholder
+        self.assertEqual(html.count('data-toggle="activate" onclick'), 2)  # _old + template placeholder
+
+
+class SidebarDeferredTests(unittest.TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("modules.context_processors.proxy.call")
+    @patch("modules.context_processors.proxy.get_host_config", return_value={"name": "ms", "url": "http://x", "token": "t"})
+    def test_remote_host_sidebar_is_deferred_and_does_not_call_the_host(self, _cfg, mock_call):
+        request = self.factory.get("/")
+        request.session = {"active_host": "ms"}
+        ctx = context_processors.sidebar_modules(request)
+        mock_call.assert_not_called()
+        self.assertTrue(ctx["sidebar_deferred"])
+        self.assertEqual(ctx["sidebar_modules"], [])
+        self.assertEqual(ctx["sidebar_shared_configs"], [])
+
+    @patch("modules.context_processors.services.list_shared_configs", return_value=["common"])
+    @patch("modules.context_processors.services.get_module_status", return_value="running")
+    @patch("modules.context_processors.services.list_modules", return_value=["camera"])
+    def test_local_sidebar_is_rendered_server_side(self, *_mocks):
+        request = self.factory.get("/")
+        request.session = {}
+        ctx = context_processors.sidebar_modules(request)
+        self.assertFalse(ctx["sidebar_deferred"])
+        self.assertEqual([m["name"] for m in ctx["sidebar_modules"]], ["camera"])
+        self.assertEqual(ctx["sidebar_shared_configs"], ["common"])
+
+    @patch("modules.views.proxy.call", return_value={"shared": ["common"]})
+    @patch("modules.views.proxy.get_host_config", return_value={"name": "ms", "url": "http://x", "token": "t"})
+    def test_api_shared_configs_proxies_when_remote_host_is_active(self, _cfg, mock_call):
+        request = self.factory.get("/api/shared/")
+        request.session = {"active_host": "ms"}
+        response = views.api_shared_configs(request)
+        self.assertEqual(json.loads(response.content), {"shared": ["common"]})
+        mock_call.assert_called_once()
 
 
 # ── Async package update views ─────────────────────────────────────────────────────

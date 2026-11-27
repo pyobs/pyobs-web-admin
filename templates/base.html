@@ -232,6 +232,7 @@
         </a>
       </div>
 
+      <div id="sidebar-modules">
       {% for mod in sidebar_modules %}
       <a href="{% url 'module_detail' mod.name %}"
          class="sidebar-link d-flex align-items-center gap-2 px-2 py-2 {% if active_module == mod.name %}active{% endif %}">
@@ -239,9 +240,11 @@
         {{ mod.name }}
       </a>
       {% empty %}
-      <p class="text-muted px-2 py-2" style="font-size:0.8rem">No modules found in config dir.</p>
+      <p class="text-muted px-2 py-2" style="font-size:0.8rem">{% if sidebar_deferred %}Loading modules…{% else %}No modules found in config dir.{% endif %}</p>
       {% endfor %}
+      </div>
 
+      <div id="sidebar-shared">
       {% if sidebar_shared_configs %}
       <div class="px-2 pb-1 pt-2">
         <span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Shared</span>
@@ -254,6 +257,7 @@
       </a>
       {% endfor %}
       {% endif %}
+      </div>
     </div>
 
     <div class="p-2 border-top border-secondary-subtle">
@@ -330,20 +334,106 @@ function toggleTheme() {
 }
 updateThemeIcons();
 
+// ── Module statuses (shared by the sidebar and the dashboard) ─────────────────
+// One request serves both pollers: a result younger than maxAgeMs is reused, and a request
+// already in flight is awaited rather than duplicated. Each full status call costs the host
+// ~0.7 s, so two independent polls on the same page doubled that for nothing.
+let _statusesFetch = null, _statusesAt = 0;
+function getStatuses(maxAgeMs = 0) {
+  const fresh = Date.now() - _statusesAt < maxAgeMs;
+  if (_statusesFetch && (fresh || _statusesFetch.pending)) return _statusesFetch.promise;
+  const entry = {pending: true};
+  entry.promise = fetch("{% url 'api_all_statuses' %}")
+    .then(async resp => {
+      const data = await resp.json();
+      if (!resp.ok || !data.modules) throw new Error(data.error || `HTTP ${resp.status}`);
+      _statusesAt = Date.now();
+      return data;
+    })
+    .finally(() => { entry.pending = false; });
+  entry.promise.catch(() => { if (_statusesFetch === entry) _statusesFetch = null; });
+  _statusesFetch = entry;
+  return entry.promise;
+}
+
+// ── Sidebar of a remote host ──────────────────────────────────────────────────
+// The server renders no module list for a remote host (that would block every page on a full
+// status call to it); it is built here from the first status response instead.
+const SIDEBAR_DEFERRED = {{ sidebar_deferred|default:False|yesno:"true,false" }};
+const ACTIVE_MODULE = "{{ active_module|default:''|escapejs }}";
+let sidebarBuilt = false;
+
+function sidebarLink(href, active) {
+  const a = document.createElement('a');
+  a.href = href;
+  a.className = 'sidebar-link d-flex align-items-center gap-2 px-2 py-2' + (active ? ' active' : '');
+  return a;
+}
+
+function buildSidebarModules(data) {
+  const box = document.getElementById('sidebar-modules');
+  const mods = data.modules.filter(m => /^[A-Za-z0-9_.-]+$/.test(m.name))
+    .sort((a, b) => ((a.status === 'running' || a.status === 'stopping') ? 0 : 1) - ((b.status === 'running' || b.status === 'stopping') ? 0 : 1)
+      || a.name.localeCompare(b.name));
+  box.replaceChildren();
+  mods.forEach(m => {
+    const a = sidebarLink("{% url 'module_detail' '__NAME__' %}".replace('__NAME__', m.name), m.name === ACTIVE_MODULE);
+    const dot = document.createElement('span');
+    dot.className = `status-dot ${m.status}`;
+    dot.dataset.module = m.name;
+    a.append(dot, m.name);
+    box.appendChild(a);
+  });
+  if (!mods.length) {
+    const p = document.createElement('p');
+    p.className = 'text-muted px-2 py-2';
+    p.style.fontSize = '0.8rem';
+    p.textContent = 'No modules found in config dir.';
+    box.appendChild(p);
+  }
+}
+
+async function buildSidebarShared() {
+  try {
+    const resp = await fetch("{% url 'api_shared_configs' %}");
+    const names = ((await resp.json()).shared || []).filter(n => /^[A-Za-z0-9_.-]+$/.test(n));
+    if (!names.length) return;
+    const box = document.getElementById('sidebar-shared');
+    const head = document.createElement('div');
+    head.className = 'px-2 pb-1 pt-2';
+    head.innerHTML = '<span class="text-uppercase text-muted fw-semibold" style="font-size:0.65rem;letter-spacing:.08em">Shared</span>';
+    box.replaceChildren(head);
+    names.forEach(n => {
+      const a = sidebarLink("{% url 'shared_detail' '__NAME__' %}".replace('__NAME__', n), n === ACTIVE_SHARED);
+      a.innerHTML = '<i class="bi bi-file-earmark-text" style="font-size:0.8rem;color:#6c757d;flex-shrink:0"></i>';
+      a.append(n);
+      box.appendChild(a);
+    });
+  } catch (_) {}
+}
+const ACTIVE_SHARED = "{{ active_shared|default:''|escapejs }}";
+
 // ── Status dots ───────────────────────────────────────────────────────────────
 async function refreshSidebarStatus() {
   try {
-    const resp = await fetch("{% url 'api_all_statuses' %}");
-    const data = await resp.json();
+    const data = await getStatuses(4000);
+    if (SIDEBAR_DEFERRED && !sidebarBuilt) {
+      sidebarBuilt = true;
+      buildSidebarModules(data);
+    }
     data.modules.forEach(m => {
       document.querySelectorAll(`.status-dot[data-module="${m.name}"]`).forEach(dot => {
         dot.className = `status-dot ${m.status}`;
       });
     });
-  } catch (_) {}
+  } catch (_) {
+    const hint = document.querySelector('#sidebar-modules > p');
+    if (SIDEBAR_DEFERRED && !sidebarBuilt && hint) hint.textContent = 'Host not reachable, retrying…';
+  }
 }
 
 refreshSidebarStatus();
+if (SIDEBAR_DEFERRED) buildSidebarShared();
 setInterval(refreshSidebarStatus, 8000);
 
 // ── Preserve active tab hash when navigating between modules ──────────────────

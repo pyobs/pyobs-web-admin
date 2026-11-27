@@ -1,0 +1,43 @@
+{# One dashboard row. placeholder=True renders both activate/deactivate buttons; the browser keeps the right one. #}
+<tr data-module-row="{{ mod }}">
+  <td class="text-nowrap" style="width:1%">
+    <span class="badge rounded-pill status-badge unknown" data-module="{{ mod }}">…</span>
+    <i class="bi bi-arrow-up-circle-fill outdated-indicator d-none ms-1 text-warning" data-module="{{ mod }}" title=""></i>
+    <i class="bi bi-file-earmark-diff-fill config-stale-indicator d-none ms-1 text-warning" data-module="{{ mod }}" title=""></i>
+    {% if ejabberd_enabled %}
+    <i class="bi xmpp-indicator d-none ms-1" data-module="{{ mod }}"></i>
+    {% endif %}
+  </td>
+  <td class="fw-semibold"><a href="{% url 'module_detail' mod %}" class="text-decoration-none text-reset">{{ mod }}</a></td>
+  <td class="text-secondary small text-nowrap module-ram d-none d-md-table-cell" data-module="{{ mod }}"></td>
+  <td class="text-secondary small text-nowrap module-cpu d-none d-md-table-cell" data-module="{{ mod }}"></td>
+  <td class="text-secondary small text-nowrap module-uptime d-none d-md-table-cell" data-module="{{ mod }}"></td>
+  <td><div class="module-log-stats d-flex gap-1 flex-wrap" data-module="{{ mod }}"></div></td>
+  <td class="text-end text-nowrap">
+    <a href="{% url 'module_detail' mod %}#tab-logs" class="btn btn-sm btn-outline-primary me-1">
+      <i class="bi bi-journal-text"></i> Logs
+    </a>
+    <button class="btn btn-sm btn-outline-success" title="Start" data-action="start" onclick="quickControl('{{ mod }}', 'start', this)">
+      <i class="bi bi-play-fill"></i>
+    </button>
+    <button class="btn btn-sm btn-outline-warning" title="Restart" data-action="restart" onclick="quickControl('{{ mod }}', 'restart', this)">
+      <i class="bi bi-arrow-repeat"></i>
+    </button>
+    <button class="btn btn-sm btn-outline-danger" title="Stop" data-action="stop" onclick="quickControl('{{ mod }}', 'stop', this)">
+      <i class="bi bi-stop-fill"></i>
+    </button>
+    <button class="btn btn-sm btn-danger d-none" title="Kill right away, without waiting for the shutdown" data-action="kill" onclick="quickControl('{{ mod }}', 'kill', this)">
+      <i class="bi bi-x-octagon"></i>
+    </button>
+    {% if placeholder or mod|slice:':1' == '_' %}
+    <button class="btn btn-sm btn-outline-success ms-1" title="Activate" data-toggle="activate" onclick="toggleActive('{{ mod }}', 'activate', this)">
+      <i class="bi bi-eye"></i>
+    </button>
+    {% endif %}
+    {% if placeholder or mod|slice:':1' != '_' %}
+    <button class="btn btn-sm btn-outline-secondary ms-1" title="Deactivate" data-toggle="deactivate" onclick="toggleActive('{{ mod }}', 'deactivate', this)">
+      <i class="bi bi-eye-slash"></i>
+    </button>
+    {% endif %}
+  </td>
+</tr>
