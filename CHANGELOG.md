@@ -9,6 +9,16 @@ Entries for releases before this file existed were generated from commit subject
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-11-27
+
+- Dashboard: loading overlay over the module table until the first status response is in. Start All, Restart All and
+  Stop All stay disabled until then. If loading fails, a message is shown and the poll retries (#130).
+- On a remote host, the dashboard rows and the sidebar (modules and shared configs) are built in the browser. The page
+  no longer waits for a full status call to the host before it is sent.
+- The sidebar and the dashboard share one status request instead of polling separately.
+- `/api/shared/` now follows the active host like `/api/statuses/`.
+- The status poll caches `pip list` for 15 s per worker.
+
 ## [2.5.0] - 2026-11-26
 
 ### Added
